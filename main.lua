@@ -1,874 +1,413 @@
--- VIRTUAL RESOLUTION (1080p Vertical)
-local VIRTUAL_WIDTH = 1080
-local VIRTUAL_HEIGHT = 1920
+local Constants = require("src.constants")
+local Event = require("src.core.event")
+local Engagement = require("src.core.engagement")
+local World = require("src.core.world")
+local Time = require("src.core.time")
+local Unit = require("src.entities.unit")
+local Turret = require("src.entities.turret")
+local Projectile = require("src.entities.projectile")
 
--- GAMEPLAY CONSTANTS
-local COMBAT_RANGE_SQ = 30 * 30
-local DAMAGE_PER_HIT = 1
-
-local BASE_SPAWN_INTERVAL = 2.0 
-local MAX_RELEVANCE = 100
-local BASE_RELEVANCE_DECAY = 8         
-local RELEVANCE_GAIN_HIT = 1      
-local RELEVANCE_GAIN_KILL = 15    
-local POINTS_PER_ELIMINATION = 10
-
--- SCORE CONSTANTS
-local SCORE_POLARIZATION = 2000 
-local SCORE_DOMINATION = 5000   
-local SCORE_PACIFIST = 10000    
-local SCORE_EXTINCTION = 15000 
-
--- GAME STATES
-local STATE_ATTRACT = 1
-local STATE_PLAY = 2
-local STATE_GAMEOVER = 3 
-local STATE_LEVEL_COMPLETE = 4 
-local STATE_INITIALS_INPUT = 5 
-local gameState = STATE_ATTRACT
-
--- OBJECTS
-local users = {}
-local canisters = {} 
-local toxicZones = {} 
-local particles = {} 
-local floatingTexts = {} 
-
--- GLOBAL VARIABLES
-local score = 0 
-local currentLevel = 1
-local difficulty = 1.0
-local relevance = MAX_RELEVANCE
-local spawnTimer = 0
-local scale = 1 
-
--- VICTORY TRACKING
-local victoryType = ""
-local victoryScoreAwarded = 0
-local hasConflictStarted = false 
-
--- AIMING VARIABLES
-local aimAngle = 90             
-local ANGLE_SPEED = 100         
-local chargeLevel = 0           
-local CHARGE_SPEED = 0.4        
-
-local chargingTeam = nil        
-local isCharging = false
-
--- PROGRESSION LIMITS (TIERED REACH)
-local BASE_MAX_REACH = 0.30     
-local REACH_STAGE_1 = 0.60  
-local REACH_STAGE_2 = 0.90  
-local REACH_STAGE_3 = 1.00  
-local currentMaxReach = BASE_MAX_REACH
-local currentReachStage = 0     
-
--- INFLUENCE EVENT
-local influenceMessageTimer = 0
-
--- FONTS
-local largeFont 
-local titleFont 
-local scoreFont 
-
--- HIGH SCORE DATA
-local highscores = {}
-local currentNewScoreIndex = -1 
-
--- INITIALS INPUT LOGIC
-local charList = {}
-local charIndex = 1             
-local initialsInput = {"_", "_", "_"}
-local initialsIndex = 1         
-local inputMoveTimer = 0        
-
--- CLICKBAIT QUOTES
-local CLICKBAIT_QUOTES = {
-    "YOU WON'T BELIEVE WHAT HAPPENED NEXT!",
-    "THEY TRIED TO KEEP THIS QUIET!",
-    "THIS IS THE TRUTH THEY DON'T WANT YOU TO SEE!",
-    "GEN Z HATES THIS ONE SIMPLE TRICK!",
-    "SOCIETY COLLAPSES AFTER THIS VIRAL TWEET!",
-    "BIG PHARMA FEARS THIS CANISTER!",
-    "THE MEDIA IS LYING TO YOU!",
-    "IS THIS THE END OF NEUTRALITY?",
-    "THE ESTABLISHMENT IS SHOCKED!",
-    "REDDITORS ARE LOSING THEIR MINDS!"
+local Game = {
+    units = {},
+    projectiles = {},
+    effects = {}, 
+    hazards = {},
+    explosionZones = {}, 
+    turret = nil,
+    score = 0,
+    shake = 0,
+    logicTimer = 0,
+    isUpgraded = false, -- Track weapon upgrade state
+    fonts = {
+        small = nil,
+        medium = nil,
+        large = nil
+    }
 }
 
--- DEPENDENCIES
-require("Particle")   
-require("User")
-require("Canister") 
-require("ToxicZone") 
+-- --- PHYSICS COLLISION CALLBACKS ---
 
-----------------------------------------------------------------------
--- SCORE UTILITIES
-----------------------------------------------------------------------
+local function beginContact(a, b, coll)
+    local objA = a:getUserData()
+    local objB = b:getUserData()
+    if not objA or not objB then return end
 
--- Function to create a floating text object
-function spawnFloatingText(text, x, y, color, duration, font)
-    table.insert(floatingTexts, {
-        text = text,
-        x = x,
-        y = y,
-        color = color or {1, 1, 0, 1},
-        vy = -100,                     
-        life = duration or 1.0,        
-        duration = duration or 1.0,    
-        font = font or largeFont       
-    })
-end
-
--- Global function called directly from Canister.lua on AOE creation
-_G.spawnClickbaitQuote = function(x, y, team)
-    local quote = CLICKBAIT_QUOTES[math.random(1, #CLICKBAIT_QUOTES)]
-    
-    local r, g, b = 1, 1, 1
-    if team == User.TEAM_RED then r, g, b = 1, 0.2, 0.2  -- Bright Red
-    elseif team == User.TEAM_BLUE then r, g, b = 0.2, 0.2, 1 end -- Bright Blue
-
-    -- 1. Calculate width using largeFont (size 24)
-    local textWidth = largeFont:getWidth(quote)
-    local textHeight = largeFont:getHeight()
-    
-    -- 2. X Position Calculation: Start centered on hit spot (x), then clamp.
-    local startX = x 
-    local finalX = startX
-    local margin = 10
-    
-    -- Check left boundary (position of text start: finalX - textWidth/2)
-    if (startX - textWidth/2) < margin then
-        finalX = margin + textWidth/2
-    -- Check right boundary (position of text end: finalX + textWidth/2)
-    elseif (startX + textWidth/2) > VIRTUAL_WIDTH - margin then
-        finalX = VIRTUAL_WIDTH - margin - textWidth/2
-    end
-    
-    -- 3. Y Position Calculation: Center of AOE (y), lifted up by 150 (AOE radius) + text height buffer (20).
-    local verticalLift = 170 
-    local targetY = y - verticalLift
-    
-    -- Clamp Y position to ensure it's below the HUD (e.g., below Y=100)
-    local HUD_LIMIT = 100 
-    local clampedY = math.max(targetY, HUD_LIMIT)
-    
-    -- spawnFloatingText expects the X coordinate to be the center point of the text
-    spawnFloatingText(quote, finalX, clampedY, {r, g, b}, 2.5, largeFont)
-end
-
-
-----------------------------------------------------------------------
--- HIGH SCORE LOGIC (Omitted for brevity, unchanged from V87)
-----------------------------------------------------------------------
-function setupCharList()
-    charList = {}
-    for i = 65, 90 do table.insert(charList, string.char(i)) end
-    for i = 48, 57 do table.insert(charList, string.char(i)) end
-    table.insert(charList, "END")
-end
-
-function loadHighScores(useDefaultsOnly)
-    highscores = {
-        {initials = "CHA", score = 1000, level = 2},
-        {initials = "OSM", score = 750, level = 1},
-        {initials = "NPC", score = 250, level = 1}
-    }
-    
-    if not useDefaultsOnly and love.filesystem.getInfo("highscore.dat", "file") then
-        local data = love.filesystem.read("highscore.dat")
-        if data then
-            local loaded = assert(loadstring("return "..data))()
-            if loaded and type(loaded) == "table" and #loaded >= 3 then
-                highscores = loaded
-            end
-        end
-    end
-end
-
-function saveHighScores()
-    table.sort(highscores, function(a, b)
-        if a.score ~= b.score then return a.score > b.score end
-        return a.level > b.level
-    end)
-    
-    while #highscores > 3 do table.remove(highscores) end
-    
-    local scoreStrings = {}
-    for _, s in ipairs(highscores) do
-         table.insert(scoreStrings, string.format('{initials="%s", score=%d, level=%d}', s.initials, s.score, s.level))
-    end
-    
-    local data = "{\n"..table.concat(scoreStrings, ",\n").."\n}"
-    
-    love.filesystem.write("highscore.dat", data)
-    currentNewScoreIndex = -1 
-end
-
-function checkHighScores()
-    if score > 0 then
-        local minScore = highscores[#highscores].score
-        if #highscores < 3 or score > minScore then
-            local tempEntry = {initials = "???", score = score, level = currentLevel}
-            table.insert(highscores, tempEntry)
-            
-            table.sort(highscores, function(a, b)
-                if a.score ~= b.score then return a.score > b.score end
-                return a.level > b.level
-            end)
-            
-            for i, entry in ipairs(highscores) do
-                if entry == tempEntry then
-                    currentNewScoreIndex = i
-                    break
-                end
-            end
-
-            while #highscores > 3 do table.remove(highscores) end
-            
-            initialsInput = {"_", "_", "_"}
-            initialsIndex = 1
-            charIndex = 1
-            gameState = STATE_INITIALS_INPUT
-            return true
-        end
-    end
-    return false
-end
-
-function resetHighScoresToDefault()
-    loadHighScores(true) 
-    saveHighScores()
-end
-
-----------------------------------------------------------------------
--- CORE LOGIC
-----------------------------------------------------------------------
-
-function clearAndSpawnBoard()
-    users = {}
-    canisters = {}
-    toxicZones = {}
-    particles = {}
-    floatingTexts = {} 
-    
-    relevance = MAX_RELEVANCE 
-    spawnTimer = 0 
-    
-    aimAngle = 90
-    chargeLevel = 0
-    isCharging = false
-    chargingTeam = nil
-    
-    hasConflictStarted = false 
-    currentMaxReach = BASE_MAX_REACH
-    currentReachStage = 0 
-    
-    for i = 1, 50 do
-        table.insert(users, User.new(math.random(20, VIRTUAL_WIDTH - 20), math.random(20, VIRTUAL_HEIGHT - 20)))
-    end
-end
-
-function initGame()
-    score = 0
-    currentLevel = 1
-    difficulty = 1.0
-    clearAndSpawnBoard() 
-    gameState = STATE_PLAY
-end
-
-function advanceToNextLevel()
-    currentLevel = currentLevel + 1
-    difficulty = difficulty + 0.2 
-    clearAndSpawnBoard()
-    gameState = STATE_PLAY
-end
-
-
-----------------------------------------------------------------------
--- LOVE CALLBACKS
-----------------------------------------------------------------------
-
-function love.load()
-    love.window.setTitle("Rage Bait")
-    love.window.setMode(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, { resizable = true })
-    math.randomseed(os.time())
-    
-    largeFont = love.graphics.newFont(24) 
-    titleFont = love.graphics.newFont(80) 
-    scoreFont = love.graphics.newFont(36) 
-    
-    -- === TO RESET SCORES TO DEFAULT, UNCOMMENT THE FOLLOWING LINE (Then run once) ===
-    -- resetHighScoresToDefault() 
-    -- ===============================================================
-    
-    loadHighScores()
-    setupCharList() 
-    
-    local w, h = love.graphics.getDimensions()
-    scale = math.min(w/VIRTUAL_WIDTH, h/VIRTUAL_HEIGHT)
-    if scale == 0 then scale = 1 end
-    
-    clearAndSpawnBoard() 
-    gameState = STATE_ATTRACT 
-end
-
-function love.update(dt)
-    if gameState == STATE_PLAY then
-        -- 1. RELEVANCE DECAY
-        local decay = BASE_RELEVANCE_DECAY * difficulty
-        relevance = relevance - decay * dt
+    -- CASE 1: UNIT vs UNIT
+    if objA.type == "unit" and objB.type == "unit" then
+        if objA.state == "neutral" or objB.state == "neutral" then return end
+        if objA.alignment == objB.alignment then return end
         
-        -- CHECK LOSS: ONLY WAY TO GAME OVER
-        if relevance <= 0 then 
-            checkHighScores() 
-            if gameState ~= STATE_INITIALS_INPUT then
-                gameState = STATE_GAMEOVER 
-            end
-            return 
-        end
+        objA:takeDamage(1, objB)
+        objB:takeDamage(1, objA)
         
-        -- 2. TIERED PROGRESSION UNLOCK
-        local updatedReach = false
+        Game.score = Game.score + (Constants.SCORE_HIT * 2)
+        Engagement.add(Constants.ENGAGEMENT_REFILL_HIT * 2)
         
-        if score >= 750 and currentReachStage < 3 then
-            currentMaxReach = REACH_STAGE_3
-            currentReachStage = 3
-            updatedReach = true
-        elseif score >= 500 and currentReachStage < 2 then
-            currentMaxReach = REACH_STAGE_2
-            currentReachStage = 2
-            updatedReach = true
-        elseif score >= 250 and currentReachStage < 1 then
-            currentMaxReach = REACH_STAGE_1
-            currentReachStage = 1
-            updatedReach = true
-        end
-
-        if updatedReach then
-             influenceMessageTimer = 3.0
-        end
-
-        if influenceMessageTimer > 0 then influenceMessageTimer = influenceMessageTimer - dt end
-
-        -- 3. VICTORY CHECK
-        local redC = 0; local blueC = 0; local greyC = 0; local total = 0
-        for _, u in ipairs(users) do
-            if u.hp > 0 then
-                total = total + 1
-                if u.team == User.TEAM_RED then redC = redC + 1
-                elseif u.team == User.TEAM_BLUE then blueC = blueC + 1
-                else greyC = greyC + 1 end
-            end
-        end
+        local vxA, vyA = objA.body:getLinearVelocity()
+        local vxB, vyB = objB.body:getLinearVelocity()
+        local speedA = math.sqrt(vxA^2 + vyA^2)
+        local speedB = math.sqrt(vxB^2 + vyB^2)
+        local advantageThreshold = 150 
         
-        if redC > 0 or blueC > 0 then hasConflictStarted = true end
-        
-        local victory = false
-        
-        if total > 0 then
-            -- Win 1-3: Domination/Polarization
-            if greyC == 0 then
-                if redC > 0 and blueC > 0 then
-                    victoryType = "POLARIZATION COMPLETE"
-                    victoryScoreAwarded = SCORE_POLARIZATION
-                    victory = true
-                elseif redC == total then
-                    victoryType = "RED DOMINANCE"
-                    victoryScoreAwarded = SCORE_DOMINATION
-                    victory = true
-                elseif blueC == total then
-                    victoryType = "BLUE DOMINANCE"
-                    victoryScoreAwarded = SCORE_DOMINATION
-                    victory = true
-                end
-            -- Win 4: Peace Restored
-            elseif greyC == total and hasConflictStarted then
-                victoryType = "PEACE RESTORED"
-                victoryScoreAwarded = SCORE_PACIFIST
-                victory = true
-            end
-            
-        elseif total == 0 then
-            -- Win 5: TOTAL ANNIHILATION
-            victoryType = "TOTAL ANNIHILATION"
-            victoryScoreAwarded = SCORE_EXTINCTION
-            victory = true
-        end
-        
-        if victory then
-            score = score + victoryScoreAwarded
-            gameState = STATE_LEVEL_COMPLETE
-            return 
-        end
-
-        -- 4. PLAYER INPUTS & SPAWNING
-        if love.keyboard.isDown("right") or love.keyboard.isDown("d") then aimAngle = aimAngle - ANGLE_SPEED * dt end
-        if love.keyboard.isDown("left") or love.keyboard.isDown("a") then aimAngle = aimAngle + ANGLE_SPEED * dt end
-        aimAngle = math.max(10, math.min(170, aimAngle)) 
-
-        if isCharging then
-            chargeLevel = chargeLevel + CHARGE_SPEED * dt
-            if chargeLevel > currentMaxReach then chargeLevel = currentMaxReach end
-        else
-            chargeLevel = 0
-        end
-
-        spawnTimer = spawnTimer + dt
-        local currentSpawnInterval = BASE_SPAWN_INTERVAL / difficulty 
-        if spawnTimer >= currentSpawnInterval then
-            spawnTimer = 0
-            table.insert(users, User.new(math.random(20, VIRTUAL_WIDTH-20), math.random(20, VIRTUAL_HEIGHT/2)))
-        end
-    
-    elseif gameState == STATE_INITIALS_INPUT then
-        inputMoveTimer = inputMoveTimer - dt
-        if inputMoveTimer <= 0 then
-            local moved = false
-            if love.keyboard.isDown("up") or love.keyboard.isDown("w") then
-                charIndex = charIndex - 1
-                moved = true
-            elseif love.keyboard.isDown("down") or love.keyboard.isDown("s") then
-                charIndex = charIndex + 1
-                moved = true
-            end
-
-            if charIndex < 1 then charIndex = #charList end
-            if charIndex > #charList then charIndex = 1 end
-            
-            if moved then inputMoveTimer = 0.1 end
-        end
-    end
-
-    -- SHARED LOGIC
-    local usersToKill = {} 
-    
-    for i, user in ipairs(users) do
-        if user.hp <= 0 then table.insert(usersToKill, user) end
-        
-        if user.team ~= User.TEAM_NEUTRAL and user.hp > 0 then 
-            for j = i + 1, #users do 
-                local uB = users[j]
-                local isEnemyTeam = (user.team == 1 and uB.team == 2) or (user.team == 2 and uB.team == 1)
-                local attackingInsane = (user.team ~= User.TEAM_NEUTRAL and uB.isInsane)
-                
-                if isEnemyTeam or attackingInsane then
-                    local dist = (user.x - uB.x)^2 + (user.y - uB.y)^2
-                    if dist < COMBAT_RANGE_SQ then
-                        if attackingInsane then
-                            if uB:takeDamage(DAMAGE_PER_HIT) then 
-                                table.insert(usersToKill, uB)
-                                if gameState==STATE_PLAY then relevance = math.min(relevance+RELEVANCE_GAIN_HIT, MAX_RELEVANCE) end
-                            end
-                        elseif isEnemyTeam then
-                            if math.random() > 0.5 then 
-                                if uB:takeDamage(DAMAGE_PER_HIT) then table.insert(usersToKill, uB)
-                                else if gameState==STATE_PLAY then relevance = math.min(relevance+RELEVANCE_GAIN_HIT, MAX_RELEVANCE) end end
-                            else
-                                if user:takeDamage(DAMAGE_PER_HIT) then table.insert(usersToKill, user)
-                                else if gameState==STATE_PLAY then relevance = math.min(relevance+RELEVANCE_GAIN_HIT, MAX_RELEVANCE) end end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    
-    for _, dead in ipairs(usersToKill) do
-        for i, u in ipairs(users) do
-            if u == dead then
-                table.remove(users, i)
-                table.insert(toxicZones, ToxicZone.new(dead.x, dead.y))
-                
-                -- Spawn floating text upon user elimination for points awarded
-                if gameState == STATE_PLAY then
-                    if not dead.killedByToxic and not dead.killedByInsane then
-                        score = score + POINTS_PER_ELIMINATION
-                        relevance = math.min(relevance + RELEVANCE_GAIN_KILL, MAX_RELEVANCE)
-                        
-                        -- Points are drawn relative to the object's center (x, y)
-                        spawnFloatingText("+" .. POINTS_PER_ELIMINATION, u.x + u.width/2, u.y + u.height/2, {1, 1, 0})
-                    end
-                end
-                break
-            end
-        end
-    end
-    
-    -- Update floating texts (move up and decay)
-    for i = #floatingTexts, 1, -1 do
-        local ft = floatingTexts[i]
-        ft.y = ft.y + ft.vy * dt
-        ft.life = ft.life - dt
-        if ft.life <= 0 then
-            table.remove(floatingTexts, i)
-        end
-    end
-    
-    if gameState ~= STATE_INITIALS_INPUT then
-        for _, u in ipairs(users) do u:update(dt, VIRTUAL_WIDTH, VIRTUAL_HEIGHT, users, toxicZones, canisters, difficulty) end
-        
-        -- Check canisters for explosion event (now relying on Canister.lua to call _G.spawnClickbaitQuote)
-        for i=#canisters,1,-1 do 
-            local canister = canisters[i]
-            local exploded = canister:update(dt, VIRTUAL_WIDTH, VIRTUAL_HEIGHT, users, canisters, particles)
-            
-            -- Remove the canister if Canister:update returns true
-            if exploded then 
-                table.remove(canisters, i) 
-            end
-        end
-        for i=#particles,1,-1 do if particles[i]:update(dt) then table.remove(particles, i) end end
-        for i=#toxicZones,1,-1 do if toxicZones[i]:update(dt, users) then table.remove(toxicZones, i) end end
-    end
-    
-    if gameState == STATE_ATTRACT and #users < 5 then clearAndSpawnBoard() end
-end
-
-function love.draw()
-    love.graphics.push()
-    love.graphics.scale(scale, scale)
-    love.graphics.setFont(largeFont) 
-    
-    if gameState ~= STATE_INITIALS_INPUT then
-        for _, z in ipairs(toxicZones) do z:draw() end
-        for _, c in ipairs(canisters) do c:draw() end
-        for _, u in ipairs(users) do u:draw() end
-        for _, p in ipairs(particles) do p:draw() end 
-    end
-    
-    local function shadowText(txt, x, y, r, g, b, f)
-        local font = f or largeFont
-        love.graphics.setFont(font)
-        love.graphics.setColor(0,0,0,1)
-        love.graphics.print(txt, x+3, y+3)
-        love.graphics.setColor(r,g,b,1)
-        love.graphics.print(txt, x, y)
-    end
-    
-    -- High Score Display Helper
-    local function drawHighScores(yStart)
-        local titleText = (gameState == STATE_INITIALS_INPUT) and "ENTER YOUR INITIALS" or "HIGH SCORES"
-        local titleW = titleFont:getWidth(titleText)
-        shadowText(titleText, (VIRTUAL_WIDTH - titleW)/2, yStart, 1, 1, 1, titleFont)
-        
-        local yOffset = yStart + titleFont:getHeight() + 20
-        
-        for i, entry in ipairs(highscores) do
-            local rankText = "#"..i
-            local initialsText = (i == currentNewScoreIndex and gameState == STATE_INITIALS_INPUT) and table.concat(initialsInput) or entry.initials
-            local scoreText = entry.score
-            local levelText = "(L: "..entry.level..")"
-            
-            local yPos = yOffset + i * scoreFont:getHeight() * 1.5
-            
-            -- Rank
-            shadowText(rankText, VIRTUAL_WIDTH*0.15, yPos, 0.7, 0.7, 0.7, scoreFont)
-            -- Initials (Flashes if current rank is being entered)
-            local r, g, b = 1, 1, 1
-            if i == currentNewScoreIndex and gameState == STATE_INITIALS_INPUT and (love.timer.getTime()*8)%2 > 1 then
-                r, g, b = 1, 0.8, 0 -- Flash yellow
-            end
-            
-            shadowText(initialsText, VIRTUAL_WIDTH*0.35 - scoreFont:getWidth(initialsText)/2, yPos, r, g, b, scoreFont)
-            -- Score
-            shadowText(scoreText, VIRTUAL_WIDTH*0.60 - scoreFont:getWidth(tostring(scoreText))/2, yPos, 1, 0.8, 0, scoreFont)
-            -- Level
-            shadowText(levelText, VIRTUAL_WIDTH*0.85, yPos, 0.7, 0.7, 0.7, scoreFont)
-        end
-    end
-    
-    if gameState == STATE_PLAY then
-        -- TARGETING
-        local startX = VIRTUAL_WIDTH / 2
-        local startY = VIRTUAL_HEIGHT
-        local rad = math.rad(aimAngle)
-        local MAX_LINE_LENGTH = VIRTUAL_HEIGHT * 1.1 
-        local dist = MAX_LINE_LENGTH * chargeLevel
-        local tx = startX + math.cos(rad) * dist
-        local ty = startY - math.sin(rad) * dist 
-        
-        love.graphics.setColor(1, 1, 1, 0.3)
-        love.graphics.setLineWidth(2)
-        local lineEndX = startX + math.cos(rad) * (MAX_LINE_LENGTH * currentMaxReach)
-        local lineEndY = startY - math.sin(rad) * (MAX_LINE_LENGTH * currentMaxReach)
-        love.graphics.line(startX, startY, lineEndX, lineEndY)
-        
-        if isCharging then
-            if chargingTeam == User.TEAM_RED then love.graphics.setColor(1, 0, 0, 1)
-            else love.graphics.setColor(0, 0, 1, 1) end
-        else
-            love.graphics.setColor(1, 1, 1, 0.5)
-        end
-        love.graphics.setLineWidth(3)
-        love.graphics.circle("line", tx, ty, 20)
-        love.graphics.line(tx-10, ty, tx+10, ty)
-        love.graphics.line(tx, ty-10, tx, ty+10)
-        
-        -- METER
-        local meterW, meterH = 20, 600
-        local meterX = VIRTUAL_WIDTH - 50
-        local meterY = VIRTUAL_HEIGHT - 300 - meterH
-        love.graphics.setColor(0.2, 0.2, 0.2, 0.8)
-        love.graphics.rectangle("fill", meterX, meterY, meterW, meterH)
-        local limitY = meterY + meterH * (1 - currentMaxReach)
-        love.graphics.setColor(1, 0, 0, 0.8)
-        love.graphics.setLineWidth(2)
-        love.graphics.line(meterX - 10, limitY, meterX + meterW + 10, limitY)
-        local fillH = meterH * chargeLevel
-        local fillY = meterY + meterH - fillH
-        if chargingTeam == User.TEAM_RED then love.graphics.setColor(1, 0, 0)
-        elseif chargingTeam == User.TEAM_BLUE then love.graphics.setColor(0, 0, 1)
-        else love.graphics.setColor(1, 1, 1) end
-        love.graphics.rectangle("fill", meterX, fillY, meterW, fillH)
-
-        -- HUD
-        shadowText("LEVEL " .. currentLevel, 30, 40, 1, 1, 1, scoreFont)
-        
-        local scoreText = "SCORE: " .. score
-        local sw = scoreFont:getWidth(scoreText)
-        shadowText(scoreText, VIRTUAL_WIDTH - sw - 30, 40, 1, 0.8, 0, scoreFont)
-        
-        local redC = 0; local blueC = 0; local greyC = 0; local total = 0
-        for _, u in ipairs(users) do 
-            if u.hp > 0 then 
-                total = total + 1
-                if u.team == 1 then redC = redC+1 elseif u.team == 2 then blueC = blueC+1 else greyC = greyC+1 end 
-            end 
-        end
-        if total > 0 then
-            local balW, balH = 400, 20
-            local balX = (VIRTUAL_WIDTH - balW)/2
-            local balY = 50
-            local rW = (redC/total) * balW
-            local nW = (greyC/total) * balW
-            local bW = (blueC/total) * balW
-            love.graphics.setColor(1, 0, 0); love.graphics.rectangle("fill", balX, balY, rW, balH)
-            love.graphics.setColor(0.5, 0.5, 0.5); love.graphics.rectangle("fill", balX+rW, balY, nW, balH)
-            love.graphics.setColor(0, 0, 1); love.graphics.rectangle("fill", balX+rW+nW, balY, bW, balH)
-            love.graphics.setColor(1,1,1); love.graphics.setLineWidth(2)
-            love.graphics.rectangle("line", balX, balY, balW, balH)
-        end
-        
-        -- Relevance
-        local barW, barH = 600, 30
-        local bx = (VIRTUAL_WIDTH - barW)/2
-        love.graphics.setColor(0.2,0.2,0.2)
-        love.graphics.rectangle("fill", bx, 40, barW, barH)
-        love.graphics.setColor(1 - (relevance/MAX_RELEVANCE), relevance/MAX_RELEVANCE, 0)
-        love.graphics.rectangle("fill", bx, 40, barW * (relevance/MAX_RELEVANCE), barH)
-        shadowText("RELEVANCE", bx+220, 44, 1,1,1)
-        
-        if influenceMessageTimer > 0 and (love.timer.getTime()*10)%2 > 1 then
-             local m = "INFLUENCE EXPANDED!"
-             local w = titleFont:getWidth(m)
-             shadowText(m, (VIRTUAL_WIDTH-w)/2, VIRTUAL_HEIGHT*0.4, 0,1,1, titleFont)
-        end
-        
-    elseif gameState == STATE_ATTRACT then
-        love.graphics.setColor(0,0,0,0.6)
-        love.graphics.rectangle("fill",0,0,VIRTUAL_WIDTH,VIRTUAL_HEIGHT)
-        local t = "RAGE BAIT"
-        local w = titleFont:getWidth(t)
-        shadowText(t, (VIRTUAL_WIDTH-w)/2, VIRTUAL_HEIGHT*0.1, 1,0.3,0, titleFont)
-        
-        drawHighScores(VIRTUAL_HEIGHT * 0.25)
-        
-        if (love.timer.getTime()*2)%2 > 1 then
-            local i = "INSERT COIN"
-            local iw = titleFont:getWidth(i)
-            shadowText(i, (VIRTUAL_WIDTH-iw)/2, VIRTUAL_HEIGHT*0.65, 0,1,0, titleFont)
-        end
-        local s = "PRESS [ENTER] TO START"
-        local sw = largeFont:getWidth(s)
-        shadowText(s, (VIRTUAL_WIDTH-sw)/2, VIRTUAL_HEIGHT*0.75, 1,1,1, largeFont)
-        
-    elseif gameState == STATE_GAMEOVER then
-        love.graphics.setColor(0,0,0,0.7)
-        love.graphics.rectangle("fill",0,0,VIRTUAL_WIDTH,VIRTUAL_HEIGHT)
-        local t = "IRRELEVANT"
-        local w = titleFont:getWidth(t)
-        shadowText(t, (VIRTUAL_WIDTH-w)/2, VIRTUAL_HEIGHT*0.1, 0.5,0.5,0.5, titleFont)
-        
-        local s = "FINAL SCORE: "..score
-        local sw = scoreFont:getWidth(s)
-        shadowText(s, (VIRTUAL_WIDTH-sw)/2, VIRTUAL_HEIGHT*0.2, 1,1,0, scoreFont)
-        
-        local l = "REACHED LEVEL " .. currentLevel
-        local lw = scoreFont:getWidth(l)
-        shadowText(l, (VIRTUAL_WIDTH-lw)/2, VIRTUAL_HEIGHT*0.25, 1,1,1, scoreFont)
-        
-        drawHighScores(VIRTUAL_HEIGHT * 0.35)
-        
-        local r = "PRESS [ENTER] TO RESET"
-        local rw = largeFont:getWidth(r)
-        shadowText(r, (VIRTUAL_WIDTH-rw)/2, VIRTUAL_HEIGHT*0.85, 1,1,1, largeFont)
-        
-    elseif gameState == STATE_LEVEL_COMPLETE then
-        love.graphics.setColor(0, 0, 0, 0.8) 
-        love.graphics.rectangle("fill", 0, 0, VIRTUAL_WIDTH, VIRTUAL_HEIGHT)
-        
-        local t = victoryType
-        local w = titleFont:getWidth(t)
-        shadowText(t, (VIRTUAL_WIDTH-w)/2, VIRTUAL_HEIGHT*0.3, 0,1,0, titleFont)
-        
-        local s = "BONUS: +"..victoryScoreAwarded
-        local sw = largeFont:getWidth(s)
-        shadowText(s, (VIRTUAL_WIDTH-sw)/2, VIRTUAL_HEIGHT*0.45, 1,1,0, largeFont)
-        
-        local l = "STARTING LEVEL "..(currentLevel + 1)
-        local lw = largeFont:getWidth(l)
-        shadowText(l, (VIRTUAL_WIDTH-lw)/2, VIRTUAL_HEIGHT*0.6, 1,1,1, largeFont)
-        
-        local p = "PRESS [ENTER] TO CONTINUE"
-        local pw = largeFont:getWidth(p)
-        shadowText(p, (VIRTUAL_WIDTH-pw)/2, VIRTUAL_HEIGHT*0.7, 1,1,1, largeFont)
-    
-    elseif gameState == STATE_INITIALS_INPUT then
-        love.graphics.setColor(0,0,0,0.9)
-        love.graphics.rectangle("fill",0,0,VIRTUAL_WIDTH,VIRTUAL_HEIGHT)
-
-        drawHighScores(VIRTUAL_HEIGHT * 0.1)
-
-        -- Draw the character selection list
-        local listY = VIRTUAL_HEIGHT * 0.6
-        local listX = VIRTUAL_WIDTH / 2
-        local charSpacing = 50
-        
-        shadowText("SELECT LETTER (UP/DOWN + R/B/ENTER)", listX, listY - 100, 1, 1, 1, largeFont)
-
-        for i = 1, #charList do
-            local char = charList[i]
-            local charY = listY + (i - charIndex) * charSpacing
-            
-            local r, g, b = 0.5, 0.5, 0.5
-            local f = largeFont
-            
-            if charY > listY - 150 and charY < listY + 150 then
-                if i == charIndex then
-                    r, g, b = 1, 1, 1 
-                    f = scoreFont
-                    love.graphics.setColor(1, 0.8, 0, 0.5) 
-                    love.graphics.rectangle("fill", listX - 100, charY - 20, 200, 40)
-                end
-                
-                shadowText(char, listX, charY, r, g, b, f)
-            end
-        end
-
-        local instruction = (initialsIndex <= 3) and 
-                            ("SELECT INITIAL #" .. initialsIndex .. ": " .. charList[charIndex]) or 
-                            "PRESS R/B/ENTER TO FINISH"
-                            
-        shadowText(instruction, listX, VIRTUAL_HEIGHT * 0.9, 0, 1, 0, largeFont)
-    end
-
-    -- Draw Floating Texts (AOE/Points)
-    if gameState == STATE_PLAY then
-        for _, ft in ipairs(floatingTexts) do
-            local alpha = ft.life / ft.duration
-            local r, g, b = unpack(ft.color)
-            
-            love.graphics.setFont(ft.font)
-            
-            local textWidth = ft.font:getWidth(ft.text)
-            
-            -- Draw Shadow (Text centered on ft.x, ft.y)
-            local drawX = ft.x - textWidth/2
-            local drawY = ft.y
-            
-            love.graphics.setColor(0, 0, 0, alpha)
-            love.graphics.print(ft.text, drawX + 2, drawY + 2)
-            
-            -- Draw Text
-            love.graphics.setColor(r, g, b, alpha)
-            love.graphics.print(ft.text, drawX, drawY)
-        end
-    end
-    
-    love.graphics.pop()
-    love.graphics.setFont(largeFont)
-    love.graphics.setColor(1,1,1)
-    love.graphics.print("FPS: "..love.timer.getFPS(), 10, 10)
-end
-
-function love.keypressed(key)
-    if gameState == STATE_INITIALS_INPUT then
-        -- Handle Selection
-        if key == "r" or key == "b" or key == "return" or key == " " then
-            local selectedChar = charList[charIndex]
-            
-            if initialsIndex <= 3 then
-                if selectedChar == "END" then
-                    while initialsIndex <= 3 do
-                        initialsInput[initialsIndex] = "_"
-                        initialsIndex = initialsIndex + 1
-                    end
-                else
-                    initialsInput[initialsIndex] = selectedChar
-                    initialsIndex = initialsIndex + 1
-                    charIndex = 1 
-                end
-            end
-            
-            if initialsIndex > 3 then
-                local finalInitials = table.concat(initialsInput)
-                highscores[currentNewScoreIndex].initials = finalInitials
-                saveHighScores()
-                gameState = STATE_GAMEOVER
-            end
+        if speedA > speedB + advantageThreshold then
+            objA.body:setLinearVelocity(-vxA * 0.3, -vyA * 0.3)
+        elseif speedB > speedA + advantageThreshold then
+            objB.body:setLinearVelocity(-vxB * 0.3, -vyB * 0.3)
         end
         return
     end
+    
+    -- CASE 2: PROJECTILE vs UNIT
+    local unit, proj
+    if objA.type == "unit" and objB.type == "projectile" then
+        unit = objA; proj = objB
+    elseif objB.type == "unit" and objA.type == "projectile" then
+        unit = objB; proj = objA
+    end
+    
+    if unit and proj then
+        if proj.weaponType == "puck" then
+            unit:hit("puck", proj.color)
+            proj:die() 
+        end
+    end
+end
 
-    if key == "return" then
-        if gameState == STATE_ATTRACT or gameState == STATE_GAMEOVER then 
-            initGame() 
-        elseif gameState == STATE_LEVEL_COMPLETE then
-            advanceToNextLevel()
+local function preSolve(a, b, coll)
+    local objA = a:getUserData()
+    local objB = b:getUserData()
+    if not objA or not objB then return end
+    
+    local zone, proj
+    if objA.type == "zone" and objB.type == "projectile" then
+        zone = objA; proj = objB
+    elseif objB.type == "zone" and objA.type == "projectile" then
+        zone = objB; proj = objA
+    end
+    
+    if zone and proj then
+        if proj.weaponType == "bomb" then
+            coll:setEnabled(false)
+        else
+            if zone.color == proj.color then
+                coll:setEnabled(false) 
+            else
+                coll:setEnabled(true)  
+            end
+        end
+    end
+end
+
+-- --- LOVE CALLBACKS ---
+
+function love.load()
+    love.window.setMode(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    love.window.setTitle("Arcade War")
+    
+    -- Initialize Fonts
+    Game.fonts.small = love.graphics.newFont(12)
+    Game.fonts.medium = love.graphics.newFont(14)
+    Game.fonts.large = love.graphics.newFont(24)
+    
+    Event.clear() 
+    Engagement.init()
+    World.init()
+    World.physics:setCallbacks(beginContact, nil, preSolve, nil)
+    Time.init()
+    
+    Game.turret = Turret.new()
+    Game.score = 0
+    Game.shake = 0
+    
+    -- [RESET] Weapon Stats (Start Weak)
+    Game.isUpgraded = false
+    Constants.EXPLOSION_RADIUS = 50
+    Constants.PUCK_LIFETIME = 0.6
+    
+    Game.hazards = {}
+    Game.explosionZones = {}
+    Game.units = {}
+    Game.projectiles = {}
+    Game.effects = {}
+    
+    -- Initial Wave
+    for i=1, 20 do
+        local x = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
+        local y = math.random(50, Constants.PLAYFIELD_HEIGHT - 300)
+        table.insert(Game.units, Unit.new(World.physics, x, y))
+    end
+    
+    -- Event Listeners
+    Event.on("bomb_exploded", function(data)
+        Time.slowDown(0.1, 0.5)
+        Game.shake = 1.0
+        
+        table.insert(Game.effects, {
+            type = "explosion",
+            x = data.x, y = data.y,
+            radius = 0, maxRadius = data.radius,
+            color = data.color, alpha = 1.0, timer = 0.5
+        })
+        
+        local blocked = false
+        for _, z in ipairs(Game.explosionZones) do
+            local dx = data.x - z.x
+            local dy = data.y - z.y
+            local distSq = dx*dx + dy*dy
+            if distSq < (z.radius * z.radius) then
+                if z.color ~= data.color then
+                    blocked = true
+                    break
+                end
+            end
+        end
+        
+        if blocked then return end
+        
+        if #Game.explosionZones >= 5 then
+            local oldZ = table.remove(Game.explosionZones, 1)
+            if oldZ and oldZ.body then oldZ.body:destroy() end
+        end
+        
+        local body = love.physics.newBody(World.physics, data.x, data.y, "static")
+        local shape = love.physics.newCircleShape(data.radius)
+        local fixture = love.physics.newFixture(body, shape)
+        fixture:setCategory(Constants.PHYSICS.ZONE)
+        fixture:setUserData({ type = "zone", color = data.color })
+        
+        table.insert(Game.explosionZones, {
+            x = data.x, 
+            y = data.y, 
+            radius = data.radius, 
+            color = data.color, 
+            timer = Constants.EXPLOSION_DURATION,
+            body = body 
+        })
+    end)
+    
+    Event.on("unit_killed", function(data)
+        Game.score = Game.score + Constants.SCORE_KILL
+        Engagement.add(Constants.ENGAGEMENT_REFILL_KILL)
+        Game.shake = math.max(Game.shake, 0.2)
+        
+        local x, y = data.victim.body:getPosition()
+        table.insert(Game.hazards, {
+            x = x, y = y, radius = Constants.TOXIC_RADIUS, timer = Constants.TOXIC_DURATION
+        })
+    end)
+end
+
+function love.update(dt)
+    if love.keyboard.isDown("escape") then love.event.quit() end
+
+    -- [UPGRADE LOGIC]
+    if not Game.isUpgraded and Game.score >= Constants.UPGRADE_SCORE then
+        Game.isUpgraded = true
+        Constants.EXPLOSION_RADIUS = Constants.EXPLOSION_RADIUS_MAX
+        Constants.PUCK_LIFETIME = Constants.PUCK_LIFETIME_MAX
+        Game.shake = 2.0 -- Big shake on upgrade
+    end
+
+    if Game.shake > 0 then
+        Game.shake = Game.shake - (2.5 * dt)
+        if Game.shake < 0 then Game.shake = 0 end
+    end
+
+    Time.checkRestore(dt)
+    Time.update(dt)
+    local gameDt = dt * Time.scale
+
+    Engagement.update(gameDt)
+    World.update(gameDt)
+    
+    -- Cleanup Hazards
+    for i = #Game.hazards, 1, -1 do
+        local h = Game.hazards[i]
+        h.timer = h.timer - dt
+        if h.timer <= 0 then table.remove(Game.hazards, i) end
+    end
+    
+    -- Cleanup Zones
+    for i = #Game.explosionZones, 1, -1 do
+        local z = Game.explosionZones[i]
+        z.timer = z.timer - dt
+        if z.timer <= 0 then
+            z.body:destroy() 
+            table.remove(Game.explosionZones, i)
         end
     end
     
-    if gameState == STATE_PLAY then
-        if key == "r" and not isCharging then
-            isCharging = true
-            chargingTeam = User.TEAM_RED
-            chargeLevel = 0.05 
-        elseif key == "b" and not isCharging then
-            isCharging = true
-            chargingTeam = User.TEAM_BLUE
-            chargeLevel = 0.05
+    -- Throttled Zone Logic
+    Game.logicTimer = Game.logicTimer + dt
+    if Game.logicTimer > 0.1 then
+        Game.logicTimer = 0
+        for _, u in ipairs(Game.units) do
+            if not u.isDead then
+                local ux, uy = u.body:getPosition()
+                local activeZone = nil
+                for _, z in ipairs(Game.explosionZones) do
+                    local dx = ux - z.x
+                    local dy = uy - z.y
+                    local distSq = dx*dx + dy*dy
+                    if distSq < (z.radius * z.radius) then
+                        activeZone = z
+                        break 
+                    end
+                end
+                if activeZone then
+                    u:hit("bomb", activeZone.color)
+                end
+            end
         end
+    end
+
+    if Game.turret then Game.turret:update(dt) end
+    
+    -- Update Units
+    for i = #Game.units, 1, -1 do
+        local u = Game.units[i]
+        u:update(gameDt, Game.units, Game.hazards, Game.explosionZones)
+        if u.isDead then table.remove(Game.units, i) end
+    end
+    
+    -- Update Projectiles
+    for i = #Game.projectiles, 1, -1 do
+        local p = Game.projectiles[i]
+        p:update(gameDt)
+        if p.isDead then table.remove(Game.projectiles, i) end
+    end
+    
+    -- Update Effects
+    for i = #Game.effects, 1, -1 do
+        local e = Game.effects[i]
+        e.timer = e.timer - dt
+        if e.type == "explosion" then
+            e.radius = e.radius + (e.maxRadius * 8 * dt)
+            if e.radius > e.maxRadius then e.radius = e.maxRadius end
+            e.alpha = e.timer / 0.5
+        end
+        if e.timer <= 0 then table.remove(Game.effects, i) end
+    end
+end
+
+function love.keypressed(key)
+    if not Game.turret then return end
+    local isModDown = love.keyboard.isDown("down") or love.keyboard.isDown("s")
+    if key == "z" then
+        if isModDown then Game.turret:startCharge("red")
+        else Game.turret:firePuck("red", Game.projectiles) end
+    elseif key == "x" then
+        if isModDown then Game.turret:startCharge("blue")
+        else Game.turret:firePuck("blue", Game.projectiles) end
     end
 end
 
 function love.keyreleased(key)
-    if gameState == STATE_PLAY then
-        if isCharging then
-            if (key == "r" and chargingTeam == User.TEAM_RED) or 
-               (key == "b" and chargingTeam == User.TEAM_BLUE) then
-                
-                local startX = VIRTUAL_WIDTH / 2
-                local startY = VIRTUAL_HEIGHT
-                local rad = math.rad(aimAngle)
-                local MAX_LINE_LENGTH = VIRTUAL_HEIGHT * 1.1 
-                local dist = MAX_LINE_LENGTH * chargeLevel
-                
-                local tx = startX + math.cos(rad) * dist
-                local ty = startY - math.sin(rad) * dist
-                
-                table.insert(canisters, Canister.new(startX, startY, tx, ty, chargingTeam))
-                
-                isCharging = false
-                chargingTeam = nil
-                chargeLevel = 0
-            end
-        end
-    end
+    if not Game.turret then return end
+    if key == "z" or key == "x" then Game.turret:releaseCharge(Game.projectiles) end
 end
 
-function love.resize(w, h)
-    scale = math.min(w/VIRTUAL_WIDTH, h/VIRTUAL_HEIGHT)
+function love.draw()
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    love.graphics.push()
+    
+    if Game.shake > 0 then
+        local maxOffset = 15
+        local shakeAmount = Game.shake * Game.shake * maxOffset
+        love.graphics.translate(love.math.random(-shakeAmount, shakeAmount), love.math.random(-shakeAmount, shakeAmount))
+    end
+    
+    World.draw(function()
+        -- Hazards
+        for _, h in ipairs(Game.hazards) do
+            local r, g, b = unpack(Constants.COLORS.TOXIC)
+            local alpha = (h.timer / Constants.TOXIC_DURATION) * 0.4
+            love.graphics.setColor(r, g, b, alpha)
+            love.graphics.circle("fill", h.x, h.y, h.radius)
+            love.graphics.setLineWidth(2)
+            love.graphics.setColor(r, g, b, alpha + 0.2)
+            love.graphics.circle("line", h.x, h.y, h.radius)
+        end
+        
+        -- Stencil Zones
+        if #Game.explosionZones > 0 then
+            love.graphics.clear(false, true, false) 
+            
+            for _, z in ipairs(Game.explosionZones) do
+                love.graphics.setStencilTest("equal", 0)
+                if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3)
+                else love.graphics.setColor(0, 0, 1, 0.3) end
+                
+                love.graphics.circle("fill", z.x, z.y, z.radius, 64)
+                love.graphics.setLineWidth(3)
+                love.graphics.setColor(1, 1, 1, 0.5)
+                love.graphics.circle("line", z.x, z.y, z.radius, 64)
+                
+                love.graphics.setStencilTest()
+                love.graphics.stencil(function()
+                    love.graphics.circle("fill", z.x, z.y, z.radius, 64)
+                end, "replace", 1)
+            end
+            love.graphics.setStencilTest()
+        end
+        
+        for _, u in ipairs(Game.units) do u:draw() end
+        for _, p in ipairs(Game.projectiles) do p:draw() end
+        
+        for _, e in ipairs(Game.effects) do
+            if e.type == "explosion" then
+                love.graphics.setLineWidth(3)
+                if e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
+                else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
+                
+                love.graphics.circle("line", e.x, e.y, e.radius, 64)
+                love.graphics.setColor(1, 1, 1, e.alpha * 0.2)
+                love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+            end
+        end
+        
+        if Game.turret then Game.turret:draw() end
+    end)
+    
+    love.graphics.pop()
+    
+    drawHUD()
+end
+
+function drawHUD()
+    love.graphics.setColor(0, 1, 0)
+    love.graphics.setFont(Game.fonts.medium) 
+    love.graphics.print("FPS: " .. love.timer.getFPS(), 10, 10)
+
+    local barW, barH = 400, 40
+    local barX = (Constants.SCREEN_WIDTH - barW)/2
+    local barY = 80
+    local pct = Engagement.value / Constants.ENGAGEMENT_MAX
+    
+    love.graphics.setColor(0.2, 0.2, 0.2)
+    love.graphics.rectangle("fill", barX, barY, barW, barH)
+    
+    if pct < 0.25 then love.graphics.setColor(1, 0, 0)
+    elseif pct < 0.5 then love.graphics.setColor(1, 1, 0)
+    else love.graphics.setColor(0, 1, 0) end
+    
+    love.graphics.rectangle("fill", barX+2, barY+2, (barW-4)*pct, barH-4)
+    
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.print("ENGAGEMENT", barX, barY - 20)
+    
+    love.graphics.setFont(Game.fonts.large)
+    love.graphics.print("SCORE: " .. Game.score, barX, barY + 50)
+    
+    -- UPGRADE NOTIFICATION
+    if Game.isUpgraded then
+        love.graphics.setColor(1, 1, 0)
+        love.graphics.print("WEAPONS UPGRADED!", barX + 60, barY + 80)
+    end
+    
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.setFont(Game.fonts.small)
+    love.graphics.print("Z: Red Puck | X: Blue Puck | Hold DOWN: Charge Bomb", 50, Constants.SCREEN_HEIGHT - 50)
+    love.graphics.print("Units: " .. #Game.units, 50, 150)
 end
