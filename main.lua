@@ -17,7 +17,7 @@ local Game = {
     score = 0,
     shake = 0,
     logicTimer = 0,
-    isUpgraded = false, -- Track weapon upgrade state
+    isUpgraded = false,
     fonts = {
         small = nil,
         medium = nil,
@@ -43,6 +43,7 @@ local function beginContact(a, b, coll)
         Game.score = Game.score + (Constants.SCORE_HIT * 2)
         Engagement.add(Constants.ENGAGEMENT_REFILL_HIT * 2)
         
+        -- Bounce logic
         local vxA, vyA = objA.body:getLinearVelocity()
         local vxB, vyB = objB.body:getLinearVelocity()
         local speedA = math.sqrt(vxA^2 + vyA^2)
@@ -89,6 +90,7 @@ local function preSolve(a, b, coll)
         if proj.weaponType == "bomb" then
             coll:setEnabled(false)
         else
+            -- Pucks pass through SAME color zones, collide with DIFFERENT color
             if zone.color == proj.color then
                 coll:setEnabled(false) 
             else
@@ -104,7 +106,6 @@ function love.load()
     love.window.setMode(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
     love.window.setTitle("Arcade War")
     
-    -- Initialize Fonts
     Game.fonts.small = love.graphics.newFont(12)
     Game.fonts.medium = love.graphics.newFont(14)
     Game.fonts.large = love.graphics.newFont(24)
@@ -119,9 +120,10 @@ function love.load()
     Game.score = 0
     Game.shake = 0
     
-    -- [RESET] Weapon Stats (Start Weak)
+    -- Reset Logic
     Game.isUpgraded = false
-    Constants.EXPLOSION_RADIUS = 50
+    -- Reset Constants to weak start values
+    Constants.EXPLOSION_RADIUS = 30
     Constants.PUCK_LIFETIME = 0.6
     
     Game.hazards = {}
@@ -130,18 +132,19 @@ function love.load()
     Game.projectiles = {}
     Game.effects = {}
     
-    -- Initial Wave
+    -- Initial Spawn
     for i=1, 20 do
         local x = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
         local y = math.random(50, Constants.PLAYFIELD_HEIGHT - 300)
         table.insert(Game.units, Unit.new(World.physics, x, y))
     end
     
-    -- Event Listeners
+    -- EVENT: BOMB EXPLODED
     Event.on("bomb_exploded", function(data)
         Time.slowDown(0.1, 0.5)
         Game.shake = 1.0
         
+        -- Visual Explosion
         table.insert(Game.effects, {
             type = "explosion",
             x = data.x, y = data.y,
@@ -149,6 +152,7 @@ function love.load()
             color = data.color, alpha = 1.0, timer = 0.5
         })
         
+        -- Logic: Create Persistent Zone
         local blocked = false
         for _, z in ipairs(Game.explosionZones) do
             local dx = data.x - z.x
@@ -164,6 +168,7 @@ function love.load()
         
         if blocked then return end
         
+        -- Cap max zones to prevent clutter (Max 5)
         if #Game.explosionZones >= 5 then
             local oldZ = table.remove(Game.explosionZones, 1)
             if oldZ and oldZ.body then oldZ.body:destroy() end
@@ -185,6 +190,7 @@ function love.load()
         })
     end)
     
+    -- EVENT: UNIT KILLED
     Event.on("unit_killed", function(data)
         Game.score = Game.score + Constants.SCORE_KILL
         Engagement.add(Constants.ENGAGEMENT_REFILL_KILL)
@@ -237,7 +243,7 @@ function love.update(dt)
         end
     end
     
-    -- Throttled Zone Logic
+    -- Throttled Zone Damage Logic (Optimization)
     Game.logicTimer = Game.logicTimer + dt
     if Game.logicTimer > 0.1 then
         Game.logicTimer = 0
@@ -261,7 +267,10 @@ function love.update(dt)
         end
     end
 
-    if Game.turret then Game.turret:update(dt) end
+    -- [UPDATE TURRET] Passing projectiles list for rapid fire
+    if Game.turret then 
+        Game.turret:update(dt, Game.projectiles) 
+    end
     
     -- Update Units
     for i = #Game.units, 1, -1 do
@@ -292,19 +301,23 @@ end
 
 function love.keypressed(key)
     if not Game.turret then return end
+    
+    -- [BOMB LOGIC ONLY] 
+    -- Pucks are now handled in Turret:update() for rapid fire.
     local isModDown = love.keyboard.isDown("down") or love.keyboard.isDown("s")
+    
     if key == "z" then
-        if isModDown then Game.turret:startCharge("red")
-        else Game.turret:firePuck("red", Game.projectiles) end
+        if isModDown then Game.turret:startCharge("red") end
     elseif key == "x" then
-        if isModDown then Game.turret:startCharge("blue")
-        else Game.turret:firePuck("blue", Game.projectiles) end
+        if isModDown then Game.turret:startCharge("blue") end
     end
 end
 
 function love.keyreleased(key)
     if not Game.turret then return end
-    if key == "z" or key == "x" then Game.turret:releaseCharge(Game.projectiles) end
+    if key == "z" or key == "x" then 
+        Game.turret:releaseCharge(Game.projectiles) 
+    end
 end
 
 function love.draw()
@@ -312,14 +325,16 @@ function love.draw()
     
     love.graphics.push()
     
+    -- Screen Shake
     if Game.shake > 0 then
         local maxOffset = 15
         local shakeAmount = Game.shake * Game.shake * maxOffset
         love.graphics.translate(love.math.random(-shakeAmount, shakeAmount), love.math.random(-shakeAmount, shakeAmount))
     end
     
+    -- DRAW WORLD (Handles centering translation internally via src/core/world.lua)
     World.draw(function()
-        -- Hazards
+        -- 1. Hazards
         for _, h in ipairs(Game.hazards) do
             local r, g, b = unpack(Constants.COLORS.TOXIC)
             local alpha = (h.timer / Constants.TOXIC_DURATION) * 0.4
@@ -330,7 +345,7 @@ function love.draw()
             love.graphics.circle("line", h.x, h.y, h.radius)
         end
         
-        -- Stencil Zones
+        -- 2. Stencil Zones (Overlapping explosions)
         if #Game.explosionZones > 0 then
             love.graphics.clear(false, true, false) 
             
@@ -352,9 +367,11 @@ function love.draw()
             love.graphics.setStencilTest()
         end
         
+        -- 3. Game Objects
         for _, u in ipairs(Game.units) do u:draw() end
         for _, p in ipairs(Game.projectiles) do p:draw() end
         
+        -- 4. Effects
         for _, e in ipairs(Game.effects) do
             if e.type == "explosion" then
                 love.graphics.setLineWidth(3)
@@ -367,6 +384,7 @@ function love.draw()
             end
         end
         
+        -- 5. Turret (Always on top)
         if Game.turret then Game.turret:draw() end
     end)
     
@@ -376,10 +394,12 @@ function love.draw()
 end
 
 function drawHUD()
+    -- FPS
     love.graphics.setColor(0, 1, 0)
     love.graphics.setFont(Game.fonts.medium) 
     love.graphics.print("FPS: " .. love.timer.getFPS(), 10, 10)
 
+    -- ENGAGEMENT BAR
     local barW, barH = 400, 40
     local barX = (Constants.SCREEN_WIDTH - barW)/2
     local barY = 80
@@ -397,6 +417,7 @@ function drawHUD()
     love.graphics.setColor(1, 1, 1)
     love.graphics.print("ENGAGEMENT", barX, barY - 20)
     
+    -- SCORE
     love.graphics.setFont(Game.fonts.large)
     love.graphics.print("SCORE: " .. Game.score, barX, barY + 50)
     
@@ -406,8 +427,9 @@ function drawHUD()
         love.graphics.print("WEAPONS UPGRADED!", barX + 60, barY + 80)
     end
     
+    -- CONTROLS
     love.graphics.setColor(1, 1, 1)
     love.graphics.setFont(Game.fonts.small)
-    love.graphics.print("Z: Red Puck | X: Blue Puck | Hold DOWN: Charge Bomb", 50, Constants.SCREEN_HEIGHT - 50)
+    love.graphics.print("Z: Red Puck (Hold) | X: Blue Puck (Hold) | Down+Z/X: Charge Bomb", 50, Constants.SCREEN_HEIGHT - 50)
     love.graphics.print("Units: " .. #Game.units, 50, 150)
 end
