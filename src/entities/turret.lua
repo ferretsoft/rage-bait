@@ -9,22 +9,17 @@ function Turret.new()
     
     self.x = Constants.PLAYFIELD_WIDTH / 2
     self.y = Constants.PLAYFIELD_HEIGHT - 60
-    
     self.angle = -math.pi / 2
     
-    -- [PHYSICS TWEAK]
     self.rotationVelocity = 0
     self.rotationAccel = 8.0 
-    -- [CHANGED] Increased from 10.0 to 50.0
-    -- This kills momentum instantly, forcing the "ramp up" to happen on every press.
     self.rotationFriction = 50.0 
     self.maxRotationSpeed = 4.0
     
-    -- FIRING STATS
     self.fireRate = 0.15 
     self.fireTimer = 0
+    self.puckModeTimer = 0 
     
-    -- IMAGE LOADING
     local success, img = pcall(love.graphics.newImage, "assets/turret.png")
     if success then
         self.sprite = img
@@ -32,7 +27,6 @@ function Turret.new()
         self.oy = self.sprite:getHeight() / 2
         self.barrelLength = self.sprite:getWidth() / 2
     else
-        print("WARNING: Could not load assets/turret.png. Using fallback shapes.")
         self.sprite = nil
         self.barrelLength = 60
     end
@@ -40,15 +34,19 @@ function Turret.new()
     self.isCharging = false
     self.chargeTimer = 0
     self.chargeColor = "red"
-    
     self.recoil = 0
     self.flashTimer = 0
     
     return self
 end
 
-function Turret:update(dt, projectiles)
-    -- 1. ROTATION INPUT
+function Turret:activatePuckMode(duration)
+    self.puckModeTimer = duration
+    self.isCharging = false 
+    self.chargeTimer = 0
+end
+
+function Turret:update(dt, projectiles, isUpgraded)
     local turning = false
     if love.keyboard.isDown("left") or love.keyboard.isDown("a") then
         self.rotationVelocity = self.rotationVelocity - self.rotationAccel * dt
@@ -58,7 +56,6 @@ function Turret:update(dt, projectiles)
         turning = true
     end
     
-    -- 2. RESET SPEED (High Friction)
     if not turning then
         if self.rotationVelocity > 0 then
             self.rotationVelocity = math.max(0, self.rotationVelocity - self.rotationFriction * dt)
@@ -67,18 +64,18 @@ function Turret:update(dt, projectiles)
         end
     end
     
-    -- Clamp Speed
     if self.rotationVelocity > self.maxRotationSpeed then self.rotationVelocity = self.maxRotationSpeed
     elseif self.rotationVelocity < -self.maxRotationSpeed then self.rotationVelocity = -self.maxRotationSpeed end
     
     self.angle = self.angle + self.rotationVelocity * dt
     self.angle = math.max(-math.pi + 0.2, math.min(-0.2, self.angle))
 
-    -- 3. RAPID FIRE INPUT
-    self.fireTimer = math.max(0, self.fireTimer - dt)
-    local isMod = love.keyboard.isDown("down") or love.keyboard.isDown("s")
-    
-    if not self.isCharging and not isMod and projectiles then
+    if self.puckModeTimer > 0 then
+        self.puckModeTimer = self.puckModeTimer - dt
+    end
+
+    if self.puckModeTimer > 0 and projectiles then
+        self.fireTimer = math.max(0, self.fireTimer - dt)
         if self.fireTimer <= 0 then
             if love.keyboard.isDown("z") then
                 self:firePuck("red", projectiles)
@@ -89,11 +86,10 @@ function Turret:update(dt, projectiles)
             end
         end
     end
-
-    -- 4. BOMB CHARGING LOGIC
+    
     if self.isCharging then
         self.chargeTimer = self.chargeTimer + dt
-        local maxRange = (Constants.PUCK_LIFETIME > 1.0) and 900 or 300
+        local maxRange = isUpgraded and Constants.BOMB_RANGE_MAX or Constants.BOMB_RANGE_BASE
         local maxTime = maxRange / 500 
         if self.chargeTimer > maxTime then self.chargeTimer = maxTime end
     end
@@ -103,9 +99,11 @@ function Turret:update(dt, projectiles)
 end
 
 function Turret:startCharge(color)
-    self.isCharging = true
-    self.chargeTimer = 0
-    self.chargeColor = color
+    if self.puckModeTimer <= 0 then
+        self.isCharging = true
+        self.chargeTimer = 0
+        self.chargeColor = color
+    end
 end
 
 function Turret:releaseCharge(projectiles)
@@ -134,22 +132,23 @@ function Turret:draw()
 
     -- GUIDE
     if not self.isCharging then
-        local laserDist = 800 * Constants.PUCK_LIFETIME
-        local tx = self.x + math.cos(self.angle) * laserDist
-        local ty = self.y + math.sin(self.angle) * laserDist
-        
-        love.graphics.setColor(1, 1, 1, 0.15)
-        love.graphics.setLineWidth(1)
-        love.graphics.line(self.x, self.y, tx, ty)
-        
-        for i = 0, laserDist, 40 do
-            local px = self.x + math.cos(self.angle) * i
-            local py = self.y + math.sin(self.angle) * i
-            love.graphics.circle("fill", px, py, 1)
+        if self.puckModeTimer > 0 then
+            local life = Constants.PUCK_LIFETIME or 4.0
+            local laserDist = 800 * life
+            
+            local tx = self.x + math.cos(self.angle) * laserDist
+            local ty = self.y + math.sin(self.angle) * laserDist
+            love.graphics.setColor(1, 0.8, 0.2, 0.3)
+            love.graphics.setLineWidth(2)
+            love.graphics.line(self.x, self.y, tx, ty)
+        else
+            love.graphics.setColor(1, 1, 1, 0.1)
+            love.graphics.setLineWidth(1)
+            love.graphics.line(self.x, self.y, self.x + math.cos(self.angle)*100, self.y + math.sin(self.angle)*100)
         end
     end
 
-    -- RETICLE
+    -- [RESTORED] OLD STYLE BOMB RETICLE
     if self.isCharging then
         local currentDist = self.chargeTimer * 500
         local targetX = self.x + math.cos(self.angle) * currentDist
@@ -158,11 +157,13 @@ function Turret:draw()
         if self.chargeColor == "red" then love.graphics.setColor(1, 0.2, 0.2, 0.8)
         else love.graphics.setColor(0.2, 0.2, 1, 0.8) end
         
+        -- The pulsing small circle
         local pulse = math.sin(love.timer.getTime() * 20) * 4
         love.graphics.setLineWidth(2)
         love.graphics.circle("line", targetX, targetY, 15 + pulse)
-        love.graphics.circle("fill", targetX, targetY, 3) 
+        love.graphics.circle("fill", targetX, targetY, 3) -- Center dot
         
+        -- The rotating orbiting dots (Corner brackets)
         for i = 0, 3 do
             local angle = (math.pi/2) * i + (love.timer.getTime() * 2)
             local rx = targetX + math.cos(angle) * (20 + pulse)
@@ -187,7 +188,12 @@ function Turret:draw()
         love.graphics.circle("fill", self.x, self.y, 16)
     end
     
-    -- EFFECTS
+    if self.puckModeTimer > 0 then
+        love.graphics.setColor(1, 0.8, 0.2, 0.5 + math.sin(love.timer.getTime()*10)*0.2)
+        love.graphics.setLineWidth(3)
+        love.graphics.circle("line", self.x, self.y, 30)
+    end
+
     if self.flashTimer > 0 then
         local r, g, b = (self.chargeColor == "red") and {1, 0.5, 0} or {0, 0.5, 1}
         love.graphics.setColor(r[1], r[2], r[3], self.flashTimer * 8)

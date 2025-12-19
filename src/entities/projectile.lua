@@ -14,7 +14,6 @@ function Projectile.new(x, y, angle, weaponType, color, chargeDist)
     self.isDead = false
     self.timer = 0
     
-    -- TRAIL DATA
     self.trail = {} 
     self.maxTrail = 300 
     self.trailTimer = 0
@@ -27,12 +26,12 @@ function Projectile.new(x, y, angle, weaponType, color, chargeDist)
         self.body:setLinearDamping(0) 
         self.body:setBullet(true) 
     elseif weaponType == "bomb" then
-        -- [FIX] Use the Constant directly. 
-        -- If main.lua updates Constants.BOMB_RANGE_MAX, this works automatically.
         local maxRange = Constants.BOMB_RANGE_MAX or 900
-        -- If we haven't reached 1000 points yet, we cap it at 300
-        if Constants.PUCK_LIFETIME < 1.0 then -- This is a clever way to check "Upgrade" state
-            maxRange = 300
+        
+        -- [FIX] Safe check with fallback
+        local lifetime = Constants.PUCK_LIFETIME or 4.0
+        if lifetime < 1.0 then 
+            maxRange = Constants.BOMB_RANGE_BASE or 300
         end
         
         local dist = math.min(chargeDist or 100, maxRange)
@@ -60,7 +59,6 @@ function Projectile:update(dt)
     if self.isDead then return end
     self.timer = self.timer + dt
     
-    -- Update Trail
     self.trailTimer = self.trailTimer + dt
     if self.trailTimer > 0.01 then 
         self.trailTimer = 0
@@ -69,13 +67,14 @@ function Projectile:update(dt)
         if #self.trail > self.maxTrail then table.remove(self.trail) end
     end
     
-    -- Fade Trail
     for i, t in ipairs(self.trail) do
         t.alpha = t.alpha - (dt * 0.3) 
     end
 
     if self.weaponType == "puck" then
-        if self.timer > Constants.PUCK_LIFETIME then self:die() end
+        -- [FIX] Added 'or 4.0' to prevent nil crash
+        local limit = Constants.PUCK_LIFETIME or 4.0
+        if self.timer > limit then self:die() end
     elseif self.weaponType == "bomb" then
         local bx, by = self.body:getPosition()
         local dx = self.targetX - bx
@@ -98,7 +97,7 @@ function Projectile:explode()
     Event.emit("bomb_exploded", {
         x = self.targetX, 
         y = self.targetY, 
-        radius = Constants.EXPLOSION_RADIUS, 
+        radius = Constants.EXPLOSION_RADIUS or 75, -- [FIX] Added safety fallback
         color = self.color
     })
 end
@@ -115,7 +114,6 @@ function Projectile:draw()
     local r, g, b = 0.2, 0.2, 1
     if self.color == "red" then r, g, b = 1, 0.2, 0.2 end
     
-    -- Draw Trail Line
     local px, py = self.body:getPosition()
     for i, t in ipairs(self.trail) do
         if t.alpha > 0 then
@@ -126,7 +124,6 @@ function Projectile:draw()
         end
     end
     
-    -- Draw Projectile Head
     love.graphics.setColor(r, g, b, 1)
     love.graphics.circle("fill", self.body:getX(), self.body:getY(), self.shape:getRadius())
 end
