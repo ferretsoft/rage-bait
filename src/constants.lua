@@ -17,7 +17,8 @@ Constants.PHYSICS = {
     PUCK = 3,
     SENSOR = 4,
     ZONE = 5,
-    POWERUP = 6
+    POWERUP = 6,
+    BUMPER = 7
 }
 
 -- === UNIT STATS ===
@@ -42,6 +43,18 @@ Constants.POWERUP_RADIUS = 20
 Constants.POWERUP_DURATION = 8.0 
 Constants.POWERUP_SPEED = 100
 
+-- === BUMPERS ===
+Constants.BUMPER_WIDTH = 48
+Constants.BUMPER_HEIGHT = 229
+Constants.BUMPER_CORNER_RADIUS = 15
+Constants.BUMPER_FORCE = 400
+Constants.BUMPER_RESTITUTION = 1.2
+Constants.BUMPER_ACTIVATION_WINDOW = 10.0  -- Time to fire on bumpers after powerup
+Constants.BUMPER_ACTIVE_DURATION = 10.0   -- How long bumpers stay active
+Constants.BUMPER_FORCEFIELD_RADIUS = 80   -- Radius of forcefield around active bumpers
+Constants.BUMPER_CENTER_FORCE = 75       -- Force pushing towards center
+Constants.BUMPER_CENTER_FORCEFIELD_DURATION = 1.5  -- Duration of one-time forcefield
+
 -- === WEAPON: BOMB ===
 -- The Area of Effect (AoE) is always large.
 Constants.EXPLOSION_RADIUS = 80 
@@ -55,7 +68,8 @@ Constants.BOMB_RANGE_MAX = 900
 
 -- === WEAPON: PUCK ===
 -- Always shoots full screen (Speed 800 * 4.0s = 3200px)
-Constants.PUCK_LIFETIME = 4.0 
+Constants.PUCK_LIFETIME = 4.0
+Constants.PUCK_LIFETIME_MAX = 8.0 
 
 -- === ENGAGEMENT & SCORE ===
 Constants.ENGAGEMENT_MAX = 100

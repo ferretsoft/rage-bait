@@ -8,7 +8,7 @@ function Turret.new()
     local self = setmetatable({}, Turret)
     
     self.x = Constants.PLAYFIELD_WIDTH / 2
-    self.y = Constants.PLAYFIELD_HEIGHT - 60
+    self.y = Constants.PLAYFIELD_HEIGHT + 180
     self.angle = -math.pi / 2
     
     self.rotationVelocity = 0
@@ -25,10 +25,10 @@ function Turret.new()
         self.sprite = img
         self.ox = self.sprite:getWidth() / 2
         self.oy = self.sprite:getHeight() / 2
-        self.barrelLength = self.sprite:getWidth() / 2
+        self.barrelLength = self.sprite:getWidth() / 2 * 2  -- Double the barrel length
     else
         self.sprite = nil
-        self.barrelLength = 60
+        self.barrelLength = 60 * 2  -- Double the barrel length
     end
 
     self.isCharging = false
@@ -139,11 +139,11 @@ function Turret:draw()
             local tx = self.x + math.cos(self.angle) * laserDist
             local ty = self.y + math.sin(self.angle) * laserDist
             love.graphics.setColor(1, 0.8, 0.2, 0.3)
-            love.graphics.setLineWidth(2)
+            love.graphics.setLineWidth(2 * 2)  -- Double line width
             love.graphics.line(self.x, self.y, tx, ty)
         else
             love.graphics.setColor(1, 1, 1, 0.1)
-            love.graphics.setLineWidth(1)
+            love.graphics.setLineWidth(1 * 2)  -- Double line width
             love.graphics.line(self.x, self.y, self.x + math.cos(self.angle)*100, self.y + math.sin(self.angle)*100)
         end
     end
@@ -159,16 +159,16 @@ function Turret:draw()
         
         -- The pulsing small circle
         local pulse = math.sin(love.timer.getTime() * 20) * 4
-        love.graphics.setLineWidth(2)
-        love.graphics.circle("line", targetX, targetY, 15 + pulse)
-        love.graphics.circle("fill", targetX, targetY, 3) -- Center dot
+        love.graphics.setLineWidth(2 * 2)  -- Double line width
+        love.graphics.circle("line", targetX, targetY, (15 + pulse) * 2)  -- Double size
+        love.graphics.circle("fill", targetX, targetY, 3 * 2)  -- Double center dot
         
         -- The rotating orbiting dots (Corner brackets)
         for i = 0, 3 do
             local angle = (math.pi/2) * i + (love.timer.getTime() * 2)
-            local rx = targetX + math.cos(angle) * (20 + pulse)
-            local ry = targetY + math.sin(angle) * (20 + pulse)
-            love.graphics.circle("fill", rx, ry, 2)
+            local rx = targetX + math.cos(angle) * (20 + pulse) * 2  -- Double orbit radius
+            local ry = targetY + math.sin(angle) * (20 + pulse) * 2
+            love.graphics.circle("fill", rx, ry, 2 * 2)  -- Double dot size
         end
     end
 
@@ -177,33 +177,33 @@ function Turret:draw()
         love.graphics.setColor(1, 1, 1) 
         local recoilX = math.cos(self.angle) * -self.recoil
         local recoilY = math.sin(self.angle) * -self.recoil
-        love.graphics.draw(self.sprite, self.x + recoilX, self.y + recoilY, self.angle, 1, 1, self.ox, self.oy)
+        love.graphics.draw(self.sprite, self.x + recoilX, self.y + recoilY, self.angle, 2, 2, self.ox, self.oy)  -- Double size
     else
         love.graphics.setColor(0.25, 0.25, 0.28)
-        love.graphics.circle("fill", self.x, self.y, 40)
-        love.graphics.setLineWidth(14)
+        love.graphics.circle("fill", self.x, self.y, 40 * 2)  -- Double size
+        love.graphics.setLineWidth(14 * 2)  -- Double line width
         love.graphics.setColor(0.5, 0.5, 0.55)
         love.graphics.line(self.x, self.y, bx, by)
         love.graphics.setColor(0.7, 0.7, 0.75)
-        love.graphics.circle("fill", self.x, self.y, 16)
+        love.graphics.circle("fill", self.x, self.y, 16 * 2)  -- Double size
     end
     
     if self.puckModeTimer > 0 then
         love.graphics.setColor(1, 0.8, 0.2, 0.5 + math.sin(love.timer.getTime()*10)*0.2)
-        love.graphics.setLineWidth(3)
-        love.graphics.circle("line", self.x, self.y, 30)
+        love.graphics.setLineWidth(3 * 2)  -- Double line width
+        love.graphics.circle("line", self.x, self.y, 30 * 2)  -- Double size
     end
 
     if self.flashTimer > 0 then
         local r, g, b = (self.chargeColor == "red") and {1, 0.5, 0} or {0, 0.5, 1}
         love.graphics.setColor(r[1], r[2], r[3], self.flashTimer * 8)
-        love.graphics.circle("fill", bx, by, 25)
+        love.graphics.circle("fill", bx, by, 25 * 2)  -- Double size
     end
 
     if self.isCharging then
         local r, g, b = (self.chargeColor == "red") and {1, 0, 0} or {0, 0, 1}
         love.graphics.setColor(r[1], r[2], r[3], 0.8)
-        love.graphics.circle("fill", bx, by, 8)
+        love.graphics.circle("fill", bx, by, 8 * 2)  -- Double size
     end
 end
 

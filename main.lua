@@ -7,6 +7,7 @@ local Unit = require("src.entities.unit")
 local Turret = require("src.entities.turret")
 local Projectile = require("src.entities.projectile")
 local PowerUp = require("src.entities.powerup")
+local Bumper = require("src.entities.bumper")
 
 local Game = {
     units = {},
@@ -15,12 +16,15 @@ local Game = {
     effects = {}, 
     hazards = {},
     explosionZones = {}, 
+    bumpers = {},
     turret = nil,
     score = 0,
     shake = 0,
     logicTimer = 0,
     isUpgraded = false,
     powerupSpawnTimer = 0,
+    bumperActivationWindow = 0,  -- Timer for activation window
+    bumperForcefieldActive = false,  -- One-time forcefield trigger
     background = nil,
     fonts = {
         small = nil,
@@ -32,18 +36,60 @@ local Game = {
 -- --- HELPER: ACTIVATE POWERUP ---
 local function collectPowerUp(powerup)
     if powerup.isDead then return end
+    local px, py = powerup.body:getPosition()
     powerup:hit() -- Destroy powerup entity
     
-    if Game.turret then
-        Game.turret:activatePuckMode(Constants.POWERUP_DURATION)
+    if powerup.powerupType == "bumper" then
+        -- Check if any bumpers are already activated
+        local anyBumperActive = false
+        for _, b in ipairs(Game.bumpers) do
+            if b.activated then
+                anyBumperActive = true
+                break
+            end
+        end
         
-        -- Visual effect (Gold Explosion)
+        -- Give new activation window unless any bumper is already active
+        if not anyBumperActive then
+            -- Reset activation window to full duration
+            Game.bumperActivationWindow = Constants.BUMPER_ACTIVATION_WINDOW
+        end
+        
+        -- Always trigger one-time forcefield from all bumpers
+        Game.bumperForcefieldActive = true
+        Game.bumperForcefieldTimer = Constants.BUMPER_CENTER_FORCEFIELD_DURATION
+        
+        -- Visual effect (Blue Explosion at powerup location)
         table.insert(Game.effects, {
             type = "explosion",
-            x = powerup.x, y = powerup.y,
+            x = px, y = py,
             radius = 0, maxRadius = 100,
-            color = "gold", alpha = 1.0, timer = 0.5
+            color = "blue", alpha = 1.0, timer = 0.5
         })
+        
+        -- Visual effect (Forcefield pulse from all bumpers)
+        for _, b in ipairs(Game.bumpers) do
+            local bx, by = b.body:getPosition()
+            table.insert(Game.effects, {
+                type = "forcefield",
+                x = bx, y = by,
+                radius = 0, maxRadius = Constants.BUMPER_FORCEFIELD_RADIUS * 2,
+                alpha = 1.0, timer = Constants.BUMPER_CENTER_FORCEFIELD_DURATION
+            })
+        end
+    else
+        -- Puck mode powerup
+        if Game.turret then
+            Game.turret:activatePuckMode(Constants.POWERUP_DURATION)
+            
+            -- Visual effect (Gold Explosion)
+            table.insert(Game.effects, {
+                type = "explosion",
+                x = px, y = py,
+                radius = 0, maxRadius = 100,
+                color = "gold", alpha = 1.0, timer = 0.5
+            })
+        end
     end
 end
 
@@ -103,6 +149,48 @@ local function beginContact(a, b, coll)
         collectPowerUp(p3)
         -- We do NOT destroy the zone, so it can still damage units
     end
+    
+    -- CASE 5: BUMPER vs PROJECTILE (activation)
+    local bumper, proj
+    if objA.type == "bumper" and objB.type == "projectile" then bumper = objA; proj = objB
+    elseif objB.type == "bumper" and objA.type == "projectile" then bumper = objB; proj = objA end
+    
+    if bumper and proj then
+        -- Only activate if within activation window and projectile is puck or bomb
+        if Game.bumperActivationWindow > 0 and (proj.weaponType == "puck" or proj.weaponType == "bomb") then
+            bumper:activate()
+            proj:die()  -- Destroy projectile that activated it
+        end
+        -- Normal physics restitution handles the bounce
+    end
+    
+    -- CASE 6: BUMPER vs UNIT (forcefield effect)
+    local bumper2, unit
+    if objA.type == "bumper" and objB.type == "unit" then bumper2 = objA; unit = objB
+    elseif objB.type == "bumper" and objA.type == "unit" then bumper2 = objB; unit = objA end
+    
+    if bumper2 and unit and bumper2.activated then
+        -- Forcefield stops units immediately
+        unit.body:setLinearVelocity(0, 0)
+        
+        -- Push unit away from bumper
+        local bx, by = bumper2.body:getPosition()
+        local ux, uy = unit.body:getPosition()
+        local dx = ux - bx
+        local dy = uy - by
+        local dist = math.sqrt(dx*dx + dy*dy)
+        
+        if dist > 0 and dist < Constants.BUMPER_FORCEFIELD_RADIUS then
+            local force = Constants.BUMPER_FORCE * 2  -- Stronger push
+            local fx = (dx / dist) * force
+            local fy = (dy / dist) * force
+            unit.body:applyLinearImpulse(fx, fy)
+            
+            -- Score and engagement
+            Game.score = Game.score + Constants.SCORE_HIT
+            Engagement.add(Constants.ENGAGEMENT_REFILL_HIT)
+        end
+    end
 end
 
 local function preSolve(a, b, coll)
@@ -110,15 +198,33 @@ local function preSolve(a, b, coll)
     local objB = b:getUserData()
     if not objA or not objB then return end
     
-    -- Zone interactions
-    local zone, proj
-    if objA.type == "zone" and objB.type == "projectile" then zone = objA; proj = objB
-    elseif objB.type == "zone" and objA.type == "projectile" then zone = objB; proj = objA end
+    -- PROJECTILE vs WALL (bottom wall - allow entry from below)
+    local wall, proj
+    if objA.type == "wall" and objB.type == "projectile" then wall = objA; proj = objB
+    elseif objB.type == "wall" and objA.type == "projectile" then wall = objB; proj = objA end
     
-    if zone and proj then
-        if proj.weaponType == "bomb" then coll:setEnabled(false)
+    if wall and proj then
+        local px, py = proj.body:getPosition()
+        local vx, vy = proj.body:getLinearVelocity()
+        
+        -- Allow projectiles to pass through bottom wall if entering from below
+        -- Check if projectile is below playfield and moving upward
+        if py > Constants.PLAYFIELD_HEIGHT and vy < 0 then
+            -- Projectile is below playfield and moving upward - allow through bottom wall
+            coll:setEnabled(false)
+            return
+        end
+    end
+    
+    -- Zone interactions
+    local zone, proj2
+    if objA.type == "zone" and objB.type == "projectile" then zone = objA; proj2 = objB
+    elseif objB.type == "zone" and objA.type == "projectile" then zone = objB; proj2 = objA end
+    
+    if zone and proj2 then
+        if proj2.weaponType == "bomb" then coll:setEnabled(false)
         else
-            if zone.color == proj.color then coll:setEnabled(false) 
+            if zone.color == proj2.color then coll:setEnabled(false) 
             else coll:setEnabled(true) end
         end
     end
@@ -153,7 +259,20 @@ function love.load()
     Game.powerupSpawnTimer = 5.0
     
     Game.isUpgraded = false;
-    Game.hazards = {}; Game.explosionZones = {}; Game.units = {}; Game.projectiles = {}; Game.effects = {}; Game.powerups = {}
+    Game.hazards = {}; Game.explosionZones = {}; Game.units = {}; Game.projectiles = {}; Game.effects = {}; Game.powerups = {}; Game.bumpers = {}
+    
+    -- Initialize bumpers aligned with playfield edges
+    -- Bumpers are 48x194, positioned so their edges align with playfield boundaries
+    local bumperHalfWidth = Constants.BUMPER_WIDTH / 2
+    local bumperHalfHeight = Constants.BUMPER_HEIGHT / 2
+    
+    -- Left edge bumpers (top and bottom)
+    table.insert(Game.bumpers, Bumper.new(bumperHalfWidth, bumperHalfHeight + 123))  -- Top-left
+    table.insert(Game.bumpers, Bumper.new(bumperHalfWidth, Constants.PLAYFIELD_HEIGHT - bumperHalfHeight - 613, Constants.BUMPER_HEIGHT + 84))  -- Bottom-left (100px taller)
+    
+    -- Right edge bumpers (top and bottom)
+    table.insert(Game.bumpers, Bumper.new(Constants.PLAYFIELD_WIDTH - bumperHalfWidth, bumperHalfHeight + 123))  -- Top-right
+    table.insert(Game.bumpers, Bumper.new(Constants.PLAYFIELD_WIDTH - bumperHalfWidth, Constants.PLAYFIELD_HEIGHT - bumperHalfHeight - 613, Constants.BUMPER_HEIGHT + 84))  -- Bottom-right (100px taller) 
     
     for i=1, 20 do
         local x = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
@@ -191,11 +310,26 @@ end
 function love.update(dt)
     if love.keyboard.isDown("escape") then love.event.quit() end
     
+    -- Update bumper activation window
+    if Game.bumperActivationWindow > 0 then
+        Game.bumperActivationWindow = Game.bumperActivationWindow - dt
+    end
+    
+    -- Update bumper forcefield timer
+    if Game.bumperForcefieldActive and Game.bumperForcefieldTimer then
+        Game.bumperForcefieldTimer = Game.bumperForcefieldTimer - dt
+        if Game.bumperForcefieldTimer <= 0 then
+            Game.bumperForcefieldActive = false
+        end
+    end
+    
     Game.powerupSpawnTimer = Game.powerupSpawnTimer - dt
     if Game.powerupSpawnTimer <= 0 then
         Game.powerupSpawnTimer = math.random(15, 25)
         local px = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
-        table.insert(Game.powerups, PowerUp.new(px, -50))
+        -- Randomly spawn either puck or bumper powerup
+        local powerupType = math.random() < 0.5 and "bumper" or "puck"
+        table.insert(Game.powerups, PowerUp.new(px, -50, powerupType))
     end
 
     if not Game.isUpgraded and Game.score >= Constants.UPGRADE_SCORE then
@@ -212,10 +346,53 @@ function love.update(dt)
     for i = #Game.hazards, 1, -1 do local h = Game.hazards[i]; h.timer = h.timer - dt; if h.timer <= 0 then table.remove(Game.hazards, i) end end
     for i = #Game.explosionZones, 1, -1 do local z = Game.explosionZones[i]; z.timer = z.timer - dt; if z.timer <= 0 then z.body:destroy(); table.remove(Game.explosionZones, i) end end
     for i = #Game.powerups, 1, -1 do local p = Game.powerups[i]; p:update(gameDt); if p.isDead then table.remove(Game.powerups, i) end end
+    for _, b in ipairs(Game.bumpers) do b:update(dt) end
 
     Game.logicTimer = Game.logicTimer + dt
     if Game.logicTimer > 0.1 then
         Game.logicTimer = 0
+        
+        -- One-time bumper forcefield: push everything towards center
+        if Game.bumperForcefieldActive then
+            local centerX = Constants.PLAYFIELD_WIDTH / 2
+            local centerY = Constants.PLAYFIELD_HEIGHT / 2
+            
+            -- Push all units towards center
+            for _, u in ipairs(Game.units) do
+                if not u.isDead then
+                    local ux, uy = u.body:getPosition()
+                    local dx = centerX - ux
+                    local dy = centerY - uy
+                    local dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    if dist > 0 then
+                        local force = Constants.BUMPER_CENTER_FORCE
+                        local fx = (dx / dist) * force
+                        local fy = (dy / dist) * force
+                        u.body:applyLinearImpulse(fx, fy)
+                    end
+                end
+            end
+            
+            -- Push all projectiles towards center
+            for _, p in ipairs(Game.projectiles) do
+                if not p.isDead then
+                    local px, py = p.body:getPosition()
+                    local dx = centerX - px
+                    local dy = centerY - py
+                    local dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    if dist > 0 then
+                        local force = Constants.BUMPER_CENTER_FORCE
+                        local fx = (dx / dist) * force
+                        local fy = (dy / dist) * force
+                        p.body:applyLinearImpulse(fx, fy)
+                    end
+                end
+            end
+        end
+        
+        -- Check units for explosion zones
         for _, u in ipairs(Game.units) do
             if not u.isDead then
                 local ux, uy = u.body:getPosition(); local activeZone = nil
@@ -224,6 +401,54 @@ function love.update(dt)
                     if (dx*dx + dy*dy) < (z.radius * z.radius) then activeZone = z; break end
                 end
                 if activeZone then u:hit("bomb", activeZone.color) end
+            end
+        end
+        
+        -- Check units and projectiles for active bumper forcefields
+        for _, b in ipairs(Game.bumpers) do
+            if b.activated then
+                local bx, by = b.body:getPosition()
+                local fieldRadius = Constants.BUMPER_FORCEFIELD_RADIUS
+                
+                -- Stop units in forcefield
+                for _, u in ipairs(Game.units) do
+                    if not u.isDead then
+                        local ux, uy = u.body:getPosition()
+                        local dx = ux - bx
+                        local dy = uy - by
+                        local distSq = dx*dx + dy*dy
+                        
+                        if distSq < fieldRadius * fieldRadius then
+                            -- Immediately stop the unit
+                            u.body:setLinearVelocity(0, 0)
+                            
+                            -- Push away
+                            local dist = math.sqrt(distSq)
+                            if dist > 0 then
+                                local force = Constants.BUMPER_FORCE * 2
+                                local fx = (dx / dist) * force
+                                local fy = (dy / dist) * force
+                                u.body:applyLinearImpulse(fx, fy)
+                            end
+                        end
+                    end
+                end
+                
+                -- Stop projectiles in forcefield
+                for _, p in ipairs(Game.projectiles) do
+                    if not p.isDead then
+                        local px, py = p.body:getPosition()
+                        local dx = px - bx
+                        local dy = py - by
+                        local distSq = dx*dx + dy*dy
+                        
+                        if distSq < fieldRadius * fieldRadius then
+                            -- Immediately stop the projectile
+                            p.body:setLinearVelocity(0, 0)
+                            p:die()  -- Destroy projectile
+                        end
+                    end
+                end
             end
         end
     end
@@ -237,6 +462,9 @@ function love.update(dt)
         local e = Game.effects[i]; e.timer = e.timer - dt
         if e.type == "explosion" then
             e.radius = e.radius + (e.maxRadius * 8 * dt); if e.radius > e.maxRadius then e.radius = e.maxRadius end; e.alpha = e.timer / 0.5
+        elseif e.type == "forcefield" then
+            e.radius = e.radius + (e.maxRadius * 4 * dt); if e.radius > e.maxRadius then e.radius = e.maxRadius end
+            e.alpha = e.timer / Constants.BUMPER_CENTER_FORCEFIELD_DURATION
         end
         if e.timer <= 0 then table.remove(Game.effects, i) end
     end
@@ -245,7 +473,11 @@ end
 function love.keypressed(key)
     if not Game.turret then return end
     if key == "z" then Game.turret:startCharge("red")
-    elseif key == "x" then Game.turret:startCharge("blue") end
+    elseif key == "x" then Game.turret:startCharge("blue")
+    elseif key == "2" then
+        -- Debug: Give rapid fire powerup
+        Game.turret:activatePuckMode(Constants.POWERUP_DURATION)
+    end
 end
 
 function love.keyreleased(key)
@@ -288,6 +520,7 @@ function love.draw()
             love.graphics.setStencilTest()
         end
         
+        for _, b in ipairs(Game.bumpers) do b:draw() end
         for _, u in ipairs(Game.units) do u:draw() end
         for _, p in ipairs(Game.projectiles) do p:draw() end
         for _, pup in ipairs(Game.powerups) do pup:draw() end
@@ -299,6 +532,12 @@ function love.draw()
                 elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
                 else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
                 love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+            elseif e.type == "forcefield" then
+                love.graphics.setLineWidth(4)
+                love.graphics.setColor(0.2, 0.6, 1, e.alpha * 0.6)
+                love.graphics.circle("line", e.x, e.y, e.radius, 32)
+                love.graphics.setColor(0.3, 0.7, 1, e.alpha * 0.3)
+                love.graphics.circle("fill", e.x, e.y, e.radius, 32)
             end
         end
         
@@ -324,6 +563,9 @@ function drawHUD()
     if Game.turret and Game.turret.puckModeTimer > 0 then
         love.graphics.setColor(1, 0.8, 0.2)
         love.graphics.print("RAPID FIRE ACTIVE: " .. math.ceil(Game.turret.puckModeTimer), barX + 80, barY + 110)
+    elseif Game.bumperActivationWindow > 0 then
+        love.graphics.setColor(0.2, 0.6, 1)
+        love.graphics.print("FIRE ON BUMPERS: " .. math.ceil(Game.bumperActivationWindow) .. "s", barX + 80, barY + 110)
     else
         love.graphics.setColor(1, 1, 1)
         love.graphics.setFont(Game.fonts.small)

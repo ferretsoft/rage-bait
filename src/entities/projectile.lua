@@ -71,12 +71,49 @@ function Projectile:update(dt)
         t.alpha = t.alpha - (dt * 0.3) 
     end
 
+    -- Boundary checking - keep projectiles within playfield
+    local bx, by = self.body:getPosition()
+    local radius = self.shape:getRadius()
+    local margin = radius + 5  -- Small margin to prevent edge cases
+    
+    -- Only apply boundary checks if projectile is inside playfield (0 < y < PLAYFIELD_HEIGHT)
+    -- This allows projectiles to enter from below without interference
+    if by >= 0 and by <= Constants.PLAYFIELD_HEIGHT then
+        -- Check boundaries and bounce back if outside
+        if bx < margin then
+            self.body:setX(margin)
+            local vx, vy = self.body:getLinearVelocity()
+            self.body:setLinearVelocity(-vx * 0.9, vy)  -- Bounce off left wall
+        elseif bx > Constants.PLAYFIELD_WIDTH - margin then
+            self.body:setX(Constants.PLAYFIELD_WIDTH - margin)
+            local vx, vy = self.body:getLinearVelocity()
+            self.body:setLinearVelocity(-vx * 0.9, vy)  -- Bounce off right wall
+        end
+        
+        if by < margin then
+            self.body:setY(margin)
+            local vx, vy = self.body:getLinearVelocity()
+            self.body:setLinearVelocity(vx, -vy * 0.9)  -- Bounce off top wall
+        elseif by > Constants.PLAYFIELD_HEIGHT - margin then
+            -- Bottom barrier: only apply if projectile is moving downward (trying to exit)
+            local vx, vy = self.body:getLinearVelocity()
+            if vy > 0 then
+                -- Projectile is moving downward - apply barrier
+                self.body:setY(Constants.PLAYFIELD_HEIGHT - margin)
+                self.body:setLinearVelocity(vx, -vy * 0.9)  -- Bounce off bottom wall
+            end
+        end
+    end
+
     if self.weaponType == "puck" then
         -- [FIX] Added 'or 4.0' to prevent nil crash
         local limit = Constants.PUCK_LIFETIME or 4.0
         if self.timer > limit then self:die() end
     elseif self.weaponType == "bomb" then
-        local bx, by = self.body:getPosition()
+        -- Clamp target position to be within playfield bounds
+        self.targetX = math.max(margin, math.min(Constants.PLAYFIELD_WIDTH - margin, self.targetX))
+        self.targetY = math.max(margin, math.min(Constants.PLAYFIELD_HEIGHT - margin, self.targetY))
+        
         local dx = self.targetX - bx
         local dy = self.targetY - by
         local distSq = dx*dx + dy*dy

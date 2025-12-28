@@ -4,9 +4,10 @@ local World = require("src.core.world")
 local PowerUp = {}
 PowerUp.__index = PowerUp
 
-function PowerUp.new(x, y)
+function PowerUp.new(x, y, powerupType)
     local self = setmetatable({}, PowerUp)
     self.type = "powerup"
+    self.powerupType = powerupType or "puck"  -- "puck" or "bumper"
     self.x = x
     self.y = y
     self.isDead = false
@@ -53,8 +54,12 @@ function PowerUp:draw()
     love.graphics.setColor(1, 1, 1)
     love.graphics.circle("line", x, y, Constants.POWERUP_RADIUS * pulse)
     
-    -- Icon ("P" for Puck)
-    love.graphics.printf("P", x - 10, y - 8, 20, "center")
+    -- Icon
+    if self.powerupType == "bumper" then
+        love.graphics.printf("B", x - 10, y - 8, 20, "center")
+    else
+        love.graphics.printf("P", x - 10, y - 8, 20, "center")
+    end
 end
 
 return PowerUp
