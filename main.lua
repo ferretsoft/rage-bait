@@ -26,6 +26,7 @@ local Game = {
     bumperActivationWindow = 0,  -- Timer for activation window
     bumperForcefieldActive = false,  -- One-time forcefield trigger
     background = nil,
+    foreground = nil,
     fonts = {
         small = nil,
         medium = nil,
@@ -158,39 +159,18 @@ local function beginContact(a, b, coll)
     if bumper and proj then
         -- Only activate if within activation window and projectile is puck or bomb
         if Game.bumperActivationWindow > 0 and (proj.weaponType == "puck" or proj.weaponType == "bomb") then
-            bumper:activate()
+            -- Activate all bumpers of the same color
+            for _, b in ipairs(Game.bumpers) do
+                if b.color == bumper.color then
+                    b:activate()
+                end
+            end
             proj:die()  -- Destroy projectile that activated it
         end
         -- Normal physics restitution handles the bounce
     end
     
-    -- CASE 6: BUMPER vs UNIT (forcefield effect)
-    local bumper2, unit
-    if objA.type == "bumper" and objB.type == "unit" then bumper2 = objA; unit = objB
-    elseif objB.type == "bumper" and objA.type == "unit" then bumper2 = objB; unit = objA end
-    
-    if bumper2 and unit and bumper2.activated then
-        -- Forcefield stops units immediately
-        unit.body:setLinearVelocity(0, 0)
-        
-        -- Push unit away from bumper
-        local bx, by = bumper2.body:getPosition()
-        local ux, uy = unit.body:getPosition()
-        local dx = ux - bx
-        local dy = uy - by
-        local dist = math.sqrt(dx*dx + dy*dy)
-        
-        if dist > 0 and dist < Constants.BUMPER_FORCEFIELD_RADIUS then
-            local force = Constants.BUMPER_FORCE * 2  -- Stronger push
-            local fx = (dx / dist) * force
-            local fy = (dy / dist) * force
-            unit.body:applyLinearImpulse(fx, fy)
-            
-            -- Score and engagement
-            Game.score = Game.score + Constants.SCORE_HIT
-            Engagement.add(Constants.ENGAGEMENT_REFILL_HIT)
-        end
-    end
+    -- CASE 6: BUMPER vs UNIT (removed - now handled in update loop for attraction)
 end
 
 local function preSolve(a, b, coll)
@@ -251,6 +231,14 @@ function love.load()
         Game.background = nil
     end
     
+    -- Load foreground image
+    local success2, img2 = pcall(love.graphics.newImage, "assets/foreground.png")
+    if success2 then
+        Game.foreground = img2
+    else
+        Game.foreground = nil
+    end
+    
     Event.clear(); Engagement.init(); World.init(); Time.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
@@ -266,13 +254,13 @@ function love.load()
     local bumperHalfWidth = Constants.BUMPER_WIDTH / 2
     local bumperHalfHeight = Constants.BUMPER_HEIGHT / 2
     
-    -- Left edge bumpers (top and bottom)
-    table.insert(Game.bumpers, Bumper.new(bumperHalfWidth, bumperHalfHeight + 123))  -- Top-left
-    table.insert(Game.bumpers, Bumper.new(bumperHalfWidth, Constants.PLAYFIELD_HEIGHT - bumperHalfHeight - 613, Constants.BUMPER_HEIGHT + 84))  -- Bottom-left (100px taller)
+    -- Left edge bumpers (top and bottom) - Blue
+    table.insert(Game.bumpers, Bumper.new(bumperHalfWidth, bumperHalfHeight + 123, nil, "blue"))  -- Top-left
+    table.insert(Game.bumpers, Bumper.new(bumperHalfWidth, Constants.PLAYFIELD_HEIGHT - bumperHalfHeight - 613, Constants.BUMPER_HEIGHT + 84, "blue"))  -- Bottom-left
     
-    -- Right edge bumpers (top and bottom)
-    table.insert(Game.bumpers, Bumper.new(Constants.PLAYFIELD_WIDTH - bumperHalfWidth, bumperHalfHeight + 123))  -- Top-right
-    table.insert(Game.bumpers, Bumper.new(Constants.PLAYFIELD_WIDTH - bumperHalfWidth, Constants.PLAYFIELD_HEIGHT - bumperHalfHeight - 613, Constants.BUMPER_HEIGHT + 84))  -- Bottom-right (100px taller) 
+    -- Right edge bumpers (top and bottom) - Red
+    table.insert(Game.bumpers, Bumper.new(Constants.PLAYFIELD_WIDTH - bumperHalfWidth, bumperHalfHeight + 123, nil, "red"))  -- Top-right
+    table.insert(Game.bumpers, Bumper.new(Constants.PLAYFIELD_WIDTH - bumperHalfWidth, Constants.PLAYFIELD_HEIGHT - bumperHalfHeight - 613, Constants.BUMPER_HEIGHT + 84, "red"))  -- Bottom-right 
     
     for i=1, 20 do
         local x = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
@@ -404,48 +392,28 @@ function love.update(dt)
             end
         end
         
-        -- Check units and projectiles for active bumper forcefields
+        -- Check units for active bumper attractors
         for _, b in ipairs(Game.bumpers) do
             if b.activated then
                 local bx, by = b.body:getPosition()
-                local fieldRadius = Constants.BUMPER_FORCEFIELD_RADIUS
+                local attractRadius = Constants.BUMPER_FORCEFIELD_RADIUS
                 
-                -- Stop units in forcefield
+                -- Attract units of matching color toward bumper
                 for _, u in ipairs(Game.units) do
-                    if not u.isDead then
+                    if not u.isDead and u.alignment == b.color then
                         local ux, uy = u.body:getPosition()
-                        local dx = ux - bx
-                        local dy = uy - by
+                        local dx = bx - ux  -- Direction toward bumper
+                        local dy = by - uy
                         local distSq = dx*dx + dy*dy
                         
-                        if distSq < fieldRadius * fieldRadius then
-                            -- Immediately stop the unit
-                            u.body:setLinearVelocity(0, 0)
-                            
-                            -- Push away
+                        if distSq < attractRadius * attractRadius and distSq > 0 then
                             local dist = math.sqrt(distSq)
-                            if dist > 0 then
-                                local force = Constants.BUMPER_FORCE * 2
-                                local fx = (dx / dist) * force
-                                local fy = (dy / dist) * force
-                                u.body:applyLinearImpulse(fx, fy)
-                            end
-                        end
-                    end
-                end
-                
-                -- Stop projectiles in forcefield
-                for _, p in ipairs(Game.projectiles) do
-                    if not p.isDead then
-                        local px, py = p.body:getPosition()
-                        local dx = px - bx
-                        local dy = py - by
-                        local distSq = dx*dx + dy*dy
-                        
-                        if distSq < fieldRadius * fieldRadius then
-                            -- Immediately stop the projectile
-                            p.body:setLinearVelocity(0, 0)
-                            p:die()  -- Destroy projectile
+                            -- Attract unit toward bumper (stronger force)
+                            -- Use applyForce for continuous attraction instead of impulse
+                            local force = Constants.BUMPER_FORCE * 8.0
+                            local fx = (dx / dist) * force
+                            local fy = (dy / dist) * force
+                            u.body:applyForce(fx, fy)
                         end
                     end
                 end
@@ -454,6 +422,46 @@ function love.update(dt)
     end
 
     if Game.turret then Game.turret:update(dt, Game.projectiles, Game.isUpgraded) end
+    
+    -- Apply bumper attraction every frame for smoother effect
+    for _, b in ipairs(Game.bumpers) do
+        if b.activated then
+            local bx, by = b.body:getPosition()
+            local centerX = Constants.PLAYFIELD_WIDTH / 2
+            local centerY = Constants.PLAYFIELD_HEIGHT / 2
+            
+            -- Calculate max range: distance from bumper to center of playfield (doubled)
+            local dxToCenter = centerX - bx
+            local dyToCenter = centerY - by
+            local maxRange = math.sqrt(dxToCenter*dxToCenter + dyToCenter*dyToCenter) * 2.0
+            
+            -- Attract units of matching color toward bumper
+            for _, u in ipairs(Game.units) do
+                if not u.isDead and u.alignment == b.color and u.alignment ~= "none" then
+                    local ux, uy = u.body:getPosition()
+                    local dx = bx - ux  -- Direction toward bumper
+                    local dy = by - uy
+                    local distSq = dx*dx + dy*dy
+                    local dist = math.sqrt(distSq)
+                    
+                    -- Check if unit is within range (from bumper to center)
+                    if dist > 0 and dist <= maxRange then
+                        -- Calculate falloff: stronger when closer to bumper, weaker near center
+                        -- Falloff factor: 1.0 at bumper, 0.0 at center
+                        local falloff = 1.0 - (dist / maxRange)
+                        falloff = falloff * falloff  -- Quadratic falloff for smoother transition
+                        
+                        -- Attract unit toward bumper with falloff
+                        local baseForce = Constants.BUMPER_FORCE * 10.0 * gameDt
+                        local force = baseForce * falloff
+                        local fx = (dx / dist) * force
+                        local fy = (dy / dist) * force
+                        u.body:applyForce(fx, fy)
+                    end
+                end
+            end
+        end
+    end
     
     for i = #Game.units, 1, -1 do local u = Game.units[i]; u:update(gameDt, Game.units, Game.hazards, Game.explosionZones); if u.isDead then table.remove(Game.units, i) end end
     for i = #Game.projectiles, 1, -1 do local p = Game.projectiles[i]; p:update(gameDt); if p.isDead then table.remove(Game.projectiles, i) end end
@@ -477,6 +485,36 @@ function love.keypressed(key)
     elseif key == "2" then
         -- Debug: Give rapid fire powerup
         Game.turret:activatePuckMode(Constants.POWERUP_DURATION)
+    elseif key == "3" then
+        -- Debug: Give bumper powerup
+        -- Check if any bumpers are already activated
+        local anyBumperActive = false
+        for _, b in ipairs(Game.bumpers) do
+            if b.activated then
+                anyBumperActive = true
+                break
+            end
+        end
+        
+        -- Give new activation window unless any bumper is already active
+        if not anyBumperActive then
+            Game.bumperActivationWindow = Constants.BUMPER_ACTIVATION_WINDOW
+        end
+        
+        -- Trigger one-time forcefield from all bumpers
+        Game.bumperForcefieldActive = true
+        Game.bumperForcefieldTimer = Constants.BUMPER_CENTER_FORCEFIELD_DURATION
+        
+        -- Visual effect (Forcefield pulse from all bumpers)
+        for _, b in ipairs(Game.bumpers) do
+            local bx, by = b.body:getPosition()
+            table.insert(Game.effects, {
+                type = "forcefield",
+                x = bx, y = by,
+                radius = 0, maxRadius = Constants.BUMPER_FORCEFIELD_RADIUS * 2,
+                alpha = 1.0, timer = Constants.BUMPER_CENTER_FORCEFIELD_DURATION
+            })
+        end
     end
 end
 
@@ -544,6 +582,15 @@ function love.draw()
         if Game.turret then Game.turret:draw() end
     end)
     love.graphics.pop()
+    
+    -- Draw foreground image if loaded (full screen, on top of game elements)
+    if Game.foreground then
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(Game.foreground, 0, 0, 0, 
+            Constants.SCREEN_WIDTH / Game.foreground:getWidth(),
+            Constants.SCREEN_HEIGHT / Game.foreground:getHeight())
+    end
+    
     drawHUD()
 end
 

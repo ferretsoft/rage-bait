@@ -51,7 +51,7 @@ Constants.BUMPER_FORCE = 400
 Constants.BUMPER_RESTITUTION = 1.2
 Constants.BUMPER_ACTIVATION_WINDOW = 10.0  -- Time to fire on bumpers after powerup
 Constants.BUMPER_ACTIVE_DURATION = 10.0   -- How long bumpers stay active
-Constants.BUMPER_FORCEFIELD_RADIUS = 80   -- Radius of forcefield around active bumpers
+Constants.BUMPER_FORCEFIELD_RADIUS = 200   -- Radius of attraction around active bumpers
 Constants.BUMPER_CENTER_FORCE = 75       -- Force pushing towards center
 Constants.BUMPER_CENTER_FORCEFIELD_DURATION = 1.5  -- Duration of one-time forcefield
 
