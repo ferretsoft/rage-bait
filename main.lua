@@ -21,6 +21,7 @@ local Game = {
     logicTimer = 0,
     isUpgraded = false,
     powerupSpawnTimer = 0,
+    background = nil,
     fonts = {
         small = nil,
         medium = nil,
@@ -135,6 +136,15 @@ function love.load()
     Game.fonts.small = love.graphics.newFont(12)
     Game.fonts.medium = love.graphics.newFont(14)
     Game.fonts.large = love.graphics.newFont(24)
+    
+    -- Load background image
+    local success, img = pcall(love.graphics.newImage, "assets/background.png")
+    if success then
+        Game.background = img
+    else
+        Game.background = nil
+    end
+    
     Event.clear(); Engagement.init(); World.init(); Time.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
@@ -245,6 +255,15 @@ end
 
 function love.draw()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Draw background image if loaded (full screen)
+    if Game.background then
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(Game.background, 0, 0, 0, 
+            Constants.SCREEN_WIDTH / Game.background:getWidth(),
+            Constants.SCREEN_HEIGHT / Game.background:getHeight())
+    end
+    
     love.graphics.push()
     if Game.shake > 0 then
         local s = Game.shake * Game.shake * 15; love.graphics.translate(love.math.random(-s, s), love.math.random(-s, s))

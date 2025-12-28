@@ -8,7 +8,7 @@ Constants.PLAYFIELD_HEIGHT = 1280
 
 -- Calculated Centers (Do not change)
 Constants.OFFSET_X = (Constants.SCREEN_WIDTH - Constants.PLAYFIELD_WIDTH) / 2
-Constants.OFFSET_Y = (Constants.SCREEN_HEIGHT - Constants.PLAYFIELD_HEIGHT) / 2
+Constants.OFFSET_Y = (Constants.SCREEN_HEIGHT - Constants.PLAYFIELD_HEIGHT) / 2 + 30
 
 -- === PHYSICS CATEGORIES ===
 Constants.PHYSICS = {
