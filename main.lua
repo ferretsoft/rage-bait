@@ -1,4 +1,4 @@
-local Constants = require("src.constants")
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        local Constants = require("src.constants")
 local Event = require("src.core.event")
 local Engagement = require("src.core.engagement")
 local World = require("src.core.world")
@@ -9,6 +9,9 @@ local Turret = require("src.entities.turret")
 local Projectile = require("src.entities.projectile")
 local PowerUp = require("src.entities.powerup")
 local Bumper = require("src.entities.bumper")
+local moonshine = require("libs.moonshine")
+-- Set BASE so moonshine can find effects in libs directory
+moonshine.BASE = "libs"
 
 local Game = {
     units = {},
@@ -262,6 +265,53 @@ function love.load()
     Game.isUpgraded = false;
     Game.hazards = {}; Game.explosionZones = {}; Game.units = {}; Game.projectiles = {}; Game.effects = {}; Game.powerups = {}; Game.bumpers = {}
     
+    -- Initialize Moonshine CRT effect
+    Game.crtEnabled = false
+    -- Create CRT effect (moonshine.BASE is already set to "libs")
+    local crtEffect = require("libs.crt")(moonshine)
+    
+    -- Configure CRT appearance parameters:
+    -- distortionFactor: Controls barrel distortion/curvature (default: {1.06, 1.065})
+    --   Higher values = more curvature. Try {1.1, 1.1} for strong curve, {1.02, 1.02} for subtle
+    crtEffect.distortionFactor = {1.02, 1.02}
+    
+    -- feather: Controls edge feathering/masking (default: 0.02)
+    --   Higher values = softer edges. Try 0.05 for softer, 0.01 for sharper
+    crtEffect.feather = 0.02  
+    
+    -- scaleFactor: Controls overall scale (default: 1)
+    --   Values < 1 = zoom out, > 1 = zoom in. Usually keep at 1
+    crtEffect.scaleFactor = 1
+    
+    -- scanlineIntensity: Controls scanline visibility (default: 0.3)
+    --   Higher values = more visible scanlines (0.0 = off, 1.0 = very strong)
+    --   Try 0.5 for strong scanlines, 0.1 for subtle
+    crtEffect.scanlineIntensity = 0.3
+    
+    -- chromaIntensity: Controls chromatic aberration (color separation) (default: 0.5)
+    --   Higher values = more color separation. Try 0.8 for strong, 0.2 for subtle
+    --   0.0 = no chromatic aberration
+    crtEffect.chromaIntensity = 0.3
+    
+    -- screenSize: Screen dimensions (needed for scanlines)
+    crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
+    
+    -- Create glow effect
+    local glowEffect = require("libs.glow")(moonshine)
+    
+    -- Configure glow parameters:
+    -- min_luma: Minimum brightness threshold (default: 0.7)
+    --   Lower values = more things glow. Try 0.3 for more glow, 0.9 for less
+    glowEffect.min_luma = 0.65
+    
+    -- strength: Glow blur radius/intensity (default: 5)
+    --   Higher values = stronger blur/glow. Try 10 for strong, 2 for subtle
+    glowEffect.strength = 7
+    
+    -- Create effect chain: glow first, then CRT
+    Game.crtChain = moonshine.chain(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT, glowEffect)
+    Game.crtChain.next(crtEffect)
+    
     -- Initialize bumpers aligned with playfield edges
     -- Bumpers are 48x194, positioned so their edges align with playfield boundaries
     local bumperHalfWidth = Constants.BUMPER_WIDTH / 2
@@ -492,6 +542,14 @@ function love.update(dt)
 end
 
 function love.keypressed(key)
+    -- Toggle CRT shader
+    if key == "c" then
+        if Game.crtChain then
+            Game.crtEnabled = not Game.crtEnabled
+        end
+        return
+    end
+    
     if not Game.turret then return end
     if key == "z" then Game.turret:startCharge("red")
     elseif key == "x" then Game.turret:startCharge("blue")
@@ -537,78 +595,104 @@ function love.keyreleased(key)
 end
 
 function love.draw()
-    love.graphics.clear(Constants.COLORS.BACKGROUND)
-    
-    -- Draw background image if loaded (full screen)
-    if Game.background then
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(Game.background, 0, 0, 0, 
-            Constants.SCREEN_WIDTH / Game.background:getWidth(),
-            Constants.SCREEN_HEIGHT / Game.background:getHeight())
-    end
-    
-    love.graphics.push()
-    if Game.shake > 0 then
-        local s = Game.shake * Game.shake * 15; love.graphics.translate(love.math.random(-s, s), love.math.random(-s, s))
-    end
-    
-    World.draw(function()
-        for _, h in ipairs(Game.hazards) do
-            local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
-            love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
-            love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+    -- Drawing function that will be wrapped by Moonshine if CRT is enabled
+    local function drawGame()
+        love.graphics.clear(Constants.COLORS.BACKGROUND)
+        
+        -- Apply shake transform to everything (background, game, foreground, HUD)
+        love.graphics.push()
+        if Game.shake > 0 then
+            local s = Game.shake * Game.shake * 15; love.graphics.translate(love.math.random(-s, s), love.math.random(-s, s))
         end
         
-        if #Game.explosionZones > 0 then
-            love.graphics.clear(false, true, false) 
-            for _, z in ipairs(Game.explosionZones) do
-                love.graphics.setStencilTest("equal", 0)
-                if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3) else love.graphics.setColor(0, 0, 1, 0.3) end
-                love.graphics.circle("fill", z.x, z.y, z.radius, 64)
-                love.graphics.setLineWidth(3); love.graphics.setColor(1, 1, 1, 0.5); love.graphics.circle("line", z.x, z.y, z.radius, 64)
-                love.graphics.setStencilTest(); love.graphics.stencil(function() love.graphics.circle("fill", z.x, z.y, z.radius, 64) end, "replace", 1)
+        -- Draw background image if loaded (full screen) - now affected by shake
+        if Game.background then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.background, 0, 0, 0, 
+                Constants.SCREEN_WIDTH / Game.background:getWidth(),
+                Constants.SCREEN_HEIGHT / Game.background:getHeight())
+        end
+        
+        World.draw(function()
+            for _, h in ipairs(Game.hazards) do
+                local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+                love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+                love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
             end
-            love.graphics.setStencilTest()
-        end
-        
-        for _, b in ipairs(Game.bumpers) do b:draw() end
-        for _, u in ipairs(Game.units) do u:draw() end
-        for _, p in ipairs(Game.projectiles) do p:draw() end
-        for _, pup in ipairs(Game.powerups) do pup:draw() end
-        
-        for _, e in ipairs(Game.effects) do
-            if e.type == "explosion" then
-                love.graphics.setLineWidth(3)
-                if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
-                elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
-                else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
-                love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
-            elseif e.type == "forcefield" then
-                love.graphics.setLineWidth(4)
-                love.graphics.setColor(0.2, 0.6, 1, e.alpha * 0.6)
-                love.graphics.circle("line", e.x, e.y, e.radius, 32)
-                love.graphics.setColor(0.3, 0.7, 1, e.alpha * 0.3)
-                love.graphics.circle("fill", e.x, e.y, e.radius, 32)
+            
+            if #Game.explosionZones > 0 then
+                love.graphics.clear(false, true, false) 
+                for _, z in ipairs(Game.explosionZones) do
+                    love.graphics.setStencilTest("equal", 0)
+                    if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3) else love.graphics.setColor(0, 0, 1, 0.3) end
+                    love.graphics.circle("fill", z.x, z.y, z.radius, 64)
+                    love.graphics.setLineWidth(3); love.graphics.setColor(1, 1, 1, 0.5); love.graphics.circle("line", z.x, z.y, z.radius, 64)
+                    love.graphics.setStencilTest(); love.graphics.stencil(function() love.graphics.circle("fill", z.x, z.y, z.radius, 64) end, "replace", 1)
+                end
+                love.graphics.setStencilTest()
             end
+            
+            for _, b in ipairs(Game.bumpers) do b:draw() end
+            for _, u in ipairs(Game.units) do u:draw() end
+            for _, p in ipairs(Game.projectiles) do p:draw() end
+            for _, pup in ipairs(Game.powerups) do pup:draw() end
+            
+            for _, e in ipairs(Game.effects) do
+                if e.type == "explosion" then
+                    love.graphics.setLineWidth(3)
+                    if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
+                    elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
+                    else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
+                    love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+                elseif e.type == "forcefield" then
+                    love.graphics.setLineWidth(4)
+                    love.graphics.setColor(0.2, 0.6, 1, e.alpha * 0.6)
+                    love.graphics.circle("line", e.x, e.y, e.radius, 32)
+                    love.graphics.setColor(0.3, 0.7, 1, e.alpha * 0.3)
+                    love.graphics.circle("fill", e.x, e.y, e.radius, 32)
+                end
+            end
+            
+            if Game.turret then Game.turret:draw() end
+        end)
+        
+        -- Draw foreground image if loaded (full screen, on top of game elements) - now affected by shake
+        if Game.foreground then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.foreground, 0, 0, 0, 
+                Constants.SCREEN_WIDTH / Game.foreground:getWidth(),
+                Constants.SCREEN_HEIGHT / Game.foreground:getHeight())
         end
         
-        if Game.turret then Game.turret:draw() end
-    end)
-    love.graphics.pop()
-    
-    -- Draw foreground image if loaded (full screen, on top of game elements)
-    if Game.foreground then
+        -- Draw HUD - now affected by shake and CRT
+        drawHUD()
+        
+        love.graphics.pop()
+        
+        -- CRITICAL: Reset color to white before Moonshine processes the canvas
+        -- Otherwise, any color set by effects (like gold explosion) will tint the entire screen
         love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(Game.foreground, 0, 0, 0, 
-            Constants.SCREEN_WIDTH / Game.foreground:getWidth(),
-            Constants.SCREEN_HEIGHT / Game.foreground:getHeight())
     end
     
-    drawHUD()
+    -- Apply CRT effect if enabled, otherwise draw normally
+    if Game.crtEnabled and Game.crtChain then
+        Game.crtChain.draw(drawGame)
+    else
+        drawGame()
+    end
 end
 
 function drawHUD()
     love.graphics.setColor(0, 1, 0); love.graphics.setFont(Game.fonts.medium); love.graphics.print("FPS: " .. love.timer.getFPS(), 10, 10)
+    
+    -- Show CRT status
+    if Game.crtEnabled then
+        love.graphics.setColor(0.8, 0.8, 0.2)
+        love.graphics.print("CRT: ON (Press C to toggle)", 10, 30)
+    else
+        love.graphics.setColor(0.5, 0.5, 0.5)
+        love.graphics.print("CRT: OFF (Press C to toggle)", 10, 30)
+    end
 
     local barW, barH = 400, 40; local barX = (Constants.SCREEN_WIDTH - barW)/2; local barY = 80
     local pct = Engagement.value / Constants.ENGAGEMENT_MAX
