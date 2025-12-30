@@ -63,7 +63,7 @@ Constants.EXPLOSION_DURATION = 2.5
 Constants.EXPLOSION_ATTRACTION_RADIUS = 300 
 
 -- Throwing Range (Changes with Upgrade)
-Constants.BOMB_RANGE_BASE = 300 
+Constants.BOMB_RANGE_BASE = 600 
 Constants.BOMB_RANGE_MAX = 900
 
 -- === WEAPON: PUCK ===
