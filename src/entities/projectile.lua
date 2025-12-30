@@ -1,6 +1,7 @@
 local Constants = require("src.constants")
 local World = require("src.core.world")
 local Event = require("src.core.event")
+local Sound = require("src.core.sound")
 
 local Projectile = {}
 Projectile.__index = Projectile
@@ -48,8 +49,17 @@ function Projectile.new(x, y, angle, weaponType, color, chargeDist)
     
     if weaponType == "bomb" then
         self.fixture:setSensor(true)
+        -- Calculate initial distance to target for pitch calculation
+        local maxRange = Constants.BOMB_RANGE_MAX or 900
+        local dist = math.min(chargeDist or 100, maxRange)
+        local normalizedDist = math.min(dist / maxRange, 1.0)
+        -- Pitch: far = high (1.5), close = low (0.5)
+        local initialPitch = 0.5 + normalizedDist * 1.0  -- Range: 0.5 (close) to 1.5 (far)
+        -- Start whistling sound for bombs with initial pitch
+        self.whistleSound = Sound.playWhistle(0.4, initialPitch, true)
     else
         self.body:setLinearVelocity(math.cos(angle) * speed, math.sin(angle) * speed)
+        self.whistleSound = nil
     end
     
     return self
@@ -117,6 +127,19 @@ function Projectile:update(dt)
         local dx = self.targetX - bx
         local dy = self.targetY - by
         local distSq = dx*dx + dy*dy
+        local dist = math.sqrt(distSq)
+        
+        -- Update whistle pitch based on distance to target
+        -- Closer = lower pitch, farther = higher pitch
+        if self.whistleSound and self.whistleSound:isPlaying() then
+            -- Calculate pitch: map distance to pitch range (0.5 to 1.5)
+            -- Max distance for calculation (adjust based on max bomb range)
+            local maxDist = Constants.BOMB_RANGE_MAX or 900
+            local normalizedDist = math.min(dist / maxDist, 1.0)
+            -- Pitch: far (1) = high (1.5), close (0) = low (0.5)
+            local pitch = 0.5 + normalizedDist * 1.0  -- Range: 0.5 (close) to 1.5 (far)
+            self.whistleSound:setPitch(pitch)
+        end
         
         if distSq < 15*15 then
             self:explode()
@@ -142,6 +165,14 @@ end
 function Projectile:die()
     if self.isDead then return end
     self.isDead = true
+    
+    -- Stop whistling sound if playing
+    if self.whistleSound and self.whistleSound:isPlaying() then
+        self.whistleSound:stop()
+        self.whistleSound:release()
+        self.whistleSound = nil
+    end
+    
     if self.body then self.body:destroy() end
 end
 

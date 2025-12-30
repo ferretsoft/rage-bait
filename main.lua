@@ -3,6 +3,7 @@ local Event = require("src.core.event")
 local Engagement = require("src.core.engagement")
 local World = require("src.core.world")
 local Time = require("src.core.time")
+local Sound = require("src.core.sound")
 local Unit = require("src.entities.unit")
 local Turret = require("src.entities.turret")
 local Projectile = require("src.entities.projectile")
@@ -60,6 +61,9 @@ local function collectPowerUp(powerup)
         Game.bumperForcefieldActive = true
         Game.bumperForcefieldTimer = Constants.BUMPER_CENTER_FORCEFIELD_DURATION
         
+        -- Sound effect
+        Sound.powerupCollect("bumper")
+        
         -- Visual effect (Blue Explosion at powerup location)
         table.insert(Game.effects, {
             type = "explosion",
@@ -90,6 +94,9 @@ local function collectPowerUp(powerup)
                 radius = 0, maxRadius = 100,
                 color = "gold", alpha = 1.0, timer = 0.5
             })
+            
+            -- Sound effect
+            Sound.powerupCollect("puck")
         end
     end
 end
@@ -109,6 +116,7 @@ local function beginContact(a, b, coll)
         objA:takeDamage(1, objB); objB:takeDamage(1, objA)
         Game.score = Game.score + (Constants.SCORE_HIT * 2)
         Engagement.add(Constants.ENGAGEMENT_REFILL_HIT * 2)
+        Sound.unitHit()
         
         local vxA, vyA = objA.body:getLinearVelocity()
         local vxB, vyB = objB.body:getLinearVelocity()
@@ -127,6 +135,7 @@ local function beginContact(a, b, coll)
     if unit and proj then
         if proj.weaponType == "puck" then
             unit:hit("puck", proj.color)
+            Sound.unitHit()
             proj:die()
         end
     end
@@ -165,7 +174,11 @@ local function beginContact(a, b, coll)
                     b:activate()
                 end
             end
+            Sound.bumperActivate()
             proj:die()  -- Destroy projectile that activated it
+        else
+            -- Bumper hit but not activated (just bounce)
+            Sound.bumperHit()
         end
         -- Normal physics restitution handles the bounce
     end
@@ -239,7 +252,7 @@ function love.load()
         Game.foreground = nil
     end
     
-    Event.clear(); Engagement.init(); World.init(); Time.init()
+    Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
     Game.turret = Turret.new()
@@ -329,7 +342,7 @@ function love.update(dt)
     if Game.shake > 0 then Game.shake = math.max(0, Game.shake - 2.5 * dt) end
 
     Time.checkRestore(dt); Time.update(dt); local gameDt = dt * Time.scale
-    Engagement.update(gameDt); World.update(gameDt)
+    Engagement.update(gameDt); World.update(gameDt); Sound.update(dt)
     
     for i = #Game.hazards, 1, -1 do local h = Game.hazards[i]; h.timer = h.timer - dt; if h.timer <= 0 then table.remove(Game.hazards, i) end end
     for i = #Game.explosionZones, 1, -1 do local z = Game.explosionZones[i]; z.timer = z.timer - dt; if z.timer <= 0 then z.body:destroy(); table.remove(Game.explosionZones, i) end end
