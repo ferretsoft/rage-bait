@@ -22,7 +22,7 @@ Constants.PHYSICS = {
 }
 
 -- === UNIT STATS ===
-Constants.UNIT_RADIUS = 7.5
+Constants.UNIT_RADIUS = 9.375  -- 7.5 * 1.25 (25% larger)
 Constants.UNIT_HP = 5
 Constants.UNIT_SPEED_NEUTRAL = 50
 Constants.UNIT_SPEED_SEEK = 80

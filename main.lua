@@ -4,6 +4,7 @@ local Engagement = require("src.core.engagement")
 local World = require("src.core.world")
 local Time = require("src.core.time")
 local Sound = require("src.core.sound")
+local EmojiSprites = require("src.core.emoji_sprites")
 local Unit = require("src.entities.unit")
 local Turret = require("src.entities.turret")
 local Projectile = require("src.entities.projectile")
@@ -255,7 +256,7 @@ function love.load()
         Game.foreground = nil
     end
     
-    Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init()
+    Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init(); EmojiSprites.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
     Game.turret = Turret.new()

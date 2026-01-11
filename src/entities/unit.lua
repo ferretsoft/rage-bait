@@ -1,5 +1,6 @@
 local Constants = require("src.constants")
 local Event = require("src.core.event")
+local EmojiSprites = require("src.core.emoji_sprites")
 
 local Unit = {}
 Unit.__index = Unit
@@ -15,7 +16,8 @@ function Unit.new(world, x, y)
     self.isDead = false
     
     self.enrageTimer = 0 
-    self.flashTimer = 0  
+    self.flashTimer = 0
+    self.conversionTime = nil  -- Timestamp when unit was converted
     
     -- PHYSICS SETUP
     self.body = love.physics.newBody(world, x, y, "dynamic")
@@ -46,6 +48,7 @@ function Unit:update(dt, allUnits, hazards, explosionZones)
             self.state = "passive"
         end
         
+        -- Enraged units don't flock - they search for and attack enemy units
         self:updateEnraged(dt, allUnits)
     else
         -- NEUTRAL / PASSIVE BEHAVIOR
@@ -54,7 +57,10 @@ function Unit:update(dt, allUnits, hazards, explosionZones)
             isAttracted = self:seekAttractions(dt, explosionZones)
         end
         
-        if not isAttracted then
+        -- Flocking behavior for colored units (red/blue)
+        if self.alignment ~= "none" and self.state ~= "neutral" then
+            self:updateFlocking(dt, allUnits)
+        elseif not isAttracted then
             self:updateWander(dt)
         end
         
@@ -114,6 +120,8 @@ function Unit:avoidHazards(dt, hazards)
 end
 
 function Unit:updateEnraged(dt, allUnits)
+    -- Enraged units don't flock - they break away to search for and attack enemy units
+    -- Red units search for blue, blue units search for red
     if not self.target or self.target.isDead then
         self.target = self:findClosestEnemy(allUnits)
     end
@@ -126,19 +134,19 @@ function Unit:updateEnraged(dt, allUnits)
         local dist = math.sqrt(dx^2 + dy^2)
         
         if dist > 0 then
-            local vx, vy = self.body:getLinearVelocity()
-            local currentSpeed = math.sqrt(vx^2 + vy^2)
-            
-            if currentSpeed < Constants.UNIT_SPEED_SEEK then
-                local force = self.body:getMass() * 1000
-                local dirX = dx / dist
-                local dirY = dy / dist
-                self.body:applyForce(dirX * force, dirY * force)
-            end
+            -- Strong seeking force to overcome any other forces (like from other units' flocking)
+            local force = self.body:getMass() * 2000  -- Increased from 1000 to break away from flock
+            local dirX = dx / dist
+            local dirY = dy / dist
+            self.body:applyForce(dirX * force, dirY * force)
         end
     else
+        -- No enemy found, wander until one appears
         self:updateWander(dt) 
     end
+    
+    -- Enraged units also avoid being pulled by same-color units (break away from flock)
+    self:avoidFlockmates(dt, allUnits)
 end
 
 function Unit:hit(weaponType, color)
@@ -147,6 +155,7 @@ function Unit:hit(weaponType, color)
     if self.state == "neutral" then
         self.alignment = color
         self.state = "passive"
+        self.conversionTime = love.timer.getTime()  -- Record conversion time
         local vx, vy = self.body:getLinearVelocity()
         self.body:setLinearVelocity(vx * 1.2, vy * 1.2)
 
@@ -182,6 +191,23 @@ function Unit:draw()
         y = y + love.math.random(-shakeAmount, shakeAmount)
     end
     
+    -- Get the appropriate sprite
+    local sprite = nil
+    local spriteType = nil
+    if self.state == "enraged" then
+        sprite = EmojiSprites.getAngry()
+        spriteType = "angry"
+    elseif self.alignment ~= "none" then
+        -- Converted units (red or blue, not neutral)
+        sprite = EmojiSprites.getConverted()
+        spriteType = "converted"
+    else
+        -- Neutral units (grey)
+        sprite = EmojiSprites.getNeutral()
+        spriteType = "neutral"
+    end
+    
+    -- Apply color tinting based on state and health
     local r, g, b, a = 1, 1, 1, 1
     
     if self.state == "neutral" then 
@@ -204,14 +230,166 @@ function Unit:draw()
         b = b + (1 - b) * flash * 0.6
     end
     
-    love.graphics.setColor(r, g, b, a)
-    love.graphics.circle("fill", x, y, Constants.UNIT_RADIUS)
+    -- Draw sprite with color tinting and scaling, or fallback to drawing
+    local spriteLoaded = false
+    if spriteType == "angry" then
+        spriteLoaded = EmojiSprites.isAngryLoaded()
+    elseif spriteType == "converted" then
+        spriteLoaded = EmojiSprites.isConvertedLoaded()
+    else
+        spriteLoaded = EmojiSprites.isNeutralLoaded()
+    end
     
+    if sprite and spriteLoaded then
+        local baseScale = (Constants.UNIT_RADIUS * 2) / sprite:getWidth()
+        local scale = baseScale * 1.25  -- 25% larger
+        local spriteWidth = sprite:getWidth()
+        local spriteHeight = sprite:getHeight()
+        
+        -- Mirror converted units every 2 seconds
+        local scaleX = scale
+        if spriteType == "converted" and self.conversionTime then
+            local timeSinceConversion = love.timer.getTime() - self.conversionTime
+            local mirrorInterval = 2.0  -- 2 seconds
+            local mirrorPhase = math.floor(timeSinceConversion / mirrorInterval)
+            if mirrorPhase % 2 == 1 then
+                scaleX = -scaleX  -- Mirror horizontally
+            end
+        end
+        
+        love.graphics.setColor(r, g, b, a)
+        love.graphics.draw(sprite, x, y, 0, scaleX, scale, spriteWidth / 2, spriteHeight / 2)
+    else
+        -- Fallback: draw face with shapes if sprite not available
+        love.graphics.setColor(r, g, b, a)
+        love.graphics.circle("fill", x, y, Constants.UNIT_RADIUS)
+        
+        -- Draw face features
+        local eyeSize = 1.5
+        local eyeOffsetX = 2.5
+        local eyeOffsetY = -2
+        local mouthY = y + 2
+        
+        -- Determine if angry or neutral
+        local isAngry = (self.state == "enraged")
+        
+        -- Draw eyes (black)
+        love.graphics.setColor(0, 0, 0, a)
+        love.graphics.circle("fill", x - eyeOffsetX, y + eyeOffsetY, eyeSize)
+        love.graphics.circle("fill", x + eyeOffsetX, y + eyeOffsetY, eyeSize)
+        
+        -- Draw mouth
+        if isAngry then
+            -- Angry face: downward curved line (frown)
+            love.graphics.setLineWidth(1.5)
+            love.graphics.arc("line", "open", x, mouthY + 1, 3, 0, math.pi, 8)
+        else
+            -- Neutral face: straight line
+            love.graphics.setLineWidth(1.5)
+            love.graphics.line(x - 2.5, mouthY, x + 2.5, mouthY)
+        end
+    end
+    
+    -- Draw enrage indicator ring if enraged
     if self.state == "enraged" then
         local fadeAlpha = self.enrageTimer / Constants.UNIT_ENRAGE_DURATION
         love.graphics.setColor(1, 1, 1, fadeAlpha)
         love.graphics.setLineWidth(3)
         love.graphics.circle("line", x, y, Constants.UNIT_RADIUS + 4)
+    end
+end
+
+function Unit:updateFlocking(dt, allUnits)
+    local myX, myY = self.body:getPosition()
+    local mass = self.body:getMass()
+    
+    -- Flocking parameters
+    local neighborRadius = 100  -- How far to look for flockmates
+    local separationRadius = 30  -- Minimum distance to maintain
+    local separationForce = mass * 500
+    local alignmentForce = mass * 400
+    local cohesionForce = mass * 300
+    
+    local separationX, separationY = 0, 0
+    local alignmentX, alignmentY = 0, 0
+    local cohesionX, cohesionY = 0, 0
+    local neighborCount = 0
+    
+    -- Find nearby flockmates (same alignment, but NOT enraged - enraged units don't flock)
+    for _, other in ipairs(allUnits) do
+        if other ~= self and not other.isDead and other.alignment == self.alignment and other.state ~= "enraged" then
+            local ox, oy = other.body:getPosition()
+            local dx = ox - myX
+            local dy = oy - myY
+            local distSq = dx*dx + dy*dy
+            
+            if distSq < neighborRadius^2 and distSq > 0 then
+                local dist = math.sqrt(distSq)
+                
+                -- Separation: steer away from nearby flockmates
+                if distSq < separationRadius^2 then
+                    separationX = separationX - (dx / dist) / dist
+                    separationY = separationY - (dy / dist) / dist
+                end
+                
+                -- Alignment: steer towards average heading of flockmates
+                local vx, vy = other.body:getLinearVelocity()
+                local speed = math.sqrt(vx*vx + vy*vy)
+                if speed > 0 then
+                    alignmentX = alignmentX + (vx / speed)
+                    alignmentY = alignmentY + (vy / speed)
+                end
+                
+                -- Cohesion: steer towards average position of flockmates
+                cohesionX = cohesionX + dx
+                cohesionY = cohesionY + dy
+                
+                neighborCount = neighborCount + 1
+            end
+        end
+    end
+    
+    if neighborCount > 0 then
+        -- Normalize alignment and cohesion
+        local alignMag = math.sqrt(alignmentX*alignmentX + alignmentY*alignmentY)
+        if alignMag > 0 then
+            alignmentX = alignmentX / alignMag
+            alignmentY = alignmentY / alignMag
+        end
+        
+        local cohMag = math.sqrt(cohesionX*cohesionX + cohesionY*cohesionY)
+        if cohMag > 0 then
+            cohesionX = (cohesionX / neighborCount) / cohMag
+            cohesionY = (cohesionY / neighborCount) / cohMag
+        end
+        
+        -- Apply forces
+        self.body:applyForce(separationX * separationForce, separationY * separationForce)
+        self.body:applyForce(alignmentX * alignmentForce, alignmentY * alignmentForce)
+        self.body:applyForce(cohesionX * cohesionForce, cohesionY * cohesionForce)
+    end
+end
+
+function Unit:avoidFlockmates(dt, allUnits)
+    -- Enraged units actively avoid being pulled back into the flock
+    local myX, myY = self.body:getPosition()
+    local mass = self.body:getMass()
+    local avoidRadius = 80
+    local avoidForce = mass * 800
+    
+    for _, other in ipairs(allUnits) do
+        if other ~= self and not other.isDead and other.alignment == self.alignment and other.state ~= "enraged" then
+            local ox, oy = other.body:getPosition()
+            local dx = myX - ox
+            local dy = myY - oy
+            local distSq = dx*dx + dy*dy
+            
+            if distSq < avoidRadius^2 and distSq > 0 then
+                local dist = math.sqrt(distSq)
+                local force = avoidForce * (1 - dist / avoidRadius)  -- Stronger when closer
+                self.body:applyForce((dx / dist) * force, (dy / dist) * force)
+            end
+        end
     end
 end
 

@@ -45,10 +45,6 @@ function World.draw(drawFunc)
     love.graphics.push()
     love.graphics.translate(Constants.OFFSET_X, Constants.OFFSET_Y)
     
-    -- Draw Playfield Border
-    love.graphics.setColor(1, 1, 1, 0.3)
-    love.graphics.rectangle("line", 0, 0, Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
-    
     drawFunc()
     love.graphics.pop()
 end
