@@ -36,7 +36,7 @@ Constants.TOXIC_RADIUS = 60
 Constants.TOXIC_DURATION = 8.0
 Constants.TOXIC_FEAR_FORCE = 1500
 Constants.TOXIC_DECAY_MULTIPLIER = 0.5  -- Each toxic hazard increases decay by 50% (1.0 = 100%, 0.5 = 50%)
-Constants.ISOLATION_INSANE_TIME = 5.0  -- Time in seconds a grey unit must be isolated before going insane
+Constants.ISOLATION_INSANE_TIME = 10.0  -- Time in seconds a grey unit must be isolated before going insane
 Constants.INSANE_EXPLOSION_RADIUS = 120  -- Radius of explosion when unit goes insane (larger than normal)
 Constants.INSANE_TOXIC_RADIUS = 100  -- Radius of toxic sludge from insane explosion (larger than normal)
 Constants.INSANE_TOXIC_DURATION = 12.0  -- Duration of toxic sludge from insane explosion (longer than normal)

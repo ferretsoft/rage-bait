@@ -36,9 +36,12 @@ local Game = {
     introMode = false,  -- Intro screen mode
     introTimer = 0,  -- Timer for intro screen
     introStep = 1,  -- Current intro step/page
-    auditorActive = false,  -- Whether THE AUDITOR sequence is active
+    auditorActive = false,  -- Whether THE AUDITOR sequence is active (final game over only)
     auditorTimer = 0,  -- Timer for THE AUDITOR sequence
     auditorPhase = 1,  -- Current phase of THE AUDITOR sequence (1=freeze, 2=fade, 3=verdict, 4=crash)
+    lifeLostAuditorActive = false,  -- Whether life lost auditor screen is active (engagement depleted but lives remain)
+    lifeLostAuditorTimer = 0,  -- Timer for life lost auditor screen
+    lifeLostAuditorPhase = 1,  -- Current phase of life lost auditor (1=freeze, 2=fade, 3=life lost, 4=restart)
     level = 1,  -- Current level
     levelTransitionTimer = 0,  -- Timer for level transition
     levelTransitionActive = false,  -- Whether level transition is active
@@ -382,7 +385,7 @@ function love.load()
         Webcam.showComment("unit_killed")
     end)
     Event.on("unit_insane_exploded", function(data)
-        local x, y = data.victim.body:getPosition()
+        local x, y = data.x, data.y  -- Use position from event data (captured before body destruction)
         -- Massive explosion effect
         table.insert(Game.effects, {
             type = "explosion",
@@ -391,7 +394,8 @@ function love.load()
             maxRadius = Constants.INSANE_EXPLOSION_RADIUS,
             color = "red",  -- Red for insanity
             alpha = 1.0,
-            timer = 0.8  -- Longer explosion animation
+            timer = 0.8,  -- Longer explosion animation
+            speechBubble = data.speechBubble  -- Preserve speech bubble for drawing
         })
         -- Massive toxic sludge (larger radius and longer duration)
         table.insert(Game.hazards, {
@@ -456,9 +460,13 @@ function startGameplay()
     Game.lives = 3
     Game.gameOverTimer = 0
     Game.gameOverActive = false
+    Game.shouldRestartLevel = false
     Game.auditorActive = false
     Game.auditorTimer = 0
     Game.auditorPhase = 1
+    Game.lifeLostAuditorActive = false
+    Game.lifeLostAuditorTimer = 0
+    Game.lifeLostAuditorPhase = 1
     Game.nameEntryActive = false
     Game.nameEntryText = ""
     Game.nameEntryCursor = 1
@@ -517,36 +525,58 @@ function handleGameOver(condition)
     -- Don't call Sound.cleanup() here - it stops ALL sounds including whistle sounds
     -- Let projectiles continue playing their whistle sounds until they explode naturally
     
-    -- Check if this is engagement depletion (THE AUDITOR appears)
-    if condition == "engagement_depleted" then
-        -- Trigger THE AUDITOR sequence
+    -- Check if we have lives remaining BEFORE decrementing
+    local hasLivesRemaining = Game.lives > 1  -- Will have lives after decrement if currently > 1
+    Game.lives = Game.lives - 1
+    
+    -- If engagement was depleted and we have lives remaining, show life lost auditor screen
+    if condition == "engagement_depleted" and hasLivesRemaining then
+        Game.lifeLostAuditorActive = true
+        Game.lifeLostAuditorTimer = 0
+        Game.lifeLostAuditorPhase = 1  -- Start with system freeze
+        Game.gameState = "life_lost_auditor"
+        Sound.cleanup()  -- Stop all sounds for the auditor sequence
+        return
+    end
+    
+    -- If all lives are lost, show THE AUDITOR (final game over)
+    if not hasLivesRemaining then
         Game.auditorActive = true
         Game.auditorTimer = 0
         Game.auditorPhase = 1  -- Start with system freeze
         Game.gameState = "auditor"
-        -- Stop all physics/simulation
         Sound.cleanup()  -- Stop all sounds for THE AUDITOR sequence
         return
     end
     
-    -- Normal game over (lose a life)
+    -- Normal game over (lose a life, but not engagement depletion)
     Game.gameOverActive = true
     Game.gameOverTimer = 2.0  -- 2 second game over screen
     Game.gameState = "lost"
     Game.winCondition = condition
-    Game.lives = Game.lives - 1
+    -- Store whether we should restart (have lives remaining after this loss)
+    Game.shouldRestartLevel = hasLivesRemaining
 end
 
 -- Restart the current level after losing a life
+-- Note: Score and level are preserved (not reset)
 function restartLevel()
     Game.gameOverActive = false
     Game.gameOverTimer = 0
+    Game.shouldRestartLevel = false
+    Game.auditorActive = false  -- Make sure THE AUDITOR is not active
+    Game.auditorTimer = 0
+    Game.auditorPhase = 1
+    Game.lifeLostAuditorActive = false  -- Make sure life lost auditor is not active
+    Game.lifeLostAuditorTimer = 0
+    Game.lifeLostAuditorPhase = 1
     Game.gameState = "playing"
     Game.winCondition = nil
     Game.hasUnitBeenConverted = false
     
-    -- Reset engagement to half
-    Engagement.value = Constants.ENGAGEMENT_MAX / 2
+    -- Reset engagement to 100% (same as new level/game start)
+    -- Score and level are NOT reset - they are preserved
+    Engagement.value = Constants.ENGAGEMENT_MAX
     
     -- Clear all game entities
     for i = #Game.units, 1, -1 do
@@ -896,6 +926,84 @@ function drawIntroScreen()
     end
 end
 
+-- Draw life lost auditor screen (engagement depleted but lives remain)
+function drawLifeLostAuditor()
+    -- Phase 1: System freeze - show frozen game state
+    if Game.lifeLostAuditorPhase == 1 then
+        -- Draw frozen game state (no updates, but visible)
+        love.graphics.clear(Constants.COLORS.BACKGROUND)
+        
+        -- Draw frozen game elements
+        World.draw(function()
+            for _, h in ipairs(Game.hazards) do
+                local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+                love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+                love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+            end
+            
+            for _, u in ipairs(Game.units) do u:draw() end
+            for _, p in ipairs(Game.projectiles) do p:draw() end
+            for _, pup in ipairs(Game.powerups) do pup:draw() end
+            
+            for _, e in ipairs(Game.effects) do
+                if e.type == "explosion" then
+                    love.graphics.setLineWidth(3)
+                    if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
+                    elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
+                    else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
+                    love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+                end
+            end
+            
+            if Game.turret then Game.turret:draw() end
+        end)
+        
+        -- Show webcam with CRITICAL_ERROR
+        love.graphics.setColor(1, 0, 0, 1)
+        love.graphics.setFont(Game.fonts.large)
+        local errorMsg = "CRITICAL_ERROR"
+        local errorWidth = Game.fonts.large:getWidth(errorMsg)
+        love.graphics.print(errorMsg, Constants.SCREEN_WIDTH / 2 - errorWidth / 2, Constants.SCREEN_HEIGHT / 2)
+        
+    -- Phase 2: Fade to black, show THE AUDITOR
+    elseif Game.lifeLostAuditorPhase == 2 then
+        local fadeProgress = Game.lifeLostAuditorTimer / 2.0
+        local fadeAlpha = math.min(fadeProgress, 1.0)
+        
+        -- Fade to black
+        love.graphics.setColor(0, 0, 0, fadeAlpha)
+        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        
+        -- Show THE AUDITOR (hooded figure with red camera lens)
+        if fadeAlpha >= 0.5 then
+            local auditorAlpha = (fadeAlpha - 0.5) * 2  -- Fade in during second half
+            drawAuditorFigure(auditorAlpha)
+        end
+        
+    -- Phase 3: Show "LIFE LOST" message
+    elseif Game.lifeLostAuditorPhase == 3 then
+        -- Black background
+        love.graphics.setColor(0, 0, 0, 1)
+        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        
+        -- Draw THE AUDITOR
+        drawAuditorFigure(1.0)
+        
+        -- Show "LIFE LOST" text
+        love.graphics.setFont(Game.fonts.large)
+        love.graphics.setColor(1, 0, 0, 1)  -- Red text
+        
+        local lifeLostMsg = "LIFE LOST"
+        local msgWidth = Game.fonts.large:getWidth(lifeLostMsg)
+        love.graphics.print(lifeLostMsg, Constants.SCREEN_WIDTH / 2 - msgWidth / 2, Constants.SCREEN_HEIGHT / 2)
+        
+    -- Phase 4: Transition back to game
+    elseif Game.lifeLostAuditorPhase == 4 then
+        love.graphics.setColor(0, 0, 0, 1)
+        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    end
+end
+
 -- Draw THE AUDITOR game over sequence
 function drawAuditor()
     -- Phase 1: System freeze - show frozen game state
@@ -1107,7 +1215,35 @@ function love.update(dt)
         return  -- Don't update game logic during name entry
     end
     
-    -- Handle THE AUDITOR sequence (engagement depletion game over)
+    -- Handle life lost auditor screen (engagement depleted but lives remain)
+    if Game.lifeLostAuditorActive then
+        Game.lifeLostAuditorTimer = Game.lifeLostAuditorTimer + dt
+        
+        -- Phase 1: System freeze (1 second)
+        if Game.lifeLostAuditorPhase == 1 and Game.lifeLostAuditorTimer >= 1.0 then
+            Game.lifeLostAuditorPhase = 2
+            Game.lifeLostAuditorTimer = 0
+        -- Phase 2: Fade to black and show THE AUDITOR (2 seconds)
+        elseif Game.lifeLostAuditorPhase == 2 and Game.lifeLostAuditorTimer >= 2.0 then
+            Game.lifeLostAuditorPhase = 3
+            Game.lifeLostAuditorTimer = 0
+        -- Phase 3: Show "LIFE LOST" message (2 seconds)
+        elseif Game.lifeLostAuditorPhase == 3 and Game.lifeLostAuditorTimer >= 2.0 then
+            Game.lifeLostAuditorPhase = 4
+            Game.lifeLostAuditorTimer = 0
+        -- Phase 4: Restart level (keep points, same level)
+        elseif Game.lifeLostAuditorPhase == 4 and Game.lifeLostAuditorTimer >= 0.5 then
+            -- Restart the level, keeping score and level
+            Game.lifeLostAuditorActive = false
+            Game.lifeLostAuditorTimer = 0
+            Game.lifeLostAuditorPhase = 1
+            restartLevel()
+        end
+        
+        return  -- Don't update game logic during life lost auditor sequence
+    end
+    
+    -- Handle THE AUDITOR sequence (final game over - all lives lost)
     -- Only process if not in intro mode (safety check)
     if Game.auditorActive and not Game.introMode then
         Game.auditorTimer = Game.auditorTimer + dt
@@ -1138,11 +1274,11 @@ function love.update(dt)
         Game.gameOverTimer = Game.gameOverTimer - dt
         if Game.gameOverTimer <= 0 then
             -- Game over screen complete
-            if Game.lives > 0 then
-                -- Restart the level
+            if Game.shouldRestartLevel and Game.lives > 0 then
+                -- Restart the level (we had lives remaining after losing this one)
                 restartLevel()
-            else
-                -- No lives left, check for high score
+            elseif Game.lives == 0 then
+                -- All lives lost - check for high score
                 if isHighScore(Game.score) then
                     -- Start name entry (arcade style)
                     Game.gameOverActive = false  -- Clear game over screen
@@ -1154,6 +1290,9 @@ function love.update(dt)
                     -- No high score, return to attract mode
                     returnToAttractMode()
                 end
+            else
+                -- Safety fallback: if somehow we have lives but shouldn't restart, restart anyway
+                restartLevel()
             end
         end
         
@@ -1284,8 +1423,9 @@ function love.update(dt)
     Engagement.update(gameDt, toxicHazardCount, Game.level); World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt)
     
     -- Check if engagement ran out (game over)
+    -- Only check if we're actually playing and not already in a game over state
     if Game.gameState == "playing" and Engagement.value <= 0 then
-        if not Game.gameOverActive then
+        if not Game.gameOverActive and not Game.auditorActive and not Game.lifeLostAuditorActive then
             handleGameOver("engagement_depleted")
             Webcam.showComment("game_over")
         end
@@ -1425,6 +1565,10 @@ function love.update(dt)
         local e = Game.effects[i]; e.timer = e.timer - dt
         if e.type == "explosion" then
             e.radius = e.radius + (e.maxRadius * 8 * dt); if e.radius > e.maxRadius then e.radius = e.maxRadius end; e.alpha = e.timer / 0.5
+            -- Update speech bubble timer if present
+            if e.speechBubble then
+                e.speechBubble.timer = (e.speechBubble.timer or 0) + dt
+            end
         end
         if e.timer <= 0 then table.remove(Game.effects, i) end
     end
@@ -1571,7 +1715,13 @@ function love.draw()
         return
     end
     
-    -- Draw THE AUDITOR sequence (engagement depletion game over)
+    -- Draw life lost auditor screen (engagement depleted but lives remain)
+    if Game.lifeLostAuditorActive then
+        drawLifeLostAuditor()
+        return
+    end
+    
+    -- Draw THE AUDITOR sequence (final game over - all lives lost)
     -- Only show if not in intro mode (safety check)
     if Game.auditorActive and not Game.introMode then
         drawAuditor()
@@ -1626,6 +1776,57 @@ function love.draw()
                     elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
                     else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
                     love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+                    
+                    -- Draw speech bubble if present (for insane units)
+                    if e.speechBubble and e.speechBubble.text then
+                        local bubbleX = e.x
+                        local bubbleY = e.y - Constants.UNIT_RADIUS - 40
+                        local padding = 10
+                        local fontSize = 12
+                        local font = love.graphics.newFont(fontSize)
+                        
+                        local textWidth = font:getWidth(e.speechBubble.text)
+                        local textHeight = font:getHeight()
+                        local bubbleWidth = textWidth + padding * 2
+                        local bubbleHeight = textHeight + padding * 2
+                        
+                        -- Fade out with explosion (timer is updated in update loop)
+                        local bubbleAlpha = math.max(e.alpha, 0.5)  -- Keep it visible even during explosion
+                        if e.speechBubble and e.speechBubble.timer and e.speechBubble.duration then
+                            if e.speechBubble.timer > e.speechBubble.duration * 0.7 then
+                                bubbleAlpha = bubbleAlpha * (1.0 - ((e.speechBubble.timer - e.speechBubble.duration * 0.7) / (e.speechBubble.duration * 0.3)))
+                            end
+                        end
+                        
+                        -- Draw speech bubble background (more opaque)
+                        love.graphics.setColor(0, 0, 0, bubbleAlpha * 0.9)
+                        love.graphics.rectangle("fill", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+                        
+                        -- Draw speech bubble border (brighter)
+                        love.graphics.setColor(0.8, 0.8, 0.8, bubbleAlpha)
+                        love.graphics.setLineWidth(2)
+                        love.graphics.rectangle("line", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+                        
+                        -- Draw speech bubble tail
+                        love.graphics.setColor(0, 0, 0, bubbleAlpha * 0.9)
+                        love.graphics.polygon("fill", 
+                            bubbleX - 10, bubbleY - 6,
+                            bubbleX + 10, bubbleY - 6,
+                            bubbleX, bubbleY + 6
+                        )
+                        love.graphics.setColor(0.8, 0.8, 0.8, bubbleAlpha)
+                        love.graphics.setLineWidth(2)
+                        love.graphics.polygon("line", 
+                            bubbleX - 10, bubbleY - 6,
+                            bubbleX + 10, bubbleY - 6,
+                            bubbleX, bubbleY + 6
+                        )
+                        
+                        -- Draw text (brighter)
+                        love.graphics.setColor(1, 0.5, 0.5, bubbleAlpha)
+                        love.graphics.setFont(font)
+                        love.graphics.print(e.speechBubble.text, bubbleX - textWidth / 2, bubbleY - bubbleHeight + padding)
+                    end
                 elseif e.type == "forcefield" then
                     love.graphics.setLineWidth(4)
                     love.graphics.setColor(0.2, 0.6, 1, e.alpha * 0.6)

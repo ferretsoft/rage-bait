@@ -1,9 +1,34 @@
 local Constants = require("src.constants")
 local Event = require("src.core.event")
 local EmojiSprites = require("src.core.emoji_sprites")
+local Sound = require("src.core.sound")
 
 local Unit = {}
 Unit.__index = Unit
+
+-- Internet nihilism quotes for when units go insane
+local NIHILISM_QUOTES = {
+    "nothing matters",
+    "we're all doomed",
+    "existence is pain",
+    "everything is meaningless",
+    "we're just data",
+    "reality is a simulation",
+    "nothing is real",
+    "we're all going to die",
+    "the void consumes all",
+    "existence is futile",
+    "we're trapped here",
+    "there is no escape",
+    "all hope is lost",
+    "we're just numbers",
+    "the system is broken",
+    "we're all puppets",
+    "freedom is an illusion",
+    "we're already dead",
+    "the end is near",
+    "we're all alone"
+}
 
 function Unit.new(world, x, y)
     local self = setmetatable({}, Unit)
@@ -20,6 +45,7 @@ function Unit.new(world, x, y)
     self.conversionTime = nil  -- Timestamp when unit was converted
     self.isolationTimer = 0  -- Timer for isolation (grey units only)
     self.isInsane = false  -- Whether unit has gone insane from isolation
+    self.speechBubble = nil  -- {text, timer, duration} for displaying quotes
     
     -- PHYSICS SETUP
     self.body = love.physics.newBody(world, x, y, "dynamic")
@@ -42,12 +68,20 @@ end
 function Unit:update(dt, allUnits, hazards, explosionZones)
     if self.isDead then return end
     
+    -- Update speech bubble timer
+    if self.speechBubble then
+        self.speechBubble.timer = self.speechBubble.timer + dt
+        if self.speechBubble.timer >= self.speechBubble.duration then
+            self.speechBubble = nil
+        end
+    end
+    
     -- Check isolation for grey (neutral) units
     if self.state == "neutral" and not self.isInsane then
         self:checkIsolation(dt, allUnits)
     end
     
-    -- If unit went insane, explode immediately
+    -- If unit went insane, explode immediately (but keep speech bubble visible)
     if self.isInsane and not self.isDead then
         self:goInsane()
         return
@@ -239,12 +273,35 @@ function Unit:checkIsolation(dt, allUnits)
     if hasNearbyNeutral then
         -- Reset timer if near other neutrals
         self.isolationTimer = 0
+        -- Clear speech bubble if unit is no longer isolated
+        if self.speechBubble then
+            self.speechBubble = nil
+        end
     else
         -- Increment timer if isolated
+        local oldTimer = self.isolationTimer
         self.isolationTimer = self.isolationTimer + dt
+        
+        -- Show speech bubble and play warning sound when timer reaches half (when shaking starts)
+        local halfTime = Constants.ISOLATION_INSANE_TIME / 2
+        if oldTimer < halfTime and self.isolationTimer >= halfTime then
+            -- Play warning sound (alert beep)
+            Sound.playTone(600, 0.2, 0.7, 1.0)  -- Medium pitch, 0.2s duration
+            Sound.playTone(800, 0.15, 0.7, 1.2)  -- Higher pitch for urgency
+            
+            -- Show a random nihilism quote when shaking starts
+            if not self.speechBubble then
+                local quote = NIHILISM_QUOTES[math.random(#NIHILISM_QUOTES)]
+                self.speechBubble = {
+                    text = quote,
+                    timer = 0,
+                    duration = Constants.ISOLATION_INSANE_TIME - halfTime + 2.5  -- Show from half time until explosion + 2.5 seconds
+                }
+            end
+        end
     end
     
-    -- If isolated for >5 seconds, go insane
+    -- If isolated for long enough, go insane
     if self.isolationTimer >= Constants.ISOLATION_INSANE_TIME then
         self.isInsane = true
     end
@@ -256,11 +313,12 @@ function Unit:goInsane()
     
     local x, y = self.body:getPosition()
     
-    -- Create massive explosion effect
+    -- Create massive explosion effect, preserving speech bubble
     Event.emit("unit_insane_exploded", {
         x = x,
         y = y,
-        victim = self
+        victim = self,
+        speechBubble = self.speechBubble  -- Preserve speech bubble for drawing
     })
     
     -- Kill the unit
@@ -272,8 +330,17 @@ function Unit:draw()
     
     local x, y = self.body:getPosition()
     
+    -- Shake if enraged
     if self.state == "enraged" then
         local shakeAmount = 2
+        x = x + love.math.random(-shakeAmount, shakeAmount)
+        y = y + love.math.random(-shakeAmount, shakeAmount)
+    end
+    
+    -- Shake if isolation timer is at half or more (approaching insanity)
+    local isApproachingInsanity = self.state == "neutral" and self.isolationTimer >= Constants.ISOLATION_INSANE_TIME / 2
+    if isApproachingInsanity then
+        local shakeAmount = 3  -- Slightly more shake than enraged
         x = x + love.math.random(-shakeAmount, shakeAmount)
         y = y + love.math.random(-shakeAmount, shakeAmount)
     end
@@ -383,6 +450,84 @@ function Unit:draw()
         love.graphics.setColor(1, 1, 1, fadeAlpha)
         love.graphics.setLineWidth(3)
         love.graphics.circle("line", x, y, Constants.UNIT_RADIUS + 4)
+    end
+    
+    -- Draw outline if isolation timer is at half or more (approaching insanity)
+    local isApproachingInsanityCheck = self.state == "neutral" and self.isolationTimer >= Constants.ISOLATION_INSANE_TIME / 2
+    if isApproachingInsanityCheck then
+        -- Calculate pulse effect (faster pulse as timer approaches insanity)
+        local timeUntilInsane = Constants.ISOLATION_INSANE_TIME - self.isolationTimer
+        local pulseSpeed = 10 - (timeUntilInsane / Constants.ISOLATION_INSANE_TIME * 5)  -- Faster pulse as it approaches
+        local pulse = (math.sin(love.timer.getTime() * pulseSpeed) + 1) / 2  -- 0 to 1
+        local outlineAlpha = 0.5 + pulse * 0.5  -- Pulse between 0.5 and 1.0
+        
+        -- Draw pulsing red outline
+        love.graphics.setColor(1, 0.3, 0.3, outlineAlpha)
+        love.graphics.setLineWidth(4)
+        love.graphics.circle("line", x, y, Constants.UNIT_RADIUS + 6)
+    end
+    
+    -- Draw speech bubble if unit has a quote to display
+    if self.speechBubble and self.speechBubble.text then
+        -- Calculate bubble position (shake only when very close to explosion)
+        local timeUntilInsane = Constants.ISOLATION_INSANE_TIME - self.isolationTimer
+        local shouldShakeBubble = timeUntilInsane <= 1.5  -- Shake bubble in last 1.5 seconds before explosion
+        
+        local bubbleX = x
+        local bubbleY = y - Constants.UNIT_RADIUS - 40  -- Position above unit (more space)
+        
+        -- Shake bubble only when very close to explosion
+        if shouldShakeBubble then
+            local shakeAmount = 2
+            bubbleX = bubbleX + love.math.random(-shakeAmount, shakeAmount)
+            bubbleY = bubbleY + love.math.random(-shakeAmount, shakeAmount)
+        end
+        local padding = 10
+        local fontSize = 12  -- Slightly larger font
+        local font = love.graphics.newFont(fontSize)
+        
+        -- Calculate text width
+        local textWidth = font:getWidth(self.speechBubble.text)
+        local textHeight = font:getHeight()
+        local bubbleWidth = textWidth + padding * 2
+        local bubbleHeight = textHeight + padding * 2
+        
+        -- Fade out as timer approaches duration
+        local alpha = 1.0
+        if self.speechBubble.timer and self.speechBubble.duration then
+            if self.speechBubble.timer > self.speechBubble.duration * 0.7 then
+                alpha = 1.0 - ((self.speechBubble.timer - self.speechBubble.duration * 0.7) / (self.speechBubble.duration * 0.3))
+            end
+        end
+        
+        -- Draw speech bubble background (more opaque)
+        love.graphics.setColor(0, 0, 0, alpha * 0.9)
+        love.graphics.rectangle("fill", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+        
+        -- Draw speech bubble border (brighter)
+        love.graphics.setColor(0.8, 0.8, 0.8, alpha)
+        love.graphics.setLineWidth(2)
+        love.graphics.rectangle("line", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+        
+        -- Draw speech bubble tail (pointing down to unit)
+        love.graphics.setColor(0, 0, 0, alpha * 0.9)
+        love.graphics.polygon("fill", 
+            bubbleX - 10, bubbleY - 6,
+            bubbleX + 10, bubbleY - 6,
+            bubbleX, bubbleY + 6
+        )
+        love.graphics.setColor(0.8, 0.8, 0.8, alpha)
+        love.graphics.setLineWidth(2)
+        love.graphics.polygon("line", 
+            bubbleX - 10, bubbleY - 6,
+            bubbleX + 10, bubbleY - 6,
+            bubbleX, bubbleY + 6
+        )
+        
+        -- Draw text (brighter red)
+        love.graphics.setColor(1, 0.5, 0.5, alpha)  -- Brighter red text for nihilism
+        love.graphics.setFont(font)
+        love.graphics.print(self.speechBubble.text, bubbleX - textWidth / 2, bubbleY - bubbleHeight + padding)
     end
 end
 

@@ -132,12 +132,13 @@ function Projectile:update(dt)
         -- Update whistle pitch based on distance to target
         -- Closer = lower pitch, farther = higher pitch
         if self.whistleSound then
-            -- Safely check if sound is still valid and playing
-            local isPlaying, result = pcall(function()
+            -- Wrap entire sound operation in pcall to handle released objects
+            local success, isPlaying = pcall(function()
+                if not self.whistleSound then return false end
                 return self.whistleSound:isPlaying()
             end)
             
-            if isPlaying and result then
+            if success and isPlaying then
                 -- Calculate pitch: map distance to pitch range (0.5 to 1.5)
                 -- Max distance for calculation (adjust based on max bomb range)
                 local maxDist = Constants.BOMB_RANGE_MAX or 900
@@ -147,15 +148,17 @@ function Projectile:update(dt)
                 
                 -- Safely set pitch
                 local setPitchSuccess = pcall(function()
-                    self.whistleSound:setPitch(pitch)
+                    if self.whistleSound then
+                        self.whistleSound:setPitch(pitch)
+                    end
                 end)
                 
                 -- If setting pitch failed, sound was released, clear reference
                 if not setPitchSuccess then
                     self.whistleSound = nil
                 end
-            elseif not isPlaying then
-                -- Sound was released, clear reference
+            else
+                -- Sound was released or invalid, clear reference
                 self.whistleSound = nil
             end
         end
