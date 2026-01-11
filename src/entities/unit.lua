@@ -18,6 +18,8 @@ function Unit.new(world, x, y)
     self.enrageTimer = 0 
     self.flashTimer = 0
     self.conversionTime = nil  -- Timestamp when unit was converted
+    self.isolationTimer = 0  -- Timer for isolation (grey units only)
+    self.isInsane = false  -- Whether unit has gone insane from isolation
     
     -- PHYSICS SETUP
     self.body = love.physics.newBody(world, x, y, "dynamic")
@@ -39,6 +41,17 @@ end
 
 function Unit:update(dt, allUnits, hazards, explosionZones)
     if self.isDead then return end
+    
+    -- Check isolation for grey (neutral) units
+    if self.state == "neutral" and not self.isInsane then
+        self:checkIsolation(dt, allUnits)
+    end
+    
+    -- If unit went insane, explode immediately
+    if self.isInsane and not self.isDead then
+        self:goInsane()
+        return
+    end
     
     if self.state == "enraged" then
         self.enrageTimer = self.enrageTimer - dt
@@ -71,6 +84,7 @@ function Unit:update(dt, allUnits, hazards, explosionZones)
         -- [REMOVED] avoidProjectiles logic
     end
     
+    -- All units avoid walls (enraged units have reduced wall avoidance in avoidWalls function)
     self:avoidWalls(dt)
 end
 
@@ -134,11 +148,31 @@ function Unit:updateEnraged(dt, allUnits)
         local dist = math.sqrt(dx^2 + dy^2)
         
         if dist > 0 then
-            -- Strong seeking force to overcome any other forces (like from other units' flocking)
-            local force = self.body:getMass() * 2000  -- Increased from 1000 to break away from flock
             local dirX = dx / dist
             local dirY = dy / dist
-            self.body:applyForce(dirX * force, dirY * force)
+            
+            -- Much stronger seeking force - enraged units are aggressive
+            local force = self.body:getMass() * 4000  -- Doubled from 2000 for more aggression
+            
+            -- If close to enemy, boost velocity directly for ramming attacks
+            if dist < 100 then
+                -- Close range: boost velocity for direct ramming
+                local currentVx, currentVy = self.body:getLinearVelocity()
+                local boostSpeed = 300  -- Additional speed boost when close
+                local newVx = currentVx + dirX * boostSpeed * dt
+                local newVy = currentVy + dirY * boostSpeed * dt
+                -- Clamp max speed to prevent excessive velocity
+                local maxSpeed = 500
+                local speed = math.sqrt(newVx^2 + newVy^2)
+                if speed > maxSpeed then
+                    newVx = (newVx / speed) * maxSpeed
+                    newVy = (newVy / speed) * maxSpeed
+                end
+                self.body:setLinearVelocity(newVx, newVy)
+            else
+                -- Far range: use force to seek
+                self.body:applyForce(dirX * force, dirY * force)
+            end
         end
     else
         -- No enemy found, wander until one appears
@@ -178,6 +212,59 @@ function Unit:enrage()
     local angle = math.random() * math.pi * 2
     local burst = Constants.UNIT_SPEED_SEEK * 2 
     self.body:setLinearVelocity(math.cos(angle) * burst, math.sin(angle) * burst)
+end
+
+-- Check if grey unit is isolated from other neutral units
+function Unit:checkIsolation(dt, allUnits)
+    local myX, myY = self.body:getPosition()
+    local isolationRadius = 150  -- Distance to check for nearby neutral units
+    local hasNearbyNeutral = false
+    
+    -- Check for nearby neutral units
+    for _, other in ipairs(allUnits) do
+        if other ~= self and not other.isDead and other.state == "neutral" then
+            local ox, oy = other.body:getPosition()
+            local dx = ox - myX
+            local dy = oy - myY
+            local distSq = dx*dx + dy*dy
+            
+            if distSq < isolationRadius^2 then
+                hasNearbyNeutral = true
+                break
+            end
+        end
+    end
+    
+    -- Update isolation timer
+    if hasNearbyNeutral then
+        -- Reset timer if near other neutrals
+        self.isolationTimer = 0
+    else
+        -- Increment timer if isolated
+        self.isolationTimer = self.isolationTimer + dt
+    end
+    
+    -- If isolated for >5 seconds, go insane
+    if self.isolationTimer >= Constants.ISOLATION_INSANE_TIME then
+        self.isInsane = true
+    end
+end
+
+-- Unit goes insane from isolation - explodes and creates massive sludge
+function Unit:goInsane()
+    if self.isDead then return end
+    
+    local x, y = self.body:getPosition()
+    
+    -- Create massive explosion effect
+    Event.emit("unit_insane_exploded", {
+        x = x,
+        y = y,
+        victim = self
+    })
+    
+    -- Kill the unit
+    self:takeDamage(self.hp + 1, nil)  -- Guaranteed death
 end
 
 function Unit:draw()
@@ -444,6 +531,12 @@ function Unit:avoidWalls(dt)
     local pushBack = self.body:getMass() * 2000 
     local margin = 60 
     
+    -- Enraged units are less affected by walls - they're focused on attacking
+    if self.state == "enraged" then
+        pushBack = pushBack * 0.5  -- Half the wall avoidance force when enraged
+        margin = 30  -- Smaller margin - let them get closer to walls
+    end
+    
     if x < margin then 
         self.body:applyForce(pushBack*dt, 0)
         self.currentMoveAngle = 0 
@@ -497,8 +590,12 @@ end
 function Unit:die(killer)
     if self.isDead then return end
     self.isDead = true
+    
+    -- Get position before destroying body
+    local x, y = self.body:getPosition()
+    
     self.body:destroy() 
-    Event.emit("unit_killed", {victim = self, killer = killer})
+    Event.emit("unit_killed", {victim = self, killer = killer, x = x, y = y})
 end
 
 return Unit

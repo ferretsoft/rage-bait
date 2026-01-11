@@ -131,14 +131,33 @@ function Projectile:update(dt)
         
         -- Update whistle pitch based on distance to target
         -- Closer = lower pitch, farther = higher pitch
-        if self.whistleSound and self.whistleSound:isPlaying() then
-            -- Calculate pitch: map distance to pitch range (0.5 to 1.5)
-            -- Max distance for calculation (adjust based on max bomb range)
-            local maxDist = Constants.BOMB_RANGE_MAX or 900
-            local normalizedDist = math.min(dist / maxDist, 1.0)
-            -- Pitch: far (1) = high (1.5), close (0) = low (0.5)
-            local pitch = 0.5 + normalizedDist * 1.0  -- Range: 0.5 (close) to 1.5 (far)
-            self.whistleSound:setPitch(pitch)
+        if self.whistleSound then
+            -- Safely check if sound is still valid and playing
+            local isPlaying, result = pcall(function()
+                return self.whistleSound:isPlaying()
+            end)
+            
+            if isPlaying and result then
+                -- Calculate pitch: map distance to pitch range (0.5 to 1.5)
+                -- Max distance for calculation (adjust based on max bomb range)
+                local maxDist = Constants.BOMB_RANGE_MAX or 900
+                local normalizedDist = math.min(dist / maxDist, 1.0)
+                -- Pitch: far (1) = high (1.5), close (0) = low (0.5)
+                local pitch = 0.5 + normalizedDist * 1.0  -- Range: 0.5 (close) to 1.5 (far)
+                
+                -- Safely set pitch
+                local setPitchSuccess = pcall(function()
+                    self.whistleSound:setPitch(pitch)
+                end)
+                
+                -- If setting pitch failed, sound was released, clear reference
+                if not setPitchSuccess then
+                    self.whistleSound = nil
+                end
+            elseif not isPlaying then
+                -- Sound was released, clear reference
+                self.whistleSound = nil
+            end
         end
         
         if distSq < 15*15 then
@@ -166,10 +185,14 @@ function Projectile:die()
     if self.isDead then return end
     self.isDead = true
     
-    -- Stop whistling sound if playing
-    if self.whistleSound and self.whistleSound:isPlaying() then
-        self.whistleSound:stop()
-        self.whistleSound:release()
+    -- Stop whistling sound if playing (safely handle released sounds)
+    if self.whistleSound then
+        local success = pcall(function()
+            if self.whistleSound:isPlaying() then
+                self.whistleSound:stop()
+                self.whistleSound:release()
+            end
+        end)
         self.whistleSound = nil
     end
     

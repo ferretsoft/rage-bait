@@ -3,12 +3,12 @@ local Constants = {}
 -- === SCREEN & WORLD ===
 Constants.SCREEN_WIDTH = 1080
 Constants.SCREEN_HEIGHT = 1920
-Constants.PLAYFIELD_WIDTH = 720
+Constants.PLAYFIELD_WIDTH = 960
 Constants.PLAYFIELD_HEIGHT = 1280
 
 -- Calculated Centers (Do not change)
 Constants.OFFSET_X = (Constants.SCREEN_WIDTH - Constants.PLAYFIELD_WIDTH) / 2
-Constants.OFFSET_Y = (Constants.SCREEN_HEIGHT - Constants.PLAYFIELD_HEIGHT) / 2 + 30
+Constants.OFFSET_Y = (Constants.SCREEN_HEIGHT - Constants.PLAYFIELD_HEIGHT) / 2 - 90  -- Moved up 80 more pixels (was -10, now -90)
 
 -- === PHYSICS CATEGORIES ===
 Constants.PHYSICS = {
@@ -18,7 +18,8 @@ Constants.PHYSICS = {
     SENSOR = 4,
     ZONE = 5,
     POWERUP = 6,
-    BUMPER = 7
+    BUMPER = 7,
+    WEB = 8
 }
 
 -- === UNIT STATS ===
@@ -34,6 +35,11 @@ Constants.UNIT_ENRAGE_DURATION = 7.0
 Constants.TOXIC_RADIUS = 60
 Constants.TOXIC_DURATION = 8.0
 Constants.TOXIC_FEAR_FORCE = 1500
+Constants.TOXIC_DECAY_MULTIPLIER = 0.5  -- Each toxic hazard increases decay by 50% (1.0 = 100%, 0.5 = 50%)
+Constants.ISOLATION_INSANE_TIME = 5.0  -- Time in seconds a grey unit must be isolated before going insane
+Constants.INSANE_EXPLOSION_RADIUS = 120  -- Radius of explosion when unit goes insane (larger than normal)
+Constants.INSANE_TOXIC_RADIUS = 100  -- Radius of toxic sludge from insane explosion (larger than normal)
+Constants.INSANE_TOXIC_DURATION = 12.0  -- Duration of toxic sludge from insane explosion (longer than normal)
 
 -- === GAME PROGRESSION ===
 Constants.UPGRADE_SCORE = 1000
@@ -75,6 +81,7 @@ Constants.PUCK_LIFETIME_MAX = 8.0
 Constants.ENGAGEMENT_MAX = 100
 Constants.ENGAGEMENT_DECAY_BASE = 5 
 Constants.ENGAGEMENT_DECAY_RATE = 5 -- Added duplicate just in case logic uses this name
+Constants.ENGAGEMENT_DECAY_LEVEL_MULTIPLIER = 0.15  -- Each level increases decay by 15%
 Constants.ENGAGEMENT_REFILL_HIT = 2
 Constants.ENGAGEMENT_REFILL_KILL = 10
 Constants.SCORE_HIT = 10

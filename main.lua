@@ -36,12 +36,22 @@ local Game = {
     introMode = false,  -- Intro screen mode
     introTimer = 0,  -- Timer for intro screen
     introStep = 1,  -- Current intro step/page
+    auditorActive = false,  -- Whether THE AUDITOR sequence is active
+    auditorTimer = 0,  -- Timer for THE AUDITOR sequence
+    auditorPhase = 1,  -- Current phase of THE AUDITOR sequence (1=freeze, 2=fade, 3=verdict, 4=crash)
     level = 1,  -- Current level
     levelTransitionTimer = 0,  -- Timer for level transition
     levelTransitionActive = false,  -- Whether level transition is active
+    levelCompleteScreenActive = false,  -- Whether level completion screen is active
+    levelCompleteScreenTimer = 0,  -- Timer for level completion screen (5 seconds)
     lives = 3,  -- Player lives
     gameOverTimer = 0,  -- Timer for game over screen
     gameOverActive = false,  -- Whether game over screen is active
+    pointMultiplier = 1,  -- Current point multiplier (incremental)
+    pointMultiplierTimer = 0,  -- Timer for point multiplier (10 seconds)
+    pointMultiplierActive = false,  -- Whether point multiplier is active
+    pointMultiplierFlashTimer = 0,  -- Timer for flashy text animation
+    previousEngagementAtMax = false,  -- Track if engagement was at max last frame (prevents retriggering)
     highScores = {},  -- List of high scores {name, score}
     nameEntryActive = false,  -- Whether name entry screen is active
     nameEntryText = "",  -- Current name being entered (array of characters)
@@ -96,7 +106,7 @@ local function beginContact(a, b, coll)
         if objA.alignment == objB.alignment then return end
         
         objA:takeDamage(1, objB); objB:takeDamage(1, objA)
-        Game.score = Game.score + (Constants.SCORE_HIT * 2)
+        Game.score = Game.score + (Constants.SCORE_HIT * 2 * Game.pointMultiplier)
         Engagement.add(Constants.ENGAGEMENT_REFILL_HIT * 2)
         Sound.unitHit()
         
@@ -357,10 +367,40 @@ function love.load()
         table.insert(Game.explosionZones, {x = data.x, y = data.y, radius = data.radius, color = data.color, timer = Constants.EXPLOSION_DURATION, body = body})
     end)
     Event.on("unit_killed", function(data)
-        Game.score = Game.score + Constants.SCORE_KILL; Engagement.add(Constants.ENGAGEMENT_REFILL_KILL); Game.shake = math.max(Game.shake, 0.2)
-        local x, y = data.victim.body:getPosition()
+        Game.score = Game.score + (Constants.SCORE_KILL * Game.pointMultiplier); Engagement.add(Constants.ENGAGEMENT_REFILL_KILL); Game.shake = math.max(Game.shake, 0.2)
+        -- Use position from event data (captured before body destruction)
+        local x, y = data.x, data.y
+        if not x or not y then
+            -- Fallback: try to get from body if still available (shouldn't happen)
+            if data.victim and data.victim.body then
+                x, y = data.victim.body:getPosition()
+            else
+                return  -- Can't get position, skip
+            end
+        end
         table.insert(Game.hazards, {x = x, y = y, radius = Constants.TOXIC_RADIUS, timer = Constants.TOXIC_DURATION})
         Webcam.showComment("unit_killed")
+    end)
+    Event.on("unit_insane_exploded", function(data)
+        local x, y = data.victim.body:getPosition()
+        -- Massive explosion effect
+        table.insert(Game.effects, {
+            type = "explosion",
+            x = x, y = y,
+            radius = 0,
+            maxRadius = Constants.INSANE_EXPLOSION_RADIUS,
+            color = "red",  -- Red for insanity
+            alpha = 1.0,
+            timer = 0.8  -- Longer explosion animation
+        })
+        -- Massive toxic sludge (larger radius and longer duration)
+        table.insert(Game.hazards, {
+            x = x, y = y,
+            radius = Constants.INSANE_TOXIC_RADIUS,
+            timer = Constants.INSANE_TOXIC_DURATION
+        })
+        Game.shake = math.max(Game.shake, 2.0)  -- Strong screen shake
+        Webcam.showComment("unit_killed")  -- Use same comment for now
     end)
 end
 
@@ -370,6 +410,17 @@ function startGame()
     Sound.unmute()
     Game.attractMode = false
     Game.attractModeTimer = 0
+    
+    -- Reset all game over states
+    Game.gameOverActive = false
+    Game.gameOverTimer = 0
+    Game.auditorActive = false
+    Game.auditorTimer = 0
+    Game.auditorPhase = 1
+    Game.nameEntryActive = false
+    Game.nameEntryText = ""
+    Game.nameEntryCursor = 1
+    Game.nameEntryCharIndex = {}
     
     -- Start intro screen instead of immediately starting gameplay
     Game.introMode = true
@@ -385,6 +436,9 @@ function startGameplay()
     Webcam.showComment("game_start")
     Webcam.showComment("game_start")
     
+    -- Reset engagement to starting value (critical - prevents immediate game over)
+    Engagement.init()
+    
     -- Initialize game entities
     Game.turret = Turret.new()
     Game.score = 0
@@ -397,13 +451,23 @@ function startGameplay()
     Game.level = 1
     Game.levelTransitionTimer = 0
     Game.levelTransitionActive = false
+    Game.levelCompleteScreenActive = false
+    Game.levelCompleteScreenTimer = 0
     Game.lives = 3
     Game.gameOverTimer = 0
     Game.gameOverActive = false
+    Game.auditorActive = false
+    Game.auditorTimer = 0
+    Game.auditorPhase = 1
     Game.nameEntryActive = false
     Game.nameEntryText = ""
     Game.nameEntryCursor = 1
     Game.nameEntryCharIndex = {}
+    Game.pointMultiplier = 1
+    Game.pointMultiplierTimer = 0
+    Game.pointMultiplierActive = false
+    Game.pointMultiplierFlashTimer = 0
+    Game.previousEngagementAtMax = false
     Game.hazards = {}
     Game.explosionZones = {}
     Game.units = {}
@@ -431,8 +495,9 @@ end
 -- Advance to the next level
 function advanceToNextLevel(winCondition)
     -- Don't stop whistle sounds - let them continue until projectiles explode naturally
-    Game.levelTransitionActive = true
-    Game.levelTransitionTimer = 2.0  -- 2 second transition
+    -- First show level completion screen with Chase Paxton (5 seconds)
+    Game.levelCompleteScreenActive = true
+    Game.levelCompleteScreenTimer = 5.0  -- 5 second completion screen
     Game.winCondition = winCondition
     Game.gameState = "level_complete"
     Webcam.showComment("level_complete")
@@ -452,6 +517,19 @@ function handleGameOver(condition)
     -- Don't call Sound.cleanup() here - it stops ALL sounds including whistle sounds
     -- Let projectiles continue playing their whistle sounds until they explode naturally
     
+    -- Check if this is engagement depletion (THE AUDITOR appears)
+    if condition == "engagement_depleted" then
+        -- Trigger THE AUDITOR sequence
+        Game.auditorActive = true
+        Game.auditorTimer = 0
+        Game.auditorPhase = 1  -- Start with system freeze
+        Game.gameState = "auditor"
+        -- Stop all physics/simulation
+        Sound.cleanup()  -- Stop all sounds for THE AUDITOR sequence
+        return
+    end
+    
+    -- Normal game over (lose a life)
     Game.gameOverActive = true
     Game.gameOverTimer = 2.0  -- 2 second game over screen
     Game.gameState = "lost"
@@ -520,6 +598,9 @@ function returnToAttractMode()
     Game.attractModeTimer = 0
     Game.gameOverActive = false
     Game.gameOverTimer = 0
+    Game.auditorActive = false
+    Game.auditorTimer = 0
+    Game.auditorPhase = 1
     Game.nameEntryActive = false
     Game.nameEntryText = ""
     Game.nameEntryCursor = 1
@@ -686,26 +767,26 @@ end
 function drawIntroScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
-    -- Intro messages (multiple steps)
+    -- Intro messages (multiple steps) - Chase Paxton's onboarding
     local introMessages = {
         {
             title = "WELCOME TO RAGE BAIT!",
-            message = "Control the spider turret and convert units to your side!",
+            message = "You're our new engagement specialist!\nYour job: maximize user conversion metrics!",
             duration = 3.0
         },
         {
             title = "CONTROLS",
-            message = "Hold Z for RED bombs\nHold X for BLUE bombs\nCollect powerups for rapid fire!",
+            message = "Hold Z for RED data packets\nHold X for BLUE data packets\nCollect powerups to optimize throughput!",
             duration = 4.0
         },
         {
             title = "OBJECTIVE",
-            message = "Keep engagement high by hitting units!\nConvert all units to one color to win!",
+            message = "Keep engagement metrics in the green!\nConvert all units to one alignment to hit KPIs!\nWatch out for toxic sludge - it kills performance!",
             duration = 4.0
         },
         {
             title = "READY?",
-            message = "Press SPACE or ENTER to start!",
+            message = "Press SPACE or ENTER to start your shift!\nRemember: The Auditor is watching!",
             duration = 999.0  -- Wait for input
         }
     }
@@ -815,6 +896,197 @@ function drawIntroScreen()
     end
 end
 
+-- Draw THE AUDITOR game over sequence
+function drawAuditor()
+    -- Phase 1: System freeze - show frozen game state
+    if Game.auditorPhase == 1 then
+        -- Draw frozen game state (no updates, but visible)
+        love.graphics.clear(Constants.COLORS.BACKGROUND)
+        
+        -- Draw frozen game elements
+        World.draw(function()
+            for _, h in ipairs(Game.hazards) do
+                local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+                love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+                love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+            end
+            
+            for _, u in ipairs(Game.units) do u:draw() end
+            for _, p in ipairs(Game.projectiles) do p:draw() end
+            for _, pup in ipairs(Game.powerups) do pup:draw() end
+            
+            for _, e in ipairs(Game.effects) do
+                if e.type == "explosion" then
+                    love.graphics.setLineWidth(3)
+                    if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
+                    elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
+                    else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
+                    love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+                end
+            end
+            
+            if Game.turret then Game.turret:draw() end
+        end)
+        
+        -- Show webcam with CRITICAL_ERROR
+        love.graphics.setColor(1, 0, 0, 1)
+        love.graphics.setFont(Game.fonts.large)
+        local errorMsg = "CRITICAL_ERROR"
+        local errorWidth = Game.fonts.large:getWidth(errorMsg)
+        love.graphics.print(errorMsg, Constants.SCREEN_WIDTH / 2 - errorWidth / 2, Constants.SCREEN_HEIGHT / 2)
+        
+    -- Phase 2: Fade to black, show THE AUDITOR
+    elseif Game.auditorPhase == 2 then
+        local fadeProgress = Game.auditorTimer / 2.0
+        local fadeAlpha = math.min(fadeProgress, 1.0)
+        
+        -- Fade to black
+        love.graphics.setColor(0, 0, 0, fadeAlpha)
+        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        
+        -- Show THE AUDITOR (hooded figure with red camera lens)
+        if fadeAlpha >= 0.5 then
+            local auditorAlpha = (fadeAlpha - 0.5) * 2  -- Fade in during second half
+            drawAuditorFigure(auditorAlpha)
+        end
+        
+    -- Phase 3: Show verdict text
+    elseif Game.auditorPhase == 3 then
+        -- Black background
+        love.graphics.setColor(0, 0, 0, 1)
+        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        
+        -- Draw THE AUDITOR
+        drawAuditorFigure(1.0)
+        
+        -- Show verdict text
+        love.graphics.setFont(Game.fonts.large)
+        love.graphics.setColor(1, 0, 0, 1)  -- Red text
+        
+        local verdict1 = "YIELD INSUFFICIENT."
+        local verdict2 = "LIQUIDATING ASSET."
+        
+        local v1Width = Game.fonts.large:getWidth(verdict1)
+        local v2Width = Game.fonts.large:getWidth(verdict2)
+        
+        love.graphics.print(verdict1, Constants.SCREEN_WIDTH / 2 - v1Width / 2, Constants.SCREEN_HEIGHT / 2 - 50)
+        love.graphics.print(verdict2, Constants.SCREEN_WIDTH / 2 - v2Width / 2, Constants.SCREEN_HEIGHT / 2 + 50)
+        
+    -- Phase 4: Crash to black
+    elseif Game.auditorPhase == 4 then
+        love.graphics.setColor(0, 0, 0, 1)
+        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    end
+end
+
+-- Draw THE AUDITOR figure (hooded figure with red camera lens)
+function drawAuditorFigure(alpha)
+    local centerX = Constants.SCREEN_WIDTH / 2
+    local centerY = Constants.SCREEN_HEIGHT / 2
+    
+    -- Hood (dark shape)
+    love.graphics.setColor(0.1, 0.1, 0.1, alpha)
+    love.graphics.ellipse("fill", centerX, centerY - 100, 200, 250)
+    
+    -- Hood outline
+    love.graphics.setColor(0.05, 0.05, 0.05, alpha)
+    love.graphics.setLineWidth(3)
+    love.graphics.ellipse("line", centerX, centerY - 100, 200, 250)
+    
+    -- Red camera lens (glowing eye)
+    love.graphics.setColor(1, 0, 0, alpha)
+    love.graphics.circle("fill", centerX, centerY - 80, 40)
+    
+    -- Inner glow
+    love.graphics.setColor(1, 0.3, 0.3, alpha * 0.6)
+    love.graphics.circle("fill", centerX, centerY - 80, 30)
+    
+    -- Bright center
+    love.graphics.setColor(1, 1, 1, alpha * 0.8)
+    love.graphics.circle("fill", centerX, centerY - 80, 15)
+    
+    -- Outer glow ring
+    love.graphics.setColor(1, 0, 0, alpha * 0.3)
+    love.graphics.setLineWidth(5)
+    love.graphics.circle("line", centerX, centerY - 80, 50)
+end
+
+-- Draw level completion screen with Chase Paxton
+function drawLevelCompleteScreen()
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Draw centered, larger webcam window for Chase Paxton
+    local WEBCAM_WIDTH = 600
+    local WEBCAM_HEIGHT = 450
+    local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
+    local WEBCAM_Y = (Constants.SCREEN_HEIGHT - WEBCAM_HEIGHT) / 2 - 100
+    
+    -- Webcam window frame
+    love.graphics.setColor(0.2, 0.2, 0.2, 1)
+    love.graphics.rectangle("fill", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    
+    -- Border
+    love.graphics.setColor(0.5, 0.5, 0.5, 1)
+    love.graphics.setLineWidth(4)
+    love.graphics.rectangle("line", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    
+    -- Inner border
+    love.graphics.setColor(0.1, 0.1, 0.1, 1)
+    love.graphics.setLineWidth(2)
+    love.graphics.rectangle("line", WEBCAM_X + 5, WEBCAM_Y + 5, WEBCAM_WIDTH - 10, WEBCAM_HEIGHT - 10)
+    
+    -- Draw Chase Paxton character (larger)
+    local charX = WEBCAM_X + WEBCAM_WIDTH / 2
+    local charY = WEBCAM_Y + WEBCAM_HEIGHT / 2 - 40
+    
+    -- Character head (larger circle)
+    love.graphics.setColor(0.9, 0.8, 0.7, 1)  -- Skin tone
+    love.graphics.circle("fill", charX, charY, 80)
+    love.graphics.setColor(0.7, 0.6, 0.5, 1)
+    love.graphics.setLineWidth(3)
+    love.graphics.circle("line", charX, charY, 80)
+    
+    -- Eyes (animated - talking)
+    local eyeBlink = math.floor(love.timer.getTime() * 3) % 2
+    local eyeSize = eyeBlink == 0 and 12 or 3
+    love.graphics.setColor(0.2, 0.2, 0.2, 1)
+    love.graphics.circle("fill", charX - 20, charY - 10, eyeSize)
+    love.graphics.circle("fill", charX + 20, charY - 10, eyeSize)
+    
+    -- Mouth (talking animation)
+    local mouthOpen = math.floor(love.timer.getTime() * 4) % 2
+    if mouthOpen == 0 then
+        -- Open mouth
+        love.graphics.setColor(0.3, 0.2, 0.2, 1)
+        love.graphics.ellipse("fill", charX, charY + 20, 18, 15)
+    else
+        -- Closed mouth (smile)
+        love.graphics.setColor(0.4, 0.3, 0.3, 1)
+        love.graphics.setLineWidth(3)
+        love.graphics.arc("line", "open", charX, charY + 20, 15, 0, math.pi)
+    end
+    
+    -- Draw congratulatory messages
+    love.graphics.setFont(Game.fonts.large)
+    love.graphics.setColor(1, 1, 0, 1)  -- Yellow
+    local congratsMsg = "GREAT JOB!"
+    local congratsWidth = Game.fonts.large:getWidth(congratsMsg)
+    love.graphics.print(congratsMsg, WEBCAM_X + (WEBCAM_WIDTH - congratsWidth) / 2, WEBCAM_Y + 30)
+    
+    love.graphics.setFont(Game.fonts.medium)
+    love.graphics.setColor(1, 1, 1, 1)
+    local readyMsg = "Get ready for the next level!"
+    local readyWidth = Game.fonts.medium:getWidth(readyMsg)
+    love.graphics.print(readyMsg, WEBCAM_X + (WEBCAM_WIDTH - readyWidth) / 2, WEBCAM_Y + WEBCAM_HEIGHT - 60)
+    
+    -- Show countdown timer
+    local timeLeft = math.ceil(Game.levelCompleteScreenTimer)
+    local timerText = "Starting in " .. timeLeft .. "..."
+    love.graphics.setColor(0.7, 0.7, 0.7, 1)
+    local timerWidth = Game.fonts.medium:getWidth(timerText)
+    love.graphics.print(timerText, WEBCAM_X + (WEBCAM_WIDTH - timerWidth) / 2, WEBCAM_Y + WEBCAM_HEIGHT - 30)
+end
+
 function love.update(dt)
     if love.keyboard.isDown("escape") then love.event.quit() end
     
@@ -833,6 +1105,31 @@ function love.update(dt)
     -- Handle name entry
     if Game.nameEntryActive then
         return  -- Don't update game logic during name entry
+    end
+    
+    -- Handle THE AUDITOR sequence (engagement depletion game over)
+    -- Only process if not in intro mode (safety check)
+    if Game.auditorActive and not Game.introMode then
+        Game.auditorTimer = Game.auditorTimer + dt
+        
+        -- Phase 1: System freeze (1 second)
+        if Game.auditorPhase == 1 and Game.auditorTimer >= 1.0 then
+            Game.auditorPhase = 2
+            Game.auditorTimer = 0
+        -- Phase 2: Fade to black and show THE AUDITOR (2 seconds)
+        elseif Game.auditorPhase == 2 and Game.auditorTimer >= 2.0 then
+            Game.auditorPhase = 3
+            Game.auditorTimer = 0
+        -- Phase 3: Show verdict (3 seconds)
+        elseif Game.auditorPhase == 3 and Game.auditorTimer >= 3.0 then
+            Game.auditorPhase = 4
+            Game.auditorTimer = 0
+        -- Phase 4: Crash to black (1 second), then return to attract mode
+        elseif Game.auditorPhase == 4 and Game.auditorTimer >= 1.0 then
+            returnToAttractMode()
+        end
+        
+        return  -- Don't update game logic during THE AUDITOR sequence
     end
     
     -- Handle game over screen
@@ -873,6 +1170,19 @@ function love.update(dt)
         return  -- Don't update other game logic during game over
     end
     
+    -- Handle level completion screen (Chase Paxton congratulation)
+    if Game.levelCompleteScreenActive then
+        Game.levelCompleteScreenTimer = Game.levelCompleteScreenTimer - dt
+        if Game.levelCompleteScreenTimer <= 0 then
+            -- Completion screen done, proceed to level transition
+            Game.levelCompleteScreenActive = false
+            Game.levelCompleteScreenTimer = 0
+            Game.levelTransitionActive = true
+            Game.levelTransitionTimer = 2.0  -- 2 second transition
+        end
+        return  -- Don't update game logic during completion screen
+    end
+    
     -- Handle level transition
     if Game.levelTransitionActive then
         Game.levelTransitionTimer = Game.levelTransitionTimer - dt
@@ -884,6 +1194,15 @@ function love.update(dt)
             Game.gameState = "playing"
             Game.winCondition = nil
             Game.hasUnitBeenConverted = false
+            
+            -- Reset engagement to 100% for new level
+            Engagement.init()
+            
+            -- Reset point multiplier for new level
+            Game.pointMultiplier = 1
+            Game.pointMultiplierTimer = 0
+            Game.pointMultiplierActive = false
+            Game.pointMultiplierFlashTimer = 0
             
             -- Clear all game entities
             for i = #Game.units, 1, -1 do
@@ -958,7 +1277,11 @@ function love.update(dt)
     if Game.shake > 0 then Game.shake = math.max(0, Game.shake - 2.5 * dt) end
 
     Time.checkRestore(dt); Time.update(dt); local gameDt = dt * Time.scale
-    Engagement.update(gameDt); World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt)
+    
+    -- Calculate toxic hazard count for engagement decay
+    local toxicHazardCount = #Game.hazards
+    
+    Engagement.update(gameDt, toxicHazardCount, Game.level); World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt)
     
     -- Check if engagement ran out (game over)
     if Game.gameState == "playing" and Engagement.value <= 0 then
@@ -968,9 +1291,53 @@ function love.update(dt)
         end
     end
     
-    -- Check engagement level for comments
+    -- Check engagement level for comments and point multiplier
     if Game.gameState == "playing" then
         local engagementPct = Engagement.value / Constants.ENGAGEMENT_MAX
+        
+        -- Check if engagement reached 100% (activate point multiplier)
+        -- Only trigger when crossing the threshold from below, not when already at 100%
+        local isAtMax = Engagement.value >= Constants.ENGAGEMENT_MAX
+        if isAtMax and not Game.previousEngagementAtMax and not Game.pointMultiplierActive then
+            -- Activate point multiplier
+            Game.pointMultiplier = Game.pointMultiplier + 1  -- Incremental multiplier
+            Game.pointMultiplierActive = true
+            Game.pointMultiplierTimer = 10.0  -- 10 seconds
+            Game.pointMultiplierFlashTimer = 1.5  -- Flash animation duration
+            Game.shake = math.max(Game.shake, 1.5)  -- Screen shake
+            
+            -- Play sound effect
+            Sound.playTone(800, 0.3, 0.8, 1.5)  -- High pitch success sound
+            Sound.playTone(600, 0.3, 0.8, 1.2)  -- Second tone for richness
+            
+            Webcam.showComment("engagement_high")
+        end
+        
+        -- Update tracking flag for next frame
+        Game.previousEngagementAtMax = isAtMax
+        
+        -- Update point multiplier timer
+        if Game.pointMultiplierActive then
+            Game.pointMultiplierTimer = Game.pointMultiplierTimer - dt
+            if Game.pointMultiplierTimer <= 0 then
+                Game.pointMultiplierActive = false
+                Game.pointMultiplierFlashTimer = 0
+            else
+                -- Update flash timer
+                if Game.pointMultiplierFlashTimer > 0 then
+                    Game.pointMultiplierFlashTimer = Game.pointMultiplierFlashTimer - dt
+                end
+            end
+            
+            -- Reset multiplier if engagement drops below max (allows re-triggering)
+            if Engagement.value < Constants.ENGAGEMENT_MAX then
+                Game.pointMultiplierActive = false
+                Game.pointMultiplierTimer = 0
+                Game.pointMultiplierFlashTimer = 0
+                Game.previousEngagementAtMax = false  -- Reset flag to allow re-triggering
+            end
+        end
+        
         if engagementPct < 0.25 and math.random() < 0.01 then  -- 1% chance per frame when low
             Webcam.showComment("engagement_low")
         elseif engagementPct > 0.75 and math.random() < 0.005 then  -- 0.5% chance per frame when high
@@ -1192,9 +1559,22 @@ function love.draw()
         return
     end
     
-    -- Draw intro screen
+    -- Draw intro screen (check before AUDITOR to prevent showing CRITICAL_ERROR on new game)
     if Game.introMode then
         drawIntroScreen()
+        return
+    end
+    
+    -- Draw level completion screen (Chase Paxton)
+    if Game.levelCompleteScreenActive then
+        drawLevelCompleteScreen()
+        return
+    end
+    
+    -- Draw THE AUDITOR sequence (engagement depletion game over)
+    -- Only show if not in intro mode (safety check)
+    if Game.auditorActive and not Game.introMode then
+        drawAuditor()
         return
     end
     
@@ -1314,6 +1694,45 @@ function drawHUD()
     
     if Game.isUpgraded then love.graphics.setColor(1, 1, 0); love.graphics.print("WEAPONS UPGRADED!", barX + 60, barY + 80) end
     
+    -- Draw point multiplier announcement (flashy text)
+    if Game.pointMultiplierActive then
+        local flashAlpha = 1.0
+        if Game.pointMultiplierFlashTimer > 0 then
+            -- Flash animation during first 1.5 seconds
+            flashAlpha = 0.5 + 0.5 * (math.sin(Game.pointMultiplierFlashTimer * 10) + 1) / 2
+        end
+        
+        love.graphics.setFont(Game.fonts.large)
+        local multiplierText = "x" .. Game.pointMultiplier .. " POINT MULTIPLIER!"
+        local multiplierWidth = Game.fonts.large:getWidth(multiplierText)
+        local multiplierX = (Constants.SCREEN_WIDTH - multiplierWidth) / 2
+        local multiplierY = Constants.SCREEN_HEIGHT / 2 - 100
+        
+        -- Flashy colors (gold/yellow pulsing)
+        local flash = (math.sin(love.timer.getTime() * 5) + 1) / 2
+        love.graphics.setColor(1, 0.8 + flash * 0.2, 0.2, flashAlpha)
+        
+        -- Draw text with outline for visibility
+        love.graphics.setLineWidth(4)
+        love.graphics.setColor(0, 0, 0, flashAlpha * 0.8)
+        for dx = -2, 2 do
+            for dy = -2, 2 do
+                if dx ~= 0 or dy ~= 0 then
+                    love.graphics.print(multiplierText, multiplierX + dx, multiplierY + dy)
+                end
+            end
+        end
+        love.graphics.setColor(1, 0.8 + flash * 0.2, 0.2, flashAlpha)
+        love.graphics.print(multiplierText, multiplierX, multiplierY)
+        
+        -- Show timer
+        love.graphics.setFont(Game.fonts.medium)
+        local timerText = math.ceil(Game.pointMultiplierTimer) .. "s"
+        local timerWidth = Game.fonts.medium:getWidth(timerText)
+        love.graphics.setColor(1, 1, 1, flashAlpha)
+        love.graphics.print(timerText, multiplierX + (multiplierWidth - timerWidth) / 2, multiplierY + 40)
+    end
+    
     if Game.turret and Game.turret.puckModeTimer > 0 then
         love.graphics.setColor(1, 0.8, 0.2)
         love.graphics.print("RAPID FIRE ACTIVE: " .. math.ceil(Game.turret.puckModeTimer), barX + 80, barY + 110)
@@ -1343,6 +1762,19 @@ function drawHUD()
         local nextLevelMsg = "ADVANCING TO LEVEL " .. (Game.level + 1) .. "..."
         local nextLevelWidth = Game.fonts.medium:getWidth(nextLevelMsg)
         love.graphics.print(nextLevelMsg, (Constants.SCREEN_WIDTH - nextLevelWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
+    elseif Game.gameOverActive and Game.lives > 0 then
+        -- Display "LIFE LOST" message when player loses a life but still has lives remaining
+        love.graphics.setFont(Game.fonts.large)
+        love.graphics.setColor(1, 0.2, 0.2)  -- Red color
+        local lifeLostMsg = "LIFE LOST"
+        local lifeLostWidth = Game.fonts.large:getWidth(lifeLostMsg)
+        love.graphics.print(lifeLostMsg, (Constants.SCREEN_WIDTH - lifeLostWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
+        
+        love.graphics.setFont(Game.fonts.medium)
+        love.graphics.setColor(1, 1, 1)
+        local livesRemainingMsg = "LIVES REMAINING: " .. Game.lives
+        local livesRemainingWidth = Game.fonts.medium:getWidth(livesRemainingMsg)
+        love.graphics.print(livesRemainingMsg, (Constants.SCREEN_WIDTH - livesRemainingWidth) / 2, Constants.SCREEN_HEIGHT / 2 + 20)
     elseif Game.nameEntryActive then
         -- Draw name entry screen (check this before game over screen)
         -- Draw name entry screen
