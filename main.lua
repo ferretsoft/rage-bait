@@ -5,6 +5,8 @@ local World = require("src.core.world")
 local Time = require("src.core.time")
 local Sound = require("src.core.sound")
 local EmojiSprites = require("src.core.emoji_sprites")
+local Webcam = require("src.core.webcam")
+local EngagementPlot = require("src.core.engagement_plot")
 local Unit = require("src.entities.unit")
 local Turret = require("src.entities.turret")
 local Projectile = require("src.entities.projectile")
@@ -31,6 +33,9 @@ local Game = {
     showBackgroundForeground = false,  -- Toggle for background/foreground layers
     attractMode = true,  -- Start in attract mode
     attractModeTimer = 0,  -- Timer for attract mode animations
+    introMode = false,  -- Intro screen mode
+    introTimer = 0,  -- Timer for intro screen
+    introStep = 1,  -- Current intro step/page
     level = 1,  -- Current level
     levelTransitionTimer = 0,  -- Timer for level transition
     levelTransitionActive = false,  -- Whether level transition is active
@@ -39,8 +44,11 @@ local Game = {
     gameOverActive = false,  -- Whether game over screen is active
     highScores = {},  -- List of high scores {name, score}
     nameEntryActive = false,  -- Whether name entry screen is active
-    nameEntryText = "",  -- Current name being entered
-    nameEntryMaxLength = 10,  -- Maximum name length
+    nameEntryText = "",  -- Current name being entered (array of characters)
+    nameEntryCursor = 1,  -- Current cursor position (1-based)
+    nameEntryMaxLength = 3,  -- Maximum name length (arcade style, usually 3)
+    nameEntryCharSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",  -- Available characters
+    nameEntryCharIndex = {},  -- Current character index for each position
     fonts = {
         small = nil,
         medium = nil,
@@ -69,6 +77,8 @@ local function collectPowerUp(powerup)
             
             -- Sound effect
             Sound.powerupCollect("puck")
+            Webcam.showComment("powerup_collected")
+            Webcam.showComment("powerup_collected")
         end
     end
 end
@@ -255,7 +265,7 @@ function love.load()
         Game.foreground = nil
     end
     
-    Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init(); EmojiSprites.init()
+    Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init(); EmojiSprites.init(); Webcam.init(); EngagementPlot.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
     -- Start in attract mode
@@ -350,6 +360,7 @@ function love.load()
         Game.score = Game.score + Constants.SCORE_KILL; Engagement.add(Constants.ENGAGEMENT_REFILL_KILL); Game.shake = math.max(Game.shake, 0.2)
         local x, y = data.victim.body:getPosition()
         table.insert(Game.hazards, {x = x, y = y, radius = Constants.TOXIC_RADIUS, timer = Constants.TOXIC_DURATION})
+        Webcam.showComment("unit_killed")
     end)
 end
 
@@ -359,6 +370,20 @@ function startGame()
     Sound.unmute()
     Game.attractMode = false
     Game.attractModeTimer = 0
+    
+    -- Start intro screen instead of immediately starting gameplay
+    Game.introMode = true
+    Game.introTimer = 0
+    Game.introStep = 1
+end
+
+-- Actually start gameplay (called after intro screen)
+function startGameplay()
+    Game.introMode = false
+    Game.introTimer = 0
+    Game.introStep = 1
+    Webcam.showComment("game_start")
+    Webcam.showComment("game_start")
     
     -- Initialize game entities
     Game.turret = Turret.new()
@@ -377,6 +402,8 @@ function startGame()
     Game.gameOverActive = false
     Game.nameEntryActive = false
     Game.nameEntryText = ""
+    Game.nameEntryCursor = 1
+    Game.nameEntryCharIndex = {}
     Game.hazards = {}
     Game.explosionZones = {}
     Game.units = {}
@@ -403,19 +430,17 @@ end
 
 -- Advance to the next level
 function advanceToNextLevel(winCondition)
+    -- Don't stop whistle sounds - let them continue until projectiles explode naturally
     Game.levelTransitionActive = true
     Game.levelTransitionTimer = 2.0  -- 2 second transition
     Game.winCondition = winCondition
     Game.gameState = "level_complete"
+    Webcam.showComment("level_complete")
 end
 
 -- Handle game over (lose a life)
 function handleGameOver(condition)
-    -- Stop all sounds immediately when game over happens
-    Sound.cleanup()
-    
-    -- Also stop any looping sounds from turret and projectiles (safety check)
-    -- Use pcall to safely handle already-released sources
+    -- Stop turret charge sound (but don't stop projectile whistles - let them continue)
     if Game.turret and Game.turret.chargeSound then
         pcall(function()
             Game.turret.chargeSound:stop()
@@ -424,16 +449,8 @@ function handleGameOver(condition)
         Game.turret.chargeSound = nil
     end
     
-    -- Stop all projectile whistle sounds
-    for _, p in ipairs(Game.projectiles) do
-        if p.whistleSound then
-            pcall(function()
-                p.whistleSound:stop()
-                p.whistleSound:release()
-            end)
-            p.whistleSound = nil
-        end
-    end
+    -- Don't call Sound.cleanup() here - it stops ALL sounds including whistle sounds
+    -- Let projectiles continue playing their whistle sounds until they explode naturally
     
     Game.gameOverActive = true
     Game.gameOverTimer = 2.0  -- 2 second game over screen
@@ -463,6 +480,14 @@ function restartLevel()
     end
     for i = #Game.projectiles, 1, -1 do
         local p = Game.projectiles[i]
+        -- Stop whistle sound before destroying
+        if p.whistleSound then
+            pcall(function()
+                p.whistleSound:stop()
+                p.whistleSound:release()
+            end)
+            p.whistleSound = nil
+        end
         if p.body then
             p.body:destroy()
         end
@@ -497,6 +522,8 @@ function returnToAttractMode()
     Game.gameOverTimer = 0
     Game.nameEntryActive = false
     Game.nameEntryText = ""
+    Game.nameEntryCursor = 1
+    Game.nameEntryCharIndex = {}
     Game.gameState = "attract"
     Game.winCondition = nil
     
@@ -536,6 +563,14 @@ function returnToAttractMode()
     end
     for i = #Game.projectiles, 1, -1 do
         local p = Game.projectiles[i]
+        -- Stop whistle sound before destroying
+        if p.whistleSound then
+            pcall(function()
+                p.whistleSound:stop()
+                p.whistleSound:release()
+            end)
+            p.whistleSound = nil
+        end
         if p.body then
             p.body:destroy()
         end
@@ -568,7 +603,50 @@ function drawAttractMode()
     love.graphics.setColor(1, 1, 1)
     local title = "RAGE BAIT"
     local titleWidth = Game.fonts.large:getWidth(title)
-    love.graphics.print(title, (Constants.SCREEN_WIDTH - titleWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 200)
+    love.graphics.print(title, (Constants.SCREEN_WIDTH - titleWidth) / 2, 50)
+    
+    -- High Scores
+    if #Game.highScores > 0 then
+        love.graphics.setFont(Game.fonts.medium)
+        love.graphics.setColor(1, 0.8, 0.2)
+        local highScoreTitle = "HIGH SCORES"
+        local titleWidth2 = Game.fonts.medium:getWidth(highScoreTitle)
+        love.graphics.print(highScoreTitle, (Constants.SCREEN_WIDTH - titleWidth2) / 2, 120)
+        
+        love.graphics.setFont(Game.fonts.small)
+        local startY = 150
+        local lineHeight = 25
+        local maxScores = math.min(10, #Game.highScores)
+        
+        for i = 1, maxScores do
+            local entry = Game.highScores[i]
+            local rank = tostring(i) .. "."
+            local name = entry.name
+            local score = tostring(entry.score)
+            
+            -- Rank color (gold for top 3)
+            if i == 1 then
+                love.graphics.setColor(1, 0.84, 0)  -- Gold
+            elseif i == 2 then
+                love.graphics.setColor(0.75, 0.75, 0.75)  -- Silver
+            elseif i == 3 then
+                love.graphics.setColor(0.8, 0.5, 0.2)  -- Bronze
+            else
+                love.graphics.setColor(0.7, 0.7, 0.7)  -- Gray
+            end
+            
+            -- Calculate positions for aligned display
+            local rankX = Constants.SCREEN_WIDTH / 2 - 150
+            local nameX = Constants.SCREEN_WIDTH / 2 - 80
+            local scoreX = Constants.SCREEN_WIDTH / 2 + 100
+            
+            love.graphics.print(rank, rankX, startY + (i - 1) * lineHeight)
+            love.graphics.setColor(0.9, 0.9, 0.9)
+            love.graphics.print(name, nameX, startY + (i - 1) * lineHeight)
+            love.graphics.setColor(1, 1, 1)
+            love.graphics.print(score, scoreX, startY + (i - 1) * lineHeight)
+        end
+    end
     
     -- Insert coin message (blinking)
     local blinkSpeed = 2.0
@@ -579,20 +657,21 @@ function drawAttractMode()
     love.graphics.setColor(1, 0.8, 0.2, alpha)
     local coinMsg = "INSERT COIN"
     local coinWidth = Game.fonts.medium:getWidth(coinMsg)
-    love.graphics.print(coinMsg, (Constants.SCREEN_WIDTH - coinWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
+    local coinY = Constants.SCREEN_HEIGHT - 150
+    love.graphics.print(coinMsg, (Constants.SCREEN_WIDTH - coinWidth) / 2, coinY)
     
     -- Instructions
     love.graphics.setColor(0.7, 0.7, 0.7)
     love.graphics.setFont(Game.fonts.small)
     local inst1 = "Press SPACE or ENTER to start"
     local inst1Width = Game.fonts.small:getWidth(inst1)
-    love.graphics.print(inst1, (Constants.SCREEN_WIDTH - inst1Width) / 2, Constants.SCREEN_HEIGHT / 2 + 50)
+    love.graphics.print(inst1, (Constants.SCREEN_WIDTH - inst1Width) / 2, coinY + 30)
     
-    -- High score or instructions
+    -- Instructions
     love.graphics.setColor(0.5, 0.5, 0.5)
     local inst2 = "Use Z/X to fire bombs, collect powerups for rapid fire"
     local inst2Width = Game.fonts.small:getWidth(inst2)
-    love.graphics.print(inst2, (Constants.SCREEN_WIDTH - inst2Width) / 2, Constants.SCREEN_HEIGHT / 2 + 100)
+    love.graphics.print(inst2, (Constants.SCREEN_WIDTH - inst2Width) / 2, coinY + 50)
     
     -- Draw playfield frame in attract mode (optional visual)
     love.graphics.push()
@@ -601,6 +680,139 @@ function drawAttractMode()
     love.graphics.setLineWidth(4)
     love.graphics.rectangle("line", 0, 0, Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
     love.graphics.pop()
+end
+
+-- Draw intro screen with centered webcam
+function drawIntroScreen()
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Intro messages (multiple steps)
+    local introMessages = {
+        {
+            title = "WELCOME TO RAGE BAIT!",
+            message = "Control the spider turret and convert units to your side!",
+            duration = 3.0
+        },
+        {
+            title = "CONTROLS",
+            message = "Hold Z for RED bombs\nHold X for BLUE bombs\nCollect powerups for rapid fire!",
+            duration = 4.0
+        },
+        {
+            title = "OBJECTIVE",
+            message = "Keep engagement high by hitting units!\nConvert all units to one color to win!",
+            duration = 4.0
+        },
+        {
+            title = "READY?",
+            message = "Press SPACE or ENTER to start!",
+            duration = 999.0  -- Wait for input
+        }
+    }
+    
+    local currentStep = math.min(Game.introStep, #introMessages)
+    local currentMessage = introMessages[currentStep]
+    local stepStartTime = 0
+    for i = 1, currentStep - 1 do
+        stepStartTime = stepStartTime + introMessages[i].duration
+    end
+    local stepElapsed = Game.introTimer - stepStartTime
+    
+    -- Auto-advance steps (except last one which waits for input)
+    if currentStep < #introMessages and stepElapsed >= currentMessage.duration then
+        Game.introStep = currentStep + 1
+    end
+    
+    -- Draw centered webcam window
+    local WEBCAM_WIDTH = 400
+    local WEBCAM_HEIGHT = 300
+    local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
+    local WEBCAM_Y = (Constants.SCREEN_HEIGHT - WEBCAM_HEIGHT) / 2 - 50
+    
+    -- Webcam window frame
+    love.graphics.setColor(0.2, 0.2, 0.2, 1)
+    love.graphics.rectangle("fill", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    
+    -- Border
+    love.graphics.setColor(0.5, 0.5, 0.5, 1)
+    love.graphics.setLineWidth(3)
+    love.graphics.rectangle("line", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    
+    -- Inner border
+    love.graphics.setColor(0.1, 0.1, 0.1, 1)
+    love.graphics.setLineWidth(2)
+    love.graphics.rectangle("line", WEBCAM_X + 5, WEBCAM_Y + 5, WEBCAM_WIDTH - 10, WEBCAM_HEIGHT - 10)
+    
+    -- Draw character (animated)
+    local charX = WEBCAM_X + WEBCAM_WIDTH / 2
+    local charY = WEBCAM_Y + WEBCAM_HEIGHT / 2 - 40
+    
+    -- Character head
+    love.graphics.setColor(0.9, 0.8, 0.7, 1)
+    love.graphics.circle("fill", charX, charY, 50)
+    love.graphics.setColor(0.7, 0.6, 0.5, 1)
+    love.graphics.setLineWidth(2)
+    love.graphics.circle("line", charX, charY, 50)
+    
+    -- Eyes (animated - talking)
+    local eyeBlink = math.floor(Game.introTimer * 3) % 2
+    local eyeSize = eyeBlink == 0 and 8 or 2
+    love.graphics.setColor(0.2, 0.2, 0.2, 1)
+    love.graphics.circle("fill", charX - 15, charY - 8, eyeSize)
+    love.graphics.circle("fill", charX + 15, charY - 8, eyeSize)
+    
+    -- Mouth (talking animation)
+    local mouthOpen = math.floor(Game.introTimer * 4) % 2
+    if mouthOpen == 0 then
+        -- Open mouth
+        love.graphics.setColor(0.3, 0.2, 0.2, 1)
+        love.graphics.ellipse("fill", charX, charY + 12, 12, 10)
+    else
+        -- Closed mouth
+        love.graphics.setColor(0.4, 0.3, 0.3, 1)
+        love.graphics.setLineWidth(2)
+        love.graphics.arc("line", "open", charX, charY + 12, 10, 0, math.pi)
+    end
+    
+    -- Draw title
+    love.graphics.setFont(Game.fonts.large)
+    love.graphics.setColor(1, 1, 0, 1)
+    local titleWidth = Game.fonts.large:getWidth(currentMessage.title)
+    love.graphics.print(currentMessage.title, WEBCAM_X + (WEBCAM_WIDTH - titleWidth) / 2, WEBCAM_Y + 20)
+    
+    -- Draw message
+    love.graphics.setFont(Game.fonts.medium)
+    love.graphics.setColor(1, 1, 1, 1)
+    local lines = {}
+    for line in currentMessage.message:gmatch("[^\n]+") do
+        table.insert(lines, line)
+    end
+    
+    local lineHeight = Game.fonts.medium:getHeight() + 5
+    local startY = WEBCAM_Y + WEBCAM_HEIGHT - 80 - (#lines * lineHeight)
+    for i, line in ipairs(lines) do
+        local lineWidth = Game.fonts.medium:getWidth(line)
+        love.graphics.print(line, WEBCAM_X + (WEBCAM_WIDTH - lineWidth) / 2, startY + (i - 1) * lineHeight)
+    end
+    
+    -- Draw progress indicator (dots)
+    love.graphics.setColor(0.5, 0.5, 0.5, 1)
+    local dotSize = 8
+    local dotSpacing = 15
+    local totalWidth = (#introMessages - 1) * dotSpacing
+    local dotsStartX = WEBCAM_X + (WEBCAM_WIDTH - totalWidth) / 2
+    for i = 1, #introMessages - 1 do
+        local dotX = dotsStartX + (i - 1) * dotSpacing
+        local dotY = WEBCAM_Y + WEBCAM_HEIGHT - 15
+        if i < currentStep then
+            love.graphics.setColor(1, 1, 1, 1)  -- Completed
+        elseif i == currentStep then
+            love.graphics.setColor(1, 1, 0, 1)  -- Current
+        else
+            love.graphics.setColor(0.5, 0.5, 0.5, 1)  -- Not reached
+        end
+        love.graphics.circle("fill", dotX, dotY, dotSize)
+    end
 end
 
 function love.update(dt)
@@ -612,6 +824,12 @@ function love.update(dt)
         return  -- Don't update game logic in attract mode
     end
     
+    -- Handle intro screen
+    if Game.introMode then
+        Game.introTimer = Game.introTimer + dt
+        return  -- Don't update game logic during intro
+    end
+    
     -- Handle name entry
     if Game.nameEntryActive then
         return  -- Don't update game logic during name entry
@@ -619,8 +837,7 @@ function love.update(dt)
     
     -- Handle game over screen
     if Game.gameOverActive then
-        -- Ensure all sounds are stopped during game over
-        Sound.cleanup()
+        -- Don't stop sounds here - let projectile whistles continue until they explode
         Game.gameOverTimer = Game.gameOverTimer - dt
         if Game.gameOverTimer <= 0 then
             -- Game over screen complete
@@ -630,16 +847,30 @@ function love.update(dt)
             else
                 -- No lives left, check for high score
                 if isHighScore(Game.score) then
-                    -- Start name entry
+                    -- Start name entry (arcade style)
+                    Game.gameOverActive = false  -- Clear game over screen
                     Game.nameEntryActive = true
-                    Game.nameEntryText = ""
+                    Game.nameEntryText = "AAA"  -- Initialize with 'A' in all positions
+                    Game.nameEntryCursor = 1
+                    Game.nameEntryCharIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
                 else
                     -- No high score, return to attract mode
                     returnToAttractMode()
                 end
             end
         end
-        return  -- Don't update game logic during game over
+        
+        -- Allow projectiles to continue updating so they can explode and stop sounds naturally
+        Time.checkRestore(dt); Time.update(dt); local gameDt = dt * Time.scale
+        for i = #Game.projectiles, 1, -1 do 
+            local p = Game.projectiles[i]
+            p:update(gameDt)
+            if p.isDead then 
+                table.remove(Game.projectiles, i) 
+            end
+        end
+        
+        return  -- Don't update other game logic during game over
     end
     
     -- Handle level transition
@@ -662,8 +893,16 @@ function love.update(dt)
                 end
                 table.remove(Game.units, i)
             end
+            -- Stop any remaining projectile whistle sounds before destroying
             for i = #Game.projectiles, 1, -1 do
                 local p = Game.projectiles[i]
+                if p.whistleSound then
+                    pcall(function()
+                        p.whistleSound:stop()
+                        p.whistleSound:release()
+                    end)
+                    p.whistleSound = nil
+                end
                 if p.body then
                     p.body:destroy()
                 end
@@ -688,8 +927,18 @@ function love.update(dt)
             
             -- Spawn new units for next level
             spawnUnitsForLevel()
+        else
+            -- Allow projectiles to continue updating during transition so they can explode and stop sounds naturally
+            Time.checkRestore(dt); Time.update(dt); local gameDt = dt * Time.scale
+            for i = #Game.projectiles, 1, -1 do 
+                local p = Game.projectiles[i]
+                p:update(gameDt)
+                if p.isDead then 
+                    table.remove(Game.projectiles, i) 
+                end
+            end
         end
-        return  -- Don't update game logic during transition
+        return  -- Don't update other game logic during transition
     end
     
     Game.powerupSpawnTimer = Game.powerupSpawnTimer - dt
@@ -709,12 +958,23 @@ function love.update(dt)
     if Game.shake > 0 then Game.shake = math.max(0, Game.shake - 2.5 * dt) end
 
     Time.checkRestore(dt); Time.update(dt); local gameDt = dt * Time.scale
-    Engagement.update(gameDt); World.update(gameDt); Sound.update(dt)
+    Engagement.update(gameDt); World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt)
     
     -- Check if engagement ran out (game over)
     if Game.gameState == "playing" and Engagement.value <= 0 then
         if not Game.gameOverActive then
             handleGameOver("engagement_depleted")
+            Webcam.showComment("game_over")
+        end
+    end
+    
+    -- Check engagement level for comments
+    if Game.gameState == "playing" then
+        local engagementPct = Engagement.value / Constants.ENGAGEMENT_MAX
+        if engagementPct < 0.25 and math.random() < 0.01 then  -- 1% chance per frame when low
+            Webcam.showComment("engagement_low")
+        elseif engagementPct > 0.75 and math.random() < 0.005 then  -- 0.5% chance per frame when high
+            Webcam.showComment("engagement_high")
         end
     end
     
@@ -804,19 +1064,57 @@ function love.update(dt)
 end
 
 function love.keypressed(key)
-    -- Handle name entry
+    -- Handle name entry (arcade style)
     if Game.nameEntryActive then
-        if key == "backspace" then
-            Game.nameEntryText = Game.nameEntryText:sub(1, -2)
+        local charSet = Game.nameEntryCharSet
+        local cursor = Game.nameEntryCursor
+        local charIndex = Game.nameEntryCharIndex[cursor] or 1
+        
+        if key == "left" then
+            -- Move cursor left
+            Game.nameEntryCursor = math.max(1, cursor - 1)
+        elseif key == "right" then
+            -- Move cursor right
+            Game.nameEntryCursor = math.min(Game.nameEntryMaxLength, cursor + 1)
+        elseif key == "up" then
+            -- Change character up
+            charIndex = charIndex + 1
+            if charIndex > #charSet then
+                charIndex = 1  -- Wrap around
+            end
+            Game.nameEntryCharIndex[cursor] = charIndex
+            -- Update the character at cursor position
+            local nameChars = {}
+            for i = 1, Game.nameEntryMaxLength do
+                local idx = Game.nameEntryCharIndex[i] or 1
+                nameChars[i] = charSet:sub(idx, idx)
+            end
+            Game.nameEntryText = table.concat(nameChars)
+        elseif key == "down" then
+            -- Change character down
+            charIndex = charIndex - 1
+            if charIndex < 1 then
+                charIndex = #charSet  -- Wrap around
+            end
+            Game.nameEntryCharIndex[cursor] = charIndex
+            -- Update the character at cursor position
+            local nameChars = {}
+            for i = 1, Game.nameEntryMaxLength do
+                local idx = Game.nameEntryCharIndex[i] or 1
+                nameChars[i] = charSet:sub(idx, idx)
+            end
+            Game.nameEntryText = table.concat(nameChars)
         elseif key == "return" or key == "enter" then
             -- Submit name
             local name = Game.nameEntryText:gsub("^%s+", ""):gsub("%s+$", "")  -- Trim whitespace
-            if name == "" then
-                name = "PLAYER"  -- Default name
+            if name == "" or name == "AAA" then
+                name = "AAA"  -- Default name
             end
             addHighScore(name, Game.score)
             Game.nameEntryActive = false
             Game.nameEntryText = ""
+            Game.nameEntryCursor = 1
+            Game.nameEntryCharIndex = {}
             returnToAttractMode()
         end
         return
@@ -826,6 +1124,33 @@ function love.keypressed(key)
     if Game.attractMode then
         if key == "space" or key == "return" or key == "enter" then
             startGame()
+            return
+        end
+    end
+    
+    -- Handle input during intro screen
+    if Game.introMode then
+        if key == "space" or key == "return" or key == "enter" then
+            -- Skip to gameplay
+            startGameplay()
+            return
+        elseif key == "right" or key == "d" then
+            -- Advance to next step
+            local introMessages = {
+                {duration = 3.0},
+                {duration = 4.0},
+                {duration = 4.0},
+                {duration = 999.0}
+            }
+            if Game.introStep < #introMessages then
+                Game.introStep = Game.introStep + 1
+                -- Reset timer for new step
+                local stepStartTime = 0
+                for i = 1, Game.introStep - 1 do
+                    stepStartTime = stepStartTime + introMessages[i].duration
+                end
+                Game.introTimer = stepStartTime
+            end
             return
         end
     end
@@ -853,14 +1178,7 @@ function love.keypressed(key)
     end
 end
 
--- Handle text input for name entry
-function love.textinput(text)
-    if Game.nameEntryActive then
-        if #Game.nameEntryText < Game.nameEntryMaxLength then
-            Game.nameEntryText = Game.nameEntryText .. text
-        end
-    end
-end
+-- Text input disabled for arcade-style name entry (uses arrow keys instead)
 
 function love.keyreleased(key)
     if not Game.turret then return end
@@ -871,6 +1189,12 @@ function love.draw()
     -- Draw attract mode screen
     if Game.attractMode then
         drawAttractMode()
+        return
+    end
+    
+    -- Draw intro screen
+    if Game.introMode then
+        drawIntroScreen()
         return
     end
     
@@ -945,6 +1269,12 @@ function love.draw()
         -- Draw HUD - now affected by shake and CRT
         drawHUD()
         
+        -- Draw webcam window (below playfield, affected by shake)
+        Webcam.draw()
+        
+        -- Draw engagement plot (next to webcam, affected by shake)
+        EngagementPlot.draw()
+        
         love.graphics.pop()
         
         -- CRITICAL: Reset color to white before Moonshine processes the canvas
@@ -1013,41 +1343,8 @@ function drawHUD()
         local nextLevelMsg = "ADVANCING TO LEVEL " .. (Game.level + 1) .. "..."
         local nextLevelWidth = Game.fonts.medium:getWidth(nextLevelMsg)
         love.graphics.print(nextLevelMsg, (Constants.SCREEN_WIDTH - nextLevelWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
-    elseif Game.gameState == "lost" and Game.gameOverActive then
-        love.graphics.setFont(Game.fonts.large)
-        love.graphics.setColor(1, 0, 0)
-        local message = ""
-        if Game.winCondition == "no_units" then
-            message = "DEFEAT! No Units Remain"
-        elseif Game.winCondition == "engagement_depleted" then
-            message = "GAME OVER! Engagement Depleted"
-        else
-            message = "GAME OVER!"
-        end
-        local textWidth = Game.fonts.large:getWidth(message)
-        love.graphics.print(message, (Constants.SCREEN_WIDTH - textWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 100)
-        
-        -- Show lives remaining or final game over
-        love.graphics.setFont(Game.fonts.medium)
-        if Game.lives > 0 then
-            love.graphics.setColor(1, 1, 0)
-            local livesMsg = "LIVES REMAINING: " .. Game.lives .. " - RESTARTING LEVEL..."
-            local livesWidth = Game.fonts.medium:getWidth(livesMsg)
-            love.graphics.print(livesMsg, (Constants.SCREEN_WIDTH - livesWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
-        else
-            love.graphics.setColor(1, 0, 0)
-            local finalMsg = "NO LIVES REMAINING - GAME OVER"
-            local finalWidth = Game.fonts.medium:getWidth(finalMsg)
-            love.graphics.print(finalMsg, (Constants.SCREEN_WIDTH - finalWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
-            
-            -- Optionally show return to attract mode message
-            love.graphics.setColor(0.7, 0.7, 0.7)
-            love.graphics.setFont(Game.fonts.small)
-            local returnMsg = "Press ESC to quit"
-            local returnWidth = Game.fonts.small:getWidth(returnMsg)
-            love.graphics.print(returnMsg, (Constants.SCREEN_WIDTH - returnWidth) / 2, Constants.SCREEN_HEIGHT / 2 + 20)
-        end
     elseif Game.nameEntryActive then
+        -- Draw name entry screen (check this before game over screen)
         -- Draw name entry screen
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(1, 1, 0)
@@ -1078,18 +1375,36 @@ function drawHUD()
         love.graphics.setLineWidth(2)
         love.graphics.rectangle("line", boxX, boxY, boxWidth, boxHeight)
         
-        -- Draw name text with cursor
-        love.graphics.setColor(1, 1, 1)
-        local displayText = Game.nameEntryText
-        if math.floor(love.timer.getTime() * 2) % 2 == 0 then
-            displayText = displayText .. "_"  -- Blinking cursor
-        end
-        local textWidth = Game.fonts.medium:getWidth(displayText)
-        love.graphics.print(displayText, boxX + (boxWidth - textWidth) / 2, boxY + (boxHeight - Game.fonts.medium:getHeight()) / 2)
+        -- Draw name text with arcade-style cursor
+        love.graphics.setFont(Game.fonts.large)
+        local charWidth = Game.fonts.large:getWidth("A")
+        local startX = boxX + (boxWidth - (charWidth * Game.nameEntryMaxLength)) / 2
+        local textY = boxY + (boxHeight - Game.fonts.large:getHeight()) / 2
         
+        -- Draw each character
+        for i = 1, Game.nameEntryMaxLength do
+            local char = Game.nameEntryText:sub(i, i) or "A"
+            local charX = startX + (i - 1) * charWidth
+            
+            -- Highlight current cursor position
+            if i == Game.nameEntryCursor then
+                -- Draw blinking cursor background
+                if math.floor(love.timer.getTime() * 2) % 2 == 0 then
+                    love.graphics.setColor(1, 1, 0, 0.3)
+                    love.graphics.rectangle("fill", charX - 5, textY - 5, charWidth + 10, Game.fonts.large:getHeight() + 10)
+                end
+                love.graphics.setColor(1, 1, 0)  -- Yellow for current position
+            else
+                love.graphics.setColor(1, 1, 1)  -- White for other positions
+            end
+            
+            love.graphics.print(char, charX, textY)
+        end
+        
+        -- Instructions
         love.graphics.setColor(0.6, 0.6, 0.6)
         love.graphics.setFont(Game.fonts.small)
-        local hintMsg = "Press ENTER to submit"
+        local hintMsg = "ARROWS: Move/Change  ENTER: Confirm"
         local hintWidth = Game.fonts.small:getWidth(hintMsg)
         love.graphics.print(hintMsg, (Constants.SCREEN_WIDTH - hintWidth) / 2, Constants.SCREEN_HEIGHT / 2 + 70)
     end
