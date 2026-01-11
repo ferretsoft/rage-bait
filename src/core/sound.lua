@@ -3,7 +3,9 @@
 
 local Sound = {}
 local activeSounds = {}  -- Track active sound sources
+local loopingSounds = {}  -- Track looping sound sources separately
 local masterVolume = 1.0
+local soundsMuted = false  -- Flag to prevent new sounds from playing
 
 -- Sound configuration
 local SOUND_CONFIG = {
@@ -120,6 +122,7 @@ end
 
 -- Play a procedural sound
 function Sound.playTone(frequency, duration, volume, pitch)
+    if soundsMuted then return nil end
     volume = volume or 1.0
     pitch = pitch or 1.0
     local samples = generateTone(frequency, duration)
@@ -157,6 +160,7 @@ end
 
 -- Play whistling sound (looping)
 function Sound.playWhistle(volume, pitch, loop)
+    if soundsMuted then return nil end
     volume = volume or 1.0
     pitch = pitch or 1.0
     loop = loop or true
@@ -174,7 +178,10 @@ function Sound.playWhistle(volume, pitch, loop)
         source:setLooping(loop)
         source:play()
         
-        if not loop then
+        if loop then
+            -- Track looping sounds separately
+            table.insert(loopingSounds, source)
+        else
             table.insert(activeSounds, {
                 source = source,
                 duration = duration
@@ -187,6 +194,7 @@ end
 
 -- Play vibrating/oscillating sound (looping, for bomb charging)
 function Sound.playVibrate(volume, pitch, loop)
+    if soundsMuted then return nil end
     volume = volume or 1.0
     pitch = pitch or 1.0
     loop = loop or true
@@ -204,7 +212,10 @@ function Sound.playVibrate(volume, pitch, loop)
         source:setLooping(loop)
         source:play()
         
-        if not loop then
+        if loop then
+            -- Track looping sounds separately
+            table.insert(loopingSounds, source)
+        else
             table.insert(activeSounds, {
                 source = source,
                 duration = duration
@@ -217,6 +228,7 @@ end
 
 -- Play a sound from a file (if you want to use pre-recorded sounds)
 function Sound.playFile(path, volume, pitch, loop)
+    if soundsMuted then return nil end
     volume = volume or 1.0
     pitch = pitch or 1.0
     loop = loop or false
@@ -232,7 +244,10 @@ function Sound.playFile(path, volume, pitch, loop)
     source:setLooping(loop)
     source:play()
     
-    if not loop then
+    if loop then
+        -- Track looping sounds separately
+        table.insert(loopingSounds, source)
+    else
         table.insert(activeSounds, {
             source = source,
             duration = source:getDuration() or 1.0
@@ -363,13 +378,39 @@ end
 
 -- Clean up all sounds
 function Sound.cleanup()
+    -- Mute all new sounds first
+    soundsMuted = true
+    
+    -- First, aggressively stop ALL audio sources immediately
+    love.audio.stop()
+    
+    -- Then stop and release all active sounds
     for _, sound in ipairs(activeSounds) do
-        if sound.source:isPlaying() then
-            sound.source:stop()
+        local source = sound.source
+        if source then
+            pcall(function()
+                source:stop()
+                source:release()
+            end)
         end
-        sound.source:release()
     end
     activeSounds = {}
+    
+    -- Stop and release all looping sounds
+    for _, source in ipairs(loopingSounds) do
+        if source then
+            pcall(function()
+                source:stop()
+                source:release()
+            end)
+        end
+    end
+    loopingSounds = {}
+end
+
+-- Unmute sounds (call when starting a new game)
+function Sound.unmute()
+    soundsMuted = false
 end
 
 return Sound
