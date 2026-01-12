@@ -1650,22 +1650,17 @@ function love.update(dt)
         if Game.pointMultiplierActive then
             Game.pointMultiplierTimer = Game.pointMultiplierTimer - dt
             if Game.pointMultiplierTimer <= 0 then
+                -- Timer expired - deactivate multiplier
                 Game.pointMultiplierActive = false
                 Game.pointMultiplierFlashTimer = 0
+                Game.previousEngagementAtMax = false  -- Reset flag to allow re-triggering
             else
                 -- Update flash timer
                 if Game.pointMultiplierFlashTimer > 0 then
                     Game.pointMultiplierFlashTimer = Game.pointMultiplierFlashTimer - dt
                 end
             end
-            
-            -- Reset multiplier if engagement drops below max (allows re-triggering)
-            if Engagement.value < Constants.ENGAGEMENT_MAX then
-                Game.pointMultiplierActive = false
-                Game.pointMultiplierTimer = 0
-                Game.pointMultiplierFlashTimer = 0
-                Game.previousEngagementAtMax = false  -- Reset flag to allow re-triggering
-            end
+            -- Note: Multiplier stays active for full duration regardless of engagement level
         end
         
         if engagementPct < 0.25 and math.random() < 0.01 then  -- 1% chance per frame when low
@@ -2064,6 +2059,9 @@ function love.draw()
         -- Draw engagement plot (next to webcam, affected by shake)
         EngagementPlot.draw()
         
+        -- Draw multiplier window (below engagement plot)
+        drawMultiplierWindow()
+        
         love.graphics.pop()
         
         -- CRITICAL: Reset color to white before Moonshine processes the canvas
@@ -2073,6 +2071,58 @@ function love.draw()
     
     -- Apply CRT effect if enabled, otherwise draw normally
     drawWithCRT(drawGame)
+end
+
+function drawMultiplierWindow()
+    -- Multiplier window dimensions and position (below engagement plot)
+    local PLOT_WIDTH = 300
+    local PLOT_HEIGHT = 200
+    local PLOT_X = Constants.OFFSET_X + 20
+    local PLOT_Y = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + 20
+    
+    local MULTIPLIER_WIDTH = PLOT_WIDTH
+    local MULTIPLIER_HEIGHT = 60
+    local MULTIPLIER_X = PLOT_X
+    local MULTIPLIER_Y = PLOT_Y + PLOT_HEIGHT + 10
+    
+    -- Draw multiplier window frame
+    love.graphics.setColor(0.2, 0.2, 0.2, 1)
+    love.graphics.rectangle("fill", MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT)
+    
+    -- Draw border
+    love.graphics.setColor(0.5, 0.5, 0.5, 1)
+    love.graphics.setLineWidth(3)
+    love.graphics.rectangle("line", MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT)
+    
+    -- Draw inner border
+    love.graphics.setColor(0.1, 0.1, 0.1, 1)
+    love.graphics.setLineWidth(2)
+    love.graphics.rectangle("line", MULTIPLIER_X + 5, MULTIPLIER_Y + 5, MULTIPLIER_WIDTH - 10, MULTIPLIER_HEIGHT - 10)
+    
+    if Game.pointMultiplierActive then
+        -- Draw multiplier content
+        love.graphics.setFont(Game.fonts.medium)
+        
+        -- Multiplier value with gold/yellow pulsing
+        local flash = (math.sin(love.timer.getTime() * 3) + 1) / 2
+        love.graphics.setColor(1, 0.8 + flash * 0.2, 0.2, 1)
+        local multiplierText = "x" .. Game.pointMultiplier .. " POINT MULTIPLIER"
+        local multiplierWidth = Game.fonts.medium:getWidth(multiplierText)
+        love.graphics.print(multiplierText, MULTIPLIER_X + (MULTIPLIER_WIDTH - multiplierWidth) / 2, MULTIPLIER_Y + 10)
+        
+        -- Timer
+        love.graphics.setColor(1, 1, 1, 0.9)
+        local timerText = math.ceil(Game.pointMultiplierTimer) .. "s remaining"
+        local timerWidth = Game.fonts.medium:getWidth(timerText)
+        love.graphics.print(timerText, MULTIPLIER_X + (MULTIPLIER_WIDTH - timerWidth) / 2, MULTIPLIER_Y + 35)
+    else
+        -- Show inactive state
+        love.graphics.setColor(0.5, 0.5, 0.5, 0.7)
+        love.graphics.setFont(Game.fonts.medium)
+        local inactiveText = "MULTIPLIER: INACTIVE"
+        local inactiveWidth = Game.fonts.medium:getWidth(inactiveText)
+        love.graphics.print(inactiveText, MULTIPLIER_X + (MULTIPLIER_WIDTH - inactiveWidth) / 2, MULTIPLIER_Y + 20)
+    end
 end
 
 function drawHUD()
