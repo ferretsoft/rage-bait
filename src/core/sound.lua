@@ -337,6 +337,23 @@ function Sound.bumperHit()
     end
 end
 
+-- Play a fanfare (victory sound)
+function Sound.playFanfare()
+    if soundsMuted then return end
+    
+    if SOUND_CONFIG.MODE == "prerecorded" then
+        Sound.playFile(SOUND_CONFIG.SOUND_PATH .. "fanfare.ogg", 0.8, 1.0, false)
+    else
+        -- Procedural fanfare: ascending notes in a major chord
+        -- C major chord: C (523Hz), E (659Hz), G (784Hz), C (1047Hz)
+        -- Play notes in quick succession for a celebratory sound
+        Sound.playTone(523, 0.2, 0.6, 1.0)  -- C
+        Sound.playTone(659, 0.2, 0.6, 1.0)  -- E
+        Sound.playTone(784, 0.2, 0.6, 1.0)  -- G
+        Sound.playTone(1047, 0.3, 0.8, 1.0) -- High C (longer, louder)
+    end
+end
+
 -- Update function to clean up finished sounds
 function Sound.update(dt)
     for i = #activeSounds, 1, -1 do

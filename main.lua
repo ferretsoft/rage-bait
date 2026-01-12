@@ -47,6 +47,12 @@ local Game = {
     levelTransitionActive = false,  -- Whether level transition is active
     levelCompleteScreenActive = false,  -- Whether level completion screen is active
     levelCompleteScreenTimer = 0,  -- Timer for level completion screen (5 seconds)
+    winTextActive = false,  -- Whether win text is showing (before webcam)
+    winTextTimer = 0,  -- Timer for win text display (5 seconds)
+    slowMoActive = false,  -- Whether slow-motion ramp is active
+    slowMoTimer = 0,  -- Timer for slow-motion ramp
+    slowMoDuration = 1.5,  -- Duration of slow-motion ramp (1.5 seconds)
+    timeScale = 1.0,  -- Current time scale (1.0 = normal, 0.0 = frozen)
     lives = 3,  -- Player lives
     gameOverTimer = 0,  -- Timer for game over screen
     gameOverActive = false,  -- Whether game over screen is active
@@ -457,6 +463,11 @@ function startGameplay()
     Game.levelTransitionActive = false
     Game.levelCompleteScreenActive = false
     Game.levelCompleteScreenTimer = 0
+    Game.winTextActive = false
+    Game.winTextTimer = 0
+    Game.slowMoActive = false
+    Game.slowMoTimer = 0
+    Game.timeScale = 1.0
     Game.lives = 3
     Game.gameOverTimer = 0
     Game.gameOverActive = false
@@ -502,13 +513,42 @@ end
 
 -- Advance to the next level
 function advanceToNextLevel(winCondition)
-    -- Don't stop whistle sounds - let them continue until projectiles explode naturally
-    -- First show level completion screen with Chase Paxton (5 seconds)
-    Game.levelCompleteScreenActive = true
-    Game.levelCompleteScreenTimer = 5.0  -- 5 second completion screen
+    -- Stop turret charging immediately (prevents charge sound from continuing)
+    if Game.turret then
+        Game.turret.isCharging = false
+        Game.turret.chargeTimer = 0
+        if Game.turret.chargeSound then
+            local success, isPlaying = pcall(function()
+                return Game.turret.chargeSound:isPlaying()
+            end)
+            if success and isPlaying then
+                pcall(function()
+                    Game.turret.chargeSound:stop()
+                    Game.turret.chargeSound:release()
+                end)
+            end
+            Game.turret.chargeSound = nil
+        end
+    end
+    
+    -- Clean up all game sounds first (stops all active sounds)
+    Sound.cleanup()
+    
+    -- Unmute sounds so fanfare can play
+    Sound.unmute()
+    
+    -- Play fanfare for victory
+    Sound.playFanfare()
+    
+    -- Start slow-motion ramp to freeze
+    Game.slowMoActive = true
+    Game.slowMoTimer = 0
+    Game.timeScale = 1.0
     Game.winCondition = winCondition
     Game.gameState = "level_complete"
-    Webcam.showComment("level_complete")
+    -- Don't show level complete screen yet - wait for freeze
+    Game.levelCompleteScreenActive = false
+    Game.levelCompleteScreenTimer = 0
 end
 
 -- Handle game over (lose a life)
@@ -573,6 +613,9 @@ function restartLevel()
     Game.gameState = "playing"
     Game.winCondition = nil
     Game.hasUnitBeenConverted = false
+    
+    -- Unmute sounds so they can play again after restart
+    Sound.unmute()
     
     -- Reset engagement to 100% (same as new level/game start)
     -- Score and level are NOT reset - they are preserved
@@ -1120,6 +1163,81 @@ function drawAuditorFigure(alpha)
 end
 
 -- Draw level completion screen with Chase Paxton
+function drawWinTextScreen()
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Draw the game frozen in the background (faded)
+    if Game.turret then
+        local function drawGameFrozen()
+            World.draw(function()
+                -- Draw units (frozen)
+                for _, u in ipairs(Game.units) do
+                    if not u.isDead then
+                        u:draw()
+                    end
+                end
+                
+                -- Draw projectiles (frozen)
+                for _, p in ipairs(Game.projectiles) do
+                    if not p.isDead then
+                        p:draw()
+                    end
+                end
+                
+                -- Draw effects (frozen)
+                for _, e in ipairs(Game.effects) do
+                    if e.type == "explosion" and e.duration and e.duration > 0 then
+                        local t = e.timer / e.duration
+                        local alpha = 1.0 - t
+                        local radius = e.radius * (1.0 - t * 0.5)
+                        love.graphics.setColor(1, 1, 0, alpha * 0.5)
+                        love.graphics.circle("fill", e.x, e.y, radius, 32)
+                    elseif e.type == "explosion" then
+                        -- Fallback if duration is missing - just draw at current state
+                        love.graphics.setColor(1, 1, 0, 0.5)
+                        love.graphics.circle("fill", e.x, e.y, e.radius or 50, 32)
+                    end
+                end
+                
+                -- Draw turret (frozen)
+                if Game.turret then
+                    Game.turret:draw()
+                end
+            end)
+        end
+        
+        love.graphics.setColor(1, 1, 1, 0.3)  -- Fade the game
+        drawGameFrozen()
+        
+        -- Add color tint overlay based on win condition
+        if Game.winCondition == "blue_only" then
+            -- Blue tint overlay
+            love.graphics.setColor(0.2, 0.4, 1.0, 0.4)  -- Blue with transparency
+            love.graphics.rectangle("fill", Constants.OFFSET_X, Constants.OFFSET_Y, 
+                Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
+        elseif Game.winCondition == "red_only" then
+            -- Red tint overlay
+            love.graphics.setColor(1.0, 0.2, 0.2, 0.4)  -- Red with transparency
+            love.graphics.rectangle("fill", Constants.OFFSET_X, Constants.OFFSET_Y, 
+                Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
+        end
+    end
+    
+    -- Draw win text
+    love.graphics.setFont(Game.fonts.large)
+    love.graphics.setColor(0, 1, 0)  -- Green
+    local message = ""
+    if Game.winCondition == "blue_only" then
+        message = "LEVEL COMPLETE! Only Blue Units Remain"
+    elseif Game.winCondition == "red_only" then
+        message = "LEVEL COMPLETE! Only Red Units Remain"
+    elseif Game.winCondition == "neutral_only" then
+        message = "LEVEL COMPLETE! All Units Returned to Neutral"
+    end
+    local textWidth = Game.fonts.large:getWidth(message)
+    love.graphics.print(message, (Constants.SCREEN_WIDTH - textWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
+end
+
 function drawLevelCompleteScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
@@ -1309,17 +1427,73 @@ function love.update(dt)
         return  -- Don't update other game logic during game over
     end
     
+    -- Handle slow-motion ramp to freeze
+    local gameDt = dt
+    if Game.slowMoActive then
+        Game.slowMoTimer = Game.slowMoTimer + dt
+        local progress = math.min(Game.slowMoTimer / Game.slowMoDuration, 1.0)
+        -- Ramp from 1.0 to 0.0 (smooth ease-out)
+        Game.timeScale = 1.0 - (progress * progress)  -- Quadratic ease-out
+        
+        -- Apply time scale to game updates during slow-mo
+        gameDt = dt * Game.timeScale
+        
+        -- Update sound system with normal dt (sounds should not be affected by slow-mo)
+        Sound.update(dt)
+        
+        -- When fully frozen, show win text first
+        if Game.timeScale <= 0.0 then
+            Game.timeScale = 0.0
+            Game.slowMoActive = false
+            Game.winTextActive = true
+            Game.winTextTimer = 5.0  -- 5 second pause on win text
+            -- Clean up any remaining game sounds when frozen (fanfare should be done by now)
+            Sound.cleanup()
+            Sound.unmute()  -- Re-enable for any UI sounds
+            Sound.update(dt)
+            return
+        end
+    else
+        -- Normal time handling
+        Time.checkRestore(dt)
+        Time.update(dt)
+        gameDt = dt * Time.scale
+    end
+    
+    -- Handle win text display (pause before webcam)
+    if Game.winTextActive then
+        Game.winTextTimer = Game.winTextTimer - dt
+        -- Update sound system during win text display
+        Sound.update(dt)
+        if Game.winTextTimer <= 0 then
+            -- Win text done, show webcam screen
+            Game.winTextActive = false
+            Game.winTextTimer = 0
+            Game.levelCompleteScreenActive = true
+            Game.levelCompleteScreenTimer = 5.0  -- 5 second completion screen
+            Webcam.showComment("level_complete")
+        end
+        return  -- Don't update game logic during win text display
+    end
+    
     -- Handle level completion screen (Chase Paxton congratulation)
     if Game.levelCompleteScreenActive then
         Game.levelCompleteScreenTimer = Game.levelCompleteScreenTimer - dt
+        -- Update sound system during completion screen
+        Sound.update(dt)
         if Game.levelCompleteScreenTimer <= 0 then
-            -- Completion screen done, proceed to level transition
+            -- Completion screen done, clean up any remaining sounds before transition
+            Sound.cleanup()
+            Sound.unmute()  -- Re-enable sounds for next level
+            -- Proceed to level transition
             Game.levelCompleteScreenActive = false
             Game.levelCompleteScreenTimer = 0
             Game.levelTransitionActive = true
             Game.levelTransitionTimer = 2.0  -- 2 second transition
+            Game.timeScale = 1.0  -- Reset time scale
         end
-        return  -- Don't update game logic during completion screen
+        -- Don't update game logic during completion screen (frozen)
+        return
     end
     
     -- Handle level transition
@@ -1415,7 +1589,23 @@ function love.update(dt)
     end
     if Game.shake > 0 then Game.shake = math.max(0, Game.shake - 2.5 * dt) end
 
-    Time.checkRestore(dt); Time.update(dt); local gameDt = dt * Time.scale
+    -- Skip main game updates during slow-mo or when game state is not playing
+    -- This prevents new sounds from being created during win sequence
+    if Game.slowMoActive or Game.gameState ~= "playing" then
+        -- Sound is already updated above during slow-mo handling
+        if not Game.slowMoActive then
+            Sound.update(dt)
+        end
+        Webcam.update(dt)
+        EngagementPlot.update(dt)
+        return  -- Don't update game entities during slow-mo or non-playing states
+    end
+    
+    -- Use gameDt from slow-mo handling (already calculated above)
+    -- Normal time handling
+    Time.checkRestore(dt)
+    Time.update(dt)
+    gameDt = dt * Time.scale
     
     -- Calculate toxic hazard count for engagement decay
     local toxicHazardCount = #Game.hazards
@@ -1515,7 +1705,7 @@ function love.update(dt)
 
     if Game.turret then Game.turret:update(dt, Game.projectiles, Game.isUpgraded) end
     
-    for i = #Game.units, 1, -1 do local u = Game.units[i]; u:update(gameDt, Game.units, Game.hazards, Game.explosionZones); if u.isDead then table.remove(Game.units, i) end end
+    for i = #Game.units, 1, -1 do local u = Game.units[i]; u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret); if u.isDead then table.remove(Game.units, i) end end
     for i = #Game.projectiles, 1, -1 do local p = Game.projectiles[i]; p:update(gameDt); if p.isDead then table.remove(Game.projectiles, i) end end
     
     -- Check win conditions
@@ -1681,6 +1871,8 @@ function love.keypressed(key)
     end
     
     if not Game.turret then return end
+    -- Don't allow charging if game state is not playing (prevents charging during win sequence)
+    if Game.gameState ~= "playing" then return end
     if key == "z" then Game.turret:startCharge("red")
     elseif key == "x" then Game.turret:startCharge("blue")
     elseif key == "2" then
@@ -1693,38 +1885,54 @@ end
 
 function love.keyreleased(key)
     if not Game.turret then return end
+    -- Don't allow releasing charge if game state is not playing
+    if Game.gameState ~= "playing" then return end
     if key == "z" or key == "x" then Game.turret:releaseCharge(Game.projectiles) end
 end
 
 function love.draw()
+    -- Helper function to apply CRT shader to any drawing function
+    local function drawWithCRT(drawFunc)
+        if Game.crtEnabled and Game.crtChain then
+            Game.crtChain.draw(drawFunc)
+        else
+            drawFunc()
+        end
+    end
+    
     -- Draw attract mode screen
     if Game.attractMode then
-        drawAttractMode()
+        drawWithCRT(drawAttractMode)
         return
     end
     
     -- Draw intro screen (check before AUDITOR to prevent showing CRITICAL_ERROR on new game)
     if Game.introMode then
-        drawIntroScreen()
+        drawWithCRT(drawIntroScreen)
         return
     end
     
     -- Draw level completion screen (Chase Paxton)
+    if Game.winTextActive then
+        drawWithCRT(drawWinTextScreen)
+        return
+    end
+    
     if Game.levelCompleteScreenActive then
-        drawLevelCompleteScreen()
+        drawWithCRT(drawLevelCompleteScreen)
         return
     end
     
     -- Draw life lost auditor screen (engagement depleted but lives remain)
     if Game.lifeLostAuditorActive then
-        drawLifeLostAuditor()
+        drawWithCRT(drawLifeLostAuditor)
         return
     end
     
     -- Draw THE AUDITOR sequence (final game over - all lives lost)
     -- Only show if not in intro mode (safety check)
     if Game.auditorActive and not Game.introMode then
-        drawAuditor()
+        drawWithCRT(drawAuditor)
         return
     end
     
@@ -1782,7 +1990,7 @@ function love.draw()
                         local bubbleX = e.x
                         local bubbleY = e.y - Constants.UNIT_RADIUS - 40
                         local padding = 10
-                        local fontSize = 12
+                        local fontSize = 18  -- Larger font for dialogue
                         local font = love.graphics.newFont(fontSize)
                         
                         local textWidth = font:getWidth(e.speechBubble.text)
@@ -1864,11 +2072,7 @@ function love.draw()
     end
     
     -- Apply CRT effect if enabled, otherwise draw normally
-    if Game.crtEnabled and Game.crtChain then
-        Game.crtChain.draw(drawGame)
-    else
-        drawGame()
-    end
+    drawWithCRT(drawGame)
 end
 
 function drawHUD()

@@ -19,7 +19,7 @@ function Projectile.new(x, y, angle, weaponType, color, chargeDist)
     self.maxTrail = 300 
     self.trailTimer = 0
     
-    local speed = (weaponType == "puck") and 800 or 500
+    local speed = (weaponType == "puck") and 1200 or 500
     local radius = (weaponType == "puck") and 5 or 15
     
     if weaponType == "puck" then

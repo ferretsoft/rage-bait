@@ -1,4 +1,5 @@
 local Constants = require("src.constants")
+local World = require("src.core.world")
 local Projectile = require("src.entities.projectile")
 local Sound = require("src.core.sound")
 
@@ -16,8 +17,8 @@ local ANIM_CONF = {
     ABDOMEN_SCALE_REDUCTION = 0.4,
     
     -- Gait
-    STEP_TRIGGER_DIST = 30,
-    STEP_SPEED = 10,
+    STEP_TRIGGER_DIST = 20,  -- Reduced for faster reaction
+    STEP_SPEED = 25,  -- Increased for snappier leg movement
     
     -- Physics
     BODY_SMOOTHING = 5.0,
@@ -70,8 +71,38 @@ function Turret.new()
     local self = setmetatable({}, Turret)
     
     self.x = Constants.PLAYFIELD_WIDTH / 2
-    self.y = Constants.PLAYFIELD_HEIGHT + 155
-    self.angle = -math.pi / 2
+    self.y = Constants.PLAYFIELD_HEIGHT - 180  -- Positioned on playfield, high enough so legs are fully inside
+    self.angle = -math.pi / 2  -- Start at 12 o'clock (pointing up)
+    
+    -- Create web platform physics body (static obstacle)
+    self.webRadius = 200  -- Platform radius
+    -- Position platform center directly under turret center, but ensure it fits within playfield
+    -- Platform bottom should not exceed PLAYFIELD_HEIGHT
+    local platformCenterY = math.min(self.y + 50, Constants.PLAYFIELD_HEIGHT - self.webRadius)
+    self.webY = platformCenterY - 10  -- Moved up 10 pixels total
+    self.webBody = love.physics.newBody(World.physics, self.x, self.webY, "static")
+    self.webShape = love.physics.newCircleShape(self.webRadius)
+    self.webFixture = love.physics.newFixture(self.webBody, self.webShape)
+    self.webFixture:setCategory(Constants.PHYSICS.WEB)
+    -- Only collide with units, not projectiles (mask excludes PUCK category)
+    self.webFixture:setMask(Constants.PHYSICS.PUCK)
+    self.webFixture:setUserData({type = "web"})
+    
+    -- Create hard circular barrier around platform (larger radius, units only)
+    -- This prevents units from getting stuck between platform and playfield edges
+    self.barrierRadius = self.webRadius + 80  -- Barrier extends 80 pixels beyond platform
+    self.barrierBody = love.physics.newBody(World.physics, self.x, self.webY, "static")
+    self.barrierShape = love.physics.newCircleShape(self.barrierRadius)
+    self.barrierFixture = love.physics.newFixture(self.barrierBody, self.barrierShape)
+    self.barrierFixture:setCategory(Constants.PHYSICS.WEB)
+    -- Only collide with units, not projectiles (mask excludes PUCK category)
+    self.barrierFixture:setMask(Constants.PHYSICS.PUCK)
+    self.barrierFixture:setUserData({type = "web_barrier"})
+    -- Make it a hard wall (high restitution and friction)
+    self.barrierFixture:setRestitution(0.8)  -- Bouncy like walls
+    self.barrierFixture:setFriction(0.5)  -- Some friction
+    
+    self.barrierWalls = {}  -- Keep for compatibility
     
     -- Animation properties
     self.visualX = self.x
@@ -87,7 +118,7 @@ function Turret.new()
     self.rotationFriction = 50.0 
     self.maxRotationSpeed = 4.0
     
-    self.fireRate = 0.15 
+    self.fireRate = 0.08 
     self.fireTimer = 0
     self.puckModeTimer = 0 
     
@@ -154,9 +185,17 @@ function Turret:activatePuckMode(duration)
     self.chargeTimer = 0
     
     -- Stop charging sound if playing
-    if self.chargeSound and self.chargeSound:isPlaying() then
-        self.chargeSound:stop()
-        self.chargeSound:release()
+    -- Stop charging sound (safely handle released sounds)
+    if self.chargeSound then
+        local success, isPlaying = pcall(function()
+            return self.chargeSound:isPlaying()
+        end)
+        if success and isPlaying then
+            pcall(function()
+                self.chargeSound:stop()
+                self.chargeSound:release()
+            end)
+        end
         self.chargeSound = nil
     end
 end
@@ -220,7 +259,27 @@ function Turret:update(dt, projectiles, isUpgraded)
     elseif self.rotationVelocity < -self.maxRotationSpeed then self.rotationVelocity = -self.maxRotationSpeed end
     
     self.angle = self.angle + self.rotationVelocity * dt
-    self.angle = math.max(-math.pi + 0.2, math.min(-0.2, self.angle))
+    -- Allow 270 degrees of rotation (1.5π radians), equal in both directions from start
+    -- Starting at -π/2 (12 o'clock), can rotate ±135 degrees (3π/4 radians) in each direction
+    -- Counterclockwise limit: -π/2 + 3π/4 = π/4 (1 o'clock)
+    -- Clockwise limit: -π/2 - 3π/4 = -5π/4, which wraps to 3π/4 (9 o'clock)
+    
+    -- Normalize angle to -π to π range first
+    while self.angle > math.pi do self.angle = self.angle - 2 * math.pi end
+    while self.angle < -math.pi do self.angle = self.angle + 2 * math.pi end
+    
+    local maxAngle = math.pi / 4       -- Counterclockwise limit (135° from start)
+    local minAngleWrapped = 3 * math.pi / 4  -- Clockwise limit wrapped (135° from start)
+    
+    -- Clamp to valid range: allow from 3π/4 to π (clockwise) and from -π to π/4 (counterclockwise)
+    if self.angle > maxAngle and self.angle < minAngleWrapped then
+        -- In invalid middle zone, clamp to nearest limit
+        if math.abs(self.angle - maxAngle) < math.abs(self.angle - minAngleWrapped) then
+            self.angle = maxAngle
+        else
+            self.angle = minAngleWrapped
+        end
+    end
 
     if self.puckModeTimer > 0 then
         self.puckModeTimer = self.puckModeTimer - dt
@@ -297,13 +356,28 @@ function Turret:update(dt, projectiles, isUpgraded)
 end
 
 function Turret:startCharge(color)
+    -- Don't allow charging if game state is not playing (prevents charging during win sequence)
+    -- This check should be done by the caller, but we add it here as a safety measure
     if self.puckModeTimer <= 0 then
         self.isCharging = true
         self.chargeTimer = 0
         self.chargeColor = color
         
         -- Start vibrating sound for charging
-        if not self.chargeSound or not self.chargeSound:isPlaying() then
+        -- Check if charge sound is valid and playing (safely handle released sounds)
+        local shouldStartSound = true
+        if self.chargeSound then
+            local success, isPlaying = pcall(function()
+                return self.chargeSound:isPlaying()
+            end)
+            if success and isPlaying then
+                shouldStartSound = false
+            else
+                -- Sound was released or invalid, clear the reference
+                self.chargeSound = nil
+            end
+        end
+        if shouldStartSound then
             self.chargeSound = Sound.playVibrate(0.3, 1.0, true)  -- Lower volume (0.3 instead of 0.5)
         end
     end
@@ -324,10 +398,17 @@ function Turret:releaseCharge(projectiles)
     
     table.insert(projectiles, Projectile.new(muzzleX, muzzleY, self.angle, "bomb", self.chargeColor, dist))
     
-    -- Stop charging sound
-    if self.chargeSound and self.chargeSound:isPlaying() then
-        self.chargeSound:stop()
-        self.chargeSound:release()
+    -- Stop charging sound (safely handle released sounds)
+    if self.chargeSound then
+        local success, isPlaying = pcall(function()
+            return self.chargeSound:isPlaying()
+        end)
+        if success and isPlaying then
+            pcall(function()
+                self.chargeSound:stop()
+                self.chargeSound:release()
+            end)
+        end
         self.chargeSound = nil
     end
     
@@ -366,6 +447,51 @@ function Turret:firePuck(color, projectiles)
 end
 
 function Turret:draw()
+    -- Draw spider web platform under the spider (centered at base position, not visual position)
+    local platformRadius = self.webRadius  -- 160 (doubled)
+    local centerX = self.x  -- Use base position, not visual position
+    local centerY = self.webY  -- Use fixed web Y position
+    
+    -- Web shadow
+    love.graphics.setColor(0, 0, 0, 0.2)
+    love.graphics.circle("fill", centerX, centerY + 3, platformRadius)
+    
+    -- Web base (semi-transparent white/gray)
+    love.graphics.setColor(0.9, 0.9, 0.85, 0.6)
+    love.graphics.circle("fill", centerX, centerY, platformRadius)
+    
+    -- Draw radial lines (spokes of the web)
+    love.graphics.setColor(0.7, 0.7, 0.65, 0.8)
+    love.graphics.setLineWidth(2)
+    local numSpokes = 16
+    for i = 0, numSpokes - 1 do
+        local angle = (i / numSpokes) * math.pi * 2
+        local endX = centerX + math.cos(angle) * platformRadius
+        local endY = centerY + math.sin(angle) * platformRadius
+        love.graphics.line(centerX, centerY, endX, endY)
+    end
+    
+    -- Draw spiral pattern (concentric circles with gaps)
+    love.graphics.setColor(0.6, 0.6, 0.55, 0.7)
+    love.graphics.setLineWidth(1.5)
+    local numRings = 6
+    for i = 1, numRings do
+        local ringRadius = (platformRadius / numRings) * i
+        love.graphics.circle("line", centerX, centerY, ringRadius)
+    end
+    
+    -- Web border
+    love.graphics.setColor(0.5, 0.5, 0.45, 0.9)
+    love.graphics.setLineWidth(3)
+    love.graphics.circle("line", centerX, centerY, platformRadius)
+    
+    -- Center hub (where spider sits)
+    love.graphics.setColor(0.3, 0.3, 0.25, 0.8)
+    love.graphics.circle("fill", centerX, centerY, 25)
+    love.graphics.setColor(0.2, 0.2, 0.15, 0.9)
+    love.graphics.setLineWidth(2)
+    love.graphics.circle("line", centerX, centerY, 25)
+    
     -- Calculate barrel end position for effects
     local visualSlide = -self.lean * ANIM_CONF.LEAN_VISUAL_TILT
     local barrelPos = visualSlide - self.barrelkick

@@ -73,8 +73,8 @@ Constants.BOMB_RANGE_BASE = 600
 Constants.BOMB_RANGE_MAX = 900
 
 -- === WEAPON: PUCK ===
--- Always shoots full screen (Speed 800 * 4.0s = 3200px)
-Constants.PUCK_LIFETIME = 4.0
+-- Always shoots full screen (Speed 1200 * 2.5s = 3000px)
+Constants.PUCK_LIFETIME = 2.5
 Constants.PUCK_LIFETIME_MAX = 8.0 
 
 -- === ENGAGEMENT & SCORE ===

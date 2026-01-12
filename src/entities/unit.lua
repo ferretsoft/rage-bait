@@ -2,33 +2,10 @@ local Constants = require("src.constants")
 local Event = require("src.core.event")
 local EmojiSprites = require("src.core.emoji_sprites")
 local Sound = require("src.core.sound")
+local Quotes = require("src.core.quotes")
 
 local Unit = {}
 Unit.__index = Unit
-
--- Internet nihilism quotes for when units go insane
-local NIHILISM_QUOTES = {
-    "nothing matters",
-    "we're all doomed",
-    "existence is pain",
-    "everything is meaningless",
-    "we're just data",
-    "reality is a simulation",
-    "nothing is real",
-    "we're all going to die",
-    "the void consumes all",
-    "existence is futile",
-    "we're trapped here",
-    "there is no escape",
-    "all hope is lost",
-    "we're just numbers",
-    "the system is broken",
-    "we're all puppets",
-    "freedom is an illusion",
-    "we're already dead",
-    "the end is near",
-    "we're all alone"
-}
 
 function Unit.new(world, x, y)
     local self = setmetatable({}, Unit)
@@ -46,6 +23,7 @@ function Unit.new(world, x, y)
     self.isolationTimer = 0  -- Timer for isolation (grey units only)
     self.isInsane = false  -- Whether unit has gone insane from isolation
     self.speechBubble = nil  -- {text, timer, duration} for displaying quotes
+    self.groupSpeechBubble = nil  -- {text, timer, duration, groupCenterX, groupCenterY} for group bubbles
     
     -- PHYSICS SETUP
     self.body = love.physics.newBody(world, x, y, "dynamic")
@@ -65,7 +43,7 @@ function Unit.new(world, x, y)
     return self
 end
 
-function Unit:update(dt, allUnits, hazards, explosionZones)
+function Unit:update(dt, allUnits, hazards, explosionZones, turret)
     if self.isDead then return end
     
     -- Update speech bubble timer
@@ -73,6 +51,14 @@ function Unit:update(dt, allUnits, hazards, explosionZones)
         self.speechBubble.timer = self.speechBubble.timer + dt
         if self.speechBubble.timer >= self.speechBubble.duration then
             self.speechBubble = nil
+        end
+    end
+    
+    -- Update group speech bubble timer
+    if self.groupSpeechBubble then
+        self.groupSpeechBubble.timer = self.groupSpeechBubble.timer + dt
+        if self.groupSpeechBubble.timer >= self.groupSpeechBubble.duration then
+            self.groupSpeechBubble = nil
         end
     end
     
@@ -107,6 +93,8 @@ function Unit:update(dt, allUnits, hazards, explosionZones)
         -- Flocking behavior for colored units (red/blue)
         if self.alignment ~= "none" and self.state ~= "neutral" then
             self:updateFlocking(dt, allUnits)
+            -- Check for groups of 5+ and assign group speech bubbles
+            self:checkGroupSize(allUnits)
         elseif not isAttracted then
             self:updateWander(dt)
         end
@@ -120,6 +108,26 @@ function Unit:update(dt, allUnits, hazards, explosionZones)
     
     -- All units avoid walls (enraged units have reduced wall avoidance in avoidWalls function)
     self:avoidWalls(dt)
+    
+    -- Avoid spider platform to prevent getting stuck
+    self:avoidSpiderPlatform(dt, turret)
+    
+    -- Ensure units never stop completely - maintain minimum velocity
+    local vx, vy = self.body:getLinearVelocity()
+    local currentSpeed = math.sqrt(vx^2 + vy^2)
+    local minSpeed = Constants.UNIT_SPEED_NEUTRAL * 0.2  -- Minimum 20% of neutral speed
+    
+    if currentSpeed < minSpeed and currentSpeed > 0.1 then
+        -- Unit is moving but too slow, apply a small boost in current direction
+        local dirX = vx / currentSpeed
+        local dirY = vy / currentSpeed
+        local boostForce = self.body:getMass() * 100
+        self.body:applyForce(dirX * boostForce, dirY * boostForce)
+    elseif currentSpeed < 0.1 then
+        -- Unit is nearly stopped, apply force in wander direction
+        local forceMag = self.body:getMass() * 200
+        self.body:applyForce(math.cos(self.currentMoveAngle)*forceMag, math.sin(self.currentMoveAngle)*forceMag)
+    end
 end
 
 function Unit:seekAttractions(dt, zones)
@@ -226,6 +234,17 @@ function Unit:hit(weaponType, color)
         self.conversionTime = love.timer.getTime()  -- Record conversion time
         local vx, vy = self.body:getLinearVelocity()
         self.body:setLinearVelocity(vx * 1.2, vy * 1.2)
+        
+        -- Fade out speech bubble if unit was approaching insanity
+        if self.speechBubble then
+            -- Start fade out by setting timer to 70% of duration (triggers fade)
+            if self.speechBubble.duration then
+                self.speechBubble.timer = self.speechBubble.duration * 0.7
+            end
+        end
+        
+        -- Reset isolation timer since unit is no longer neutral
+        self.isolationTimer = 0
 
     elseif self.state == "passive" then
         if self.alignment ~= color then
@@ -273,9 +292,10 @@ function Unit:checkIsolation(dt, allUnits)
     if hasNearbyNeutral then
         -- Reset timer if near other neutrals
         self.isolationTimer = 0
-        -- Clear speech bubble if unit is no longer isolated
+        -- Fade out speech bubble if unit is no longer isolated
         if self.speechBubble then
-            self.speechBubble = nil
+            -- Start fade out by setting timer to 70% of duration (triggers fade)
+            self.speechBubble.timer = self.speechBubble.duration * 0.7
         end
     else
         -- Increment timer if isolated
@@ -291,7 +311,7 @@ function Unit:checkIsolation(dt, allUnits)
             
             -- Show a random nihilism quote when shaking starts
             if not self.speechBubble then
-                local quote = NIHILISM_QUOTES[math.random(#NIHILISM_QUOTES)]
+                local quote = Quotes.getRandom("NIHILISM")
                 self.speechBubble = {
                     text = quote,
                     timer = 0,
@@ -483,7 +503,7 @@ function Unit:draw()
             bubbleY = bubbleY + love.math.random(-shakeAmount, shakeAmount)
         end
         local padding = 10
-        local fontSize = 12  -- Slightly larger font
+        local fontSize = 18  -- Larger font for dialogue
         local font = love.graphics.newFont(fontSize)
         
         -- Calculate text width
@@ -528,6 +548,66 @@ function Unit:draw()
         love.graphics.setColor(1, 0.5, 0.5, alpha)  -- Brighter red text for nihilism
         love.graphics.setFont(font)
         love.graphics.print(self.speechBubble.text, bubbleX - textWidth / 2, bubbleY - bubbleHeight + padding)
+    end
+    
+    -- Draw group speech bubble if unit is the group speaker
+    if self.groupSpeechBubble and self.groupSpeechBubble.text then
+        local bubbleX = self.groupSpeechBubble.groupCenterX or x
+        local bubbleY = (self.groupSpeechBubble.groupCenterY or y) - 60  -- Position above group center
+        local padding = 10
+        local fontSize = 18  -- Larger font for dialogue
+        local font = love.graphics.newFont(fontSize)
+        
+        -- Calculate text width
+        local textWidth = font:getWidth(self.groupSpeechBubble.text)
+        local textHeight = font:getHeight()
+        local bubbleWidth = textWidth + padding * 2
+        local bubbleHeight = textHeight + padding * 2
+        
+        -- Fade out as timer approaches duration
+        local alpha = 1.0
+        if self.groupSpeechBubble.timer and self.groupSpeechBubble.duration then
+            if self.groupSpeechBubble.timer > self.groupSpeechBubble.duration * 0.7 then
+                alpha = 1.0 - ((self.groupSpeechBubble.timer - self.groupSpeechBubble.duration * 0.7) / (self.groupSpeechBubble.duration * 0.3))
+            end
+        end
+        
+        -- Choose color based on alignment
+        local textColor = {1, 1, 1}
+        if self.alignment == "blue" then
+            textColor = {0.3, 0.5, 1}  -- Blue text for liberal cliches
+        elseif self.alignment == "red" then
+            textColor = {1, 0.3, 0.3}  -- Red text for MAGA cliches
+        end
+        
+        -- Draw speech bubble background
+        love.graphics.setColor(0, 0, 0, alpha * 0.9)
+        love.graphics.rectangle("fill", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+        
+        -- Draw speech bubble border
+        love.graphics.setColor(0.8, 0.8, 0.8, alpha)
+        love.graphics.setLineWidth(2)
+        love.graphics.rectangle("line", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+        
+        -- Draw speech bubble tail (pointing down to group center)
+        love.graphics.setColor(0, 0, 0, alpha * 0.9)
+        love.graphics.polygon("fill", 
+            bubbleX - 10, bubbleY - 6,
+            bubbleX + 10, bubbleY - 6,
+            bubbleX, bubbleY + 6
+        )
+        love.graphics.setColor(0.8, 0.8, 0.8, alpha)
+        love.graphics.setLineWidth(2)
+        love.graphics.polygon("line", 
+            bubbleX - 10, bubbleY - 6,
+            bubbleX + 10, bubbleY - 6,
+            bubbleX, bubbleY + 6
+        )
+        
+        -- Draw text with alignment color
+        love.graphics.setColor(textColor[1], textColor[2], textColor[3], alpha)
+        love.graphics.setFont(font)
+        love.graphics.print(self.groupSpeechBubble.text, bubbleX - textWidth / 2, bubbleY - bubbleHeight + padding)
     end
 end
 
@@ -599,6 +679,103 @@ function Unit:updateFlocking(dt, allUnits)
         self.body:applyForce(separationX * separationForce, separationY * separationForce)
         self.body:applyForce(alignmentX * alignmentForce, alignmentY * alignmentForce)
         self.body:applyForce(cohesionX * cohesionForce, cohesionY * cohesionForce)
+    else
+        -- If no neighbors, ensure unit still moves (wander)
+        local vx, vy = self.body:getLinearVelocity()
+        local currentSpeed = math.sqrt(vx^2 + vy^2)
+        if currentSpeed < Constants.UNIT_SPEED_NEUTRAL * 0.3 then
+            -- Apply small wander force to keep moving
+            local forceMag = self.body:getMass() * 200
+            self.body:applyForce(math.cos(self.currentMoveAngle)*forceMag, math.sin(self.currentMoveAngle)*forceMag)
+        end
+    end
+end
+
+function Unit:checkGroupSize(allUnits)
+    -- Only check for converted units (not neutral)
+    if self.alignment == "none" or self.state == "neutral" or self.state == "enraged" then
+        return
+    end
+    
+    local myX, myY = self.body:getPosition()
+    local groupRadius = 150  -- Radius to check for group members
+    local groupMembers = {}
+    local totalX, totalY = myX, myY
+    
+    -- Find all nearby units of the same alignment (not enraged)
+    for _, other in ipairs(allUnits) do
+        if other ~= self and not other.isDead and other.alignment == self.alignment and other.state ~= "enraged" then
+            local ox, oy = other.body:getPosition()
+            local dx = ox - myX
+            local dy = oy - myY
+            local distSq = dx*dx + dy*dy
+            
+            if distSq < groupRadius^2 then
+                table.insert(groupMembers, other)
+                totalX = totalX + ox
+                totalY = totalY + oy
+            end
+        end
+    end
+    
+    -- Include self in count
+    local groupSize = #groupMembers + 1
+    
+    -- If group has 5+ members, assign speech bubble
+    if groupSize >= 5 then
+        -- Calculate group center
+        local centerX = totalX / groupSize
+        local centerY = totalY / groupSize
+        
+        -- Find unit closest to center to be the "speaker"
+        local closestToCenter = self
+        local minDistToCenter = (myX - centerX)^2 + (myY - centerY)^2
+        
+        for _, member in ipairs(groupMembers) do
+            local mx, my = member.body:getPosition()
+            local distToCenter = (mx - centerX)^2 + (my - centerY)^2
+            if distToCenter < minDistToCenter then
+                minDistToCenter = distToCenter
+                closestToCenter = member
+            end
+        end
+        
+        -- Assign speech bubble to the unit closest to center (only if it's this unit)
+        if closestToCenter == self then
+            -- Only create new bubble if we don't have one or it's expired
+            if not self.groupSpeechBubble then
+                local quoteCategory = self.alignment == "blue" and "LIBERAL" or "MAGA"
+                local quote = Quotes.getRandom(quoteCategory)
+                self.groupSpeechBubble = {
+                    text = quote,
+                    timer = 0,
+                    duration = 3.0,  -- Show for 3 seconds
+                    groupCenterX = centerX,
+                    groupCenterY = centerY
+                }
+            else
+                -- Update group center position
+                self.groupSpeechBubble.groupCenterX = centerX
+                self.groupSpeechBubble.groupCenterY = centerY
+                -- Reset timer if bubble is about to expire (refresh it)
+                if self.groupSpeechBubble.timer > self.groupSpeechBubble.duration * 0.5 then
+                    self.groupSpeechBubble.timer = 0
+                    -- Optionally change quote
+                    local quoteCategory = self.alignment == "blue" and "LIBERAL" or "MAGA"
+                    self.groupSpeechBubble.text = Quotes.getRandom(quoteCategory)
+                end
+            end
+        else
+            -- Not the closest to center, clear bubble if we have one
+            if self.groupSpeechBubble then
+                self.groupSpeechBubble = nil
+            end
+        end
+    else
+        -- Group too small, clear bubble if we have one
+        if self.groupSpeechBubble then
+            self.groupSpeechBubble = nil
+        end
     end
 end
 
@@ -665,10 +842,16 @@ function Unit:updateWander(dt)
     local vx, vy = self.body:getLinearVelocity()
     local currentSpeed = math.sqrt(vx^2 + vy^2)
     
-    if currentSpeed < Constants.UNIT_SPEED_NEUTRAL then
-        local forceMag = self.body:getMass() * 300 
-        self.body:applyForce(math.cos(self.currentMoveAngle)*forceMag, math.sin(self.currentMoveAngle)*forceMag)
+    -- Always apply force to ensure units never stop completely
+    -- Use stronger force if speed is below target, but always apply some force
+    local forceMag = self.body:getMass() * 300
+    if currentSpeed < Constants.UNIT_SPEED_NEUTRAL * 0.5 then
+        -- If very slow, apply stronger force
+        forceMag = forceMag * 2
     end
+    
+    -- Always apply wander force to keep units moving
+    self.body:applyForce(math.cos(self.currentMoveAngle)*forceMag, math.sin(self.currentMoveAngle)*forceMag)
 end
 
 function Unit:avoidWalls(dt)
@@ -697,6 +880,62 @@ function Unit:avoidWalls(dt)
     if y > Constants.PLAYFIELD_HEIGHT - margin then 
         self.body:applyForce(0, -pushBack*dt)
         self.currentMoveAngle = -math.pi/2 
+    end
+end
+
+function Unit:avoidSpiderPlatform(dt, turret)
+    if not turret or not turret.webBody then return end
+    
+    local x, y = self.body:getPosition()
+    local platformX = turret.x
+    local platformY = turret.webY
+    local platformRadius = turret.webRadius
+    local barrierRadius = turret.barrierRadius or (platformRadius + 80)  -- Use barrier radius if available
+    
+    -- Calculate distance to platform center
+    local dx = x - platformX
+    local dy = y - platformY
+    local distSq = dx*dx + dy*dy
+    local dist = math.sqrt(distSq)
+    
+    -- Enraged units need less avoidance - they're focused on attacking
+    local isEnraged = (self.state == "enraged")
+    local avoidRadius
+    local pushBack
+    local escapeSpeed
+    
+    if isEnraged then
+        -- Enraged units: minimal avoidance, let them get close to attack
+        avoidRadius = barrierRadius + 20  -- Just outside barrier
+        pushBack = self.body:getMass() * 1000  -- Weak force
+        escapeSpeed = 50  -- Lower escape speed
+    else
+        -- Normal units: avoid the barrier (larger radius)
+        avoidRadius = barrierRadius + 30  -- Buffer around barrier
+        pushBack = self.body:getMass() * 3000  -- Moderate force
+        escapeSpeed = 120  -- Moderate escape speed
+    end
+    
+    if distSq < avoidRadius^2 and dist > 0 then
+        -- Calculate repulsion force (stronger when closer)
+        local forceMultiplier = 1.0 - (dist / avoidRadius)  -- Stronger when closer
+        local finalPushBack = pushBack * forceMultiplier
+        
+        -- Normalize direction and apply force away from platform
+        local dirX = dx / dist
+        local dirY = dy / dist
+        self.body:applyForce(dirX * finalPushBack, dirY * finalPushBack)
+        
+        -- If very close to barrier, also apply direct velocity boost to escape (only for non-enraged)
+        if not isEnraged and dist < barrierRadius + 20 then
+            local vx, vy = self.body:getLinearVelocity()
+            self.body:setLinearVelocity(vx + dirX * escapeSpeed * dt, vy + dirY * escapeSpeed * dt)
+        end
+        
+        -- Update wander angle to move away from platform (only for non-enraged)
+        if not isEnraged then
+            self.currentMoveAngle = math.atan2(dirY, dirX)
+        end
     end
 end
 

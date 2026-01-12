@@ -45,6 +45,11 @@ function World.draw(drawFunc)
     love.graphics.push()
     love.graphics.translate(Constants.OFFSET_X, Constants.OFFSET_Y)
     
+    -- Draw playfield frame
+    love.graphics.setColor(0.5, 0.5, 0.5, 1)  -- Gray frame color
+    love.graphics.setLineWidth(4)
+    love.graphics.rectangle("line", 0, 0, Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
+    
     drawFunc()
     love.graphics.pop()
 end
