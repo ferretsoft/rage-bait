@@ -7,6 +7,8 @@ local Sound = require("src.core.sound")
 local EmojiSprites = require("src.core.emoji_sprites")
 local Webcam = require("src.core.webcam")
 local EngagementPlot = require("src.core.engagement_plot")
+local AttractMode = require("src.core.attract_mode")
+local DemoMode = require("src.core.demo_mode")
 local Unit = require("src.entities.unit")
 local Turret = require("src.entities.turret")
 local Projectile = require("src.entities.projectile")
@@ -15,7 +17,7 @@ local moonshine = require("libs.moonshine")
 -- Set BASE so moonshine can find effects in libs directory
 moonshine.BASE = "libs"
 
-local Game = {
+Game = {
     units = {},
     projectiles = {},
     powerups = {},
@@ -30,9 +32,27 @@ local Game = {
     powerupSpawnTimer = 0,
     background = nil,
     foreground = nil,
+    logo = nil,  -- Company logo image
+    logoBlink = nil,  -- Company logo blink image
+    splash = nil,  -- Splash screen image for attract mode
     showBackgroundForeground = false,  -- Toggle for background/foreground layers
-    attractMode = true,  -- Start in attract mode
+    logoMode = true,  -- Start with logo screen
+    logoTimer = 0,  -- Timer for logo animation
+    logoFanfarePlayed = false,  -- Track if fanfare has been played
+    previousLogoTimer = 0,  -- Track previous timer value to detect threshold crossings
+    attractMode = false,  -- Attract mode (after logo)
     attractModeTimer = 0,  -- Timer for attract mode animations
+    demoMode = false,  -- Demo mode (AI-controlled gameplay with tutorial)
+    demoTimer = 0,  -- Timer for demo mode
+    demoStep = 1,  -- Current tutorial step
+    demoAITimer = 0,  -- Timer for AI actions
+    demoTargetUnit = nil,  -- Current target unit for AI
+    demoCharging = false,  -- Whether AI is currently charging
+    demoActionComplete = false,  -- Whether current step's action is complete
+    demoWaitingForMessage = true,  -- Whether waiting for message to be shown
+    demoUnitConverted = false,  -- Track if a unit was converted (for verification)
+    demoUnitEnraged = false,  -- Track if a unit was enraged (for verification)
+    demoUnitsFighting = false,  -- Track if units are fighting (for verification)
     introMode = false,  -- Intro screen mode
     introTimer = 0,  -- Timer for intro screen
     introStep = 1,  -- Current intro step/page
@@ -60,6 +80,10 @@ local Game = {
     pointMultiplierTimer = 0,  -- Timer for point multiplier (10 seconds)
     pointMultiplierActive = false,  -- Whether point multiplier is active
     pointMultiplierFlashTimer = 0,  -- Timer for flashy text animation
+    pointMultiplierTextTimer = 0,  -- Timer for text display (fades out after 3s)
+    pointMultiplierSparks = {},  -- Spark particles for multiplier effect
+    rapidFireTextTimer = 0,  -- Timer for rapid fire text display (fades out after 3s)
+    rapidFireSparks = {},  -- Spark particles for rapid fire effect
     previousEngagementAtMax = false,  -- Track if engagement was at max last frame (prevents retriggering)
     highScores = {},  -- List of high scores {name, score}
     nameEntryActive = false,  -- Whether name entry screen is active
@@ -85,6 +109,29 @@ local function collectPowerUp(powerup)
         -- Puck mode powerup
         if Game.turret then
             Game.turret:activatePuckMode(Constants.POWERUP_DURATION)
+            
+            -- Activate rapid fire text effect
+            Game.rapidFireTextTimer = 3.0  -- Text display duration (3 seconds before fade)
+            Game.shake = math.max(Game.shake, 1.5)  -- Screen shake
+            
+            -- Create spark particles for the rapid fire effect
+            Game.rapidFireSparks = {}
+            local centerX = Constants.SCREEN_WIDTH / 2
+            local centerY = Constants.SCREEN_HEIGHT / 2 - 100
+            local numSparks = 30  -- Number of sparks
+            for i = 1, numSparks do
+                local angle = (i / numSparks) * math.pi * 2
+                local speed = 200 + math.random() * 300  -- Random speed between 200-500
+                table.insert(Game.rapidFireSparks, {
+                    x = centerX,
+                    y = centerY,
+                    vx = math.cos(angle) * speed,
+                    vy = math.sin(angle) * speed,
+                    life = 1.0,  -- Full life
+                    maxLife = 1.0,
+                    size = 3 + math.random() * 4  -- Random size between 3-7
+                })
+            end
             
             -- Visual effect (Gold Explosion)
             table.insert(Game.effects, {
@@ -284,11 +331,42 @@ function love.load()
         Game.foreground = nil
     end
     
+    -- Load company logo
+    local success3, img3 = pcall(love.graphics.newImage, "assets/ferretlogo.png")
+    if success3 then
+        Game.logo = img3
+    else
+        Game.logo = nil
+        print("Warning: Could not load logo: assets/ferretlogo.png")
+    end
+    
+    -- Load company logo blink version
+    local success5, img5 = pcall(love.graphics.newImage, "assets/ferretlogo_blink.png")
+    if success5 then
+        Game.logoBlink = img5
+    else
+        Game.logoBlink = nil
+        print("Warning: Could not load logo blink: assets/ferretlogo_blink.png")
+    end
+    
+    -- Load splash screen image
+    local success4, img4 = pcall(love.graphics.newImage, "assets/splash.png")
+    if success4 then
+        Game.splash = img4
+    else
+        Game.splash = nil
+        print("Warning: Could not load splash: assets/splash.png")
+    end
+    
     Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init(); EmojiSprites.init(); Webcam.init(); EngagementPlot.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
-    -- Start in attract mode
-    Game.attractMode = true
+    -- Start with logo screen
+    Game.logoMode = true
+    Game.logoTimer = 0
+    Game.previousLogoTimer = 0
+    Game.logoFanfarePlayed = false
+    Game.attractMode = false
     Game.attractModeTimer = 0
     
     -- Don't initialize game entities until coin is inserted
@@ -438,6 +516,7 @@ function startGame()
     Game.introStep = 1
 end
 
+
 -- Actually start gameplay (called after intro screen)
 function startGameplay()
     Game.introMode = false
@@ -445,6 +524,9 @@ function startGameplay()
     Game.introStep = 1
     Webcam.showComment("game_start")
     Webcam.showComment("game_start")
+    
+    -- Start background music
+    Sound.playMusic()
     
     -- Reset engagement to starting value (critical - prevents immediate game over)
     Engagement.init()
@@ -486,6 +568,10 @@ function startGameplay()
     Game.pointMultiplierTimer = 0
     Game.pointMultiplierActive = false
     Game.pointMultiplierFlashTimer = 0
+    Game.pointMultiplierTextTimer = 0
+    Game.pointMultiplierSparks = {}
+    Game.rapidFireTextTimer = 0
+    Game.rapidFireSparks = {}
     Game.previousEngagementAtMax = false
     Game.hazards = {}
     Game.explosionZones = {}
@@ -617,6 +703,9 @@ function restartLevel()
     -- Unmute sounds so they can play again after restart
     Sound.unmute()
     
+    -- Restart background music
+    Sound.playMusic()
+    
     -- Reset engagement to 100% (same as new level/game start)
     -- Score and level are NOT reset - they are preserved
     Engagement.value = Constants.ENGAGEMENT_MAX
@@ -667,6 +756,9 @@ end
 
 -- Return to attract mode
 function returnToAttractMode()
+    Game.logoMode = false
+    Game.logoTimer = 0
+    Game.previousLogoTimer = 0
     Game.attractMode = true
     Game.attractModeTimer = 0
     Game.gameOverActive = false
@@ -748,132 +840,90 @@ function returnToAttractMode()
     Game.effects = {}
 end
 
--- Draw attract mode screen
-function drawAttractMode()
-    love.graphics.clear(Constants.COLORS.BACKGROUND)
+-- Draw logo screen with slide-in animation
+function drawLogoScreen()
+    love.graphics.clear(0, 0, 0)  -- Black background
     
-    -- Title
-    love.graphics.setFont(Game.fonts.large)
-    love.graphics.setColor(1, 1, 1)
-    local title = "RAGE BAIT"
-    local titleWidth = Game.fonts.large:getWidth(title)
-    love.graphics.print(title, (Constants.SCREEN_WIDTH - titleWidth) / 2, 50)
-    
-    -- High Scores
-    if #Game.highScores > 0 then
-        love.graphics.setFont(Game.fonts.medium)
-        love.graphics.setColor(1, 0.8, 0.2)
-        local highScoreTitle = "HIGH SCORES"
-        local titleWidth2 = Game.fonts.medium:getWidth(highScoreTitle)
-        love.graphics.print(highScoreTitle, (Constants.SCREEN_WIDTH - titleWidth2) / 2, 120)
-        
-        love.graphics.setFont(Game.fonts.small)
-        local startY = 150
-        local lineHeight = 25
-        local maxScores = math.min(10, #Game.highScores)
-        
-        for i = 1, maxScores do
-            local entry = Game.highScores[i]
-            local rank = tostring(i) .. "."
-            local name = entry.name
-            local score = tostring(entry.score)
-            
-            -- Rank color (gold for top 3)
-            if i == 1 then
-                love.graphics.setColor(1, 0.84, 0)  -- Gold
-            elseif i == 2 then
-                love.graphics.setColor(0.75, 0.75, 0.75)  -- Silver
-            elseif i == 3 then
-                love.graphics.setColor(0.8, 0.5, 0.2)  -- Bronze
-            else
-                love.graphics.setColor(0.7, 0.7, 0.7)  -- Gray
-            end
-            
-            -- Calculate positions for aligned display
-            local rankX = Constants.SCREEN_WIDTH / 2 - 150
-            local nameX = Constants.SCREEN_WIDTH / 2 - 80
-            local scoreX = Constants.SCREEN_WIDTH / 2 + 100
-            
-            love.graphics.print(rank, rankX, startY + (i - 1) * lineHeight)
-            love.graphics.setColor(0.9, 0.9, 0.9)
-            love.graphics.print(name, nameX, startY + (i - 1) * lineHeight)
-            love.graphics.setColor(1, 1, 1)
-            love.graphics.print(score, scoreX, startY + (i - 1) * lineHeight)
-        end
+    if not Game.logo then
+        -- Fallback if logo didn't load
+        love.graphics.setFont(Game.fonts.large)
+        love.graphics.setColor(1, 1, 1)
+        love.graphics.print("LOGO", Constants.SCREEN_WIDTH / 2 - 50, Constants.SCREEN_HEIGHT / 2)
+        return
     end
     
-    -- Insert coin message (blinking)
-    local blinkSpeed = 2.0
-    local alpha = (math.sin(Game.attractModeTimer * blinkSpeed) + 1) / 2
-    alpha = 0.3 + alpha * 0.7  -- Keep between 0.3 and 1.0
+    local logoWidth = Game.logo:getWidth()
+    local logoHeight = Game.logo:getHeight()
+    local centerX = Constants.SCREEN_WIDTH / 2
+    local centerY = Constants.SCREEN_HEIGHT / 2
     
-    love.graphics.setFont(Game.fonts.medium)
-    love.graphics.setColor(1, 0.8, 0.2, alpha)
-    local coinMsg = "INSERT COIN"
-    local coinWidth = Game.fonts.medium:getWidth(coinMsg)
-    local coinY = Constants.SCREEN_HEIGHT - 150
-    love.graphics.print(coinMsg, (Constants.SCREEN_WIDTH - coinWidth) / 2, coinY)
+    -- Calculate scale to fit logo within screen (with some padding)
+    local maxWidth = Constants.SCREEN_WIDTH * 0.8  -- 80% of screen width
+    local maxHeight = Constants.SCREEN_HEIGHT * 0.8  -- 80% of screen height
+    local scaleX = maxWidth / logoWidth
+    local scaleY = maxHeight / logoHeight
+    local scale = math.min(scaleX, scaleY)  -- Maintain aspect ratio
     
-    -- Instructions
-    love.graphics.setColor(0.7, 0.7, 0.7)
-    love.graphics.setFont(Game.fonts.small)
-    local inst1 = "Press SPACE or ENTER to start"
-    local inst1Width = Game.fonts.small:getWidth(inst1)
-    love.graphics.print(inst1, (Constants.SCREEN_WIDTH - inst1Width) / 2, coinY + 30)
+    -- Scaled dimensions for animation calculations
+    local scaledWidth = logoWidth * scale
+    local scaledHeight = logoHeight * scale
     
-    -- Instructions
-    love.graphics.setColor(0.5, 0.5, 0.5)
-    local inst2 = "Use Z/X to fire bombs, collect powerups for rapid fire"
-    local inst2Width = Game.fonts.small:getWidth(inst2)
-    love.graphics.print(inst2, (Constants.SCREEN_WIDTH - inst2Width) / 2, coinY + 50)
+    -- Animation phases:
+    -- 0-1s: Slide in from left (silently, no sound)
+    -- 1-4s: Hold at center (3 seconds)
+    -- 4-4.25s: Show blink version (0.25 seconds)
+    -- 4.25-7.25s: Show normal version (3 seconds)
+    -- 7.25s+: Transition to attract mode
     
-    -- Draw playfield frame in attract mode (optional visual)
+    local t = Game.logoTimer
+    local x, y = centerX, centerY
+    
+    -- Phase 1: Slide in (0-1 second) - silently, no sound
+    if t < 1.0 then
+        local progress = t / 1.0
+        -- Ease out cubic for smooth deceleration
+        progress = 1 - math.pow(1 - progress, 3)
+        x = -scaledWidth + (centerX + scaledWidth) * progress
+    end
+    
+    -- Determine which logo to show (blink or normal)
+    local logoToShow = Game.logo
+    if Game.logoBlink and t >= 4.0 and t < 4.25 then
+        logoToShow = Game.logoBlink
+    end
+    
+    -- Enable alpha blending for compositing
+    love.graphics.setBlendMode("alpha")
+    
+    -- Draw logo with transformations
     love.graphics.push()
-    love.graphics.translate(Constants.OFFSET_X, Constants.OFFSET_Y)
-    love.graphics.setColor(0.3, 0.3, 0.3, 0.5)
-    love.graphics.setLineWidth(4)
-    love.graphics.rectangle("line", 0, 0, Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
+    love.graphics.translate(x, y)
+    love.graphics.scale(scale, scale)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(logoToShow, -logoWidth / 2, -logoHeight / 2)
     love.graphics.pop()
+    
+    -- Reset blend mode
+    love.graphics.setBlendMode("alpha")
 end
+
 
 -- Draw intro screen with centered webcam
 function drawIntroScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
     -- Intro messages (multiple steps) - Chase Paxton's onboarding
-    local introMessages = {
-        {
-            title = "WELCOME TO RAGE BAIT!",
-            message = "You're our new engagement specialist!\nYour job: maximize user conversion metrics!",
-            duration = 3.0
-        },
-        {
-            title = "CONTROLS",
-            message = "Hold Z for RED data packets\nHold X for BLUE data packets\nCollect powerups to optimize throughput!",
-            duration = 4.0
-        },
-        {
-            title = "OBJECTIVE",
-            message = "Keep engagement metrics in the green!\nConvert all units to one alignment to hit KPIs!\nWatch out for toxic sludge - it kills performance!",
-            duration = 4.0
-        },
-        {
-            title = "READY?",
-            message = "Press SPACE or ENTER to start your shift!\nRemember: The Auditor is watching!",
-            duration = 999.0  -- Wait for input
-        }
-    }
-    
-    local currentStep = math.min(Game.introStep, #introMessages)
-    local currentMessage = introMessages[currentStep]
+    local ChasePaxton = require("src.core.chase_paxton")
+    local currentStep = math.min(Game.introStep, #ChasePaxton.INTRO_MESSAGES)
+    local currentMessage = ChasePaxton.getIntroMessage(currentStep)
     local stepStartTime = 0
     for i = 1, currentStep - 1 do
-        stepStartTime = stepStartTime + introMessages[i].duration
+        stepStartTime = stepStartTime + ChasePaxton.INTRO_MESSAGES[i].duration
     end
     local stepElapsed = Game.introTimer - stepStartTime
     
     -- Auto-advance steps (except last one which waits for input)
-    if currentStep < #introMessages and stepElapsed >= currentMessage.duration then
+    if currentStep < #ChasePaxton.INTRO_MESSAGES and stepElapsed >= currentMessage.duration then
         Game.introStep = currentStep + 1
     end
     
@@ -950,12 +1000,13 @@ function drawIntroScreen()
     end
     
     -- Draw progress indicator (dots)
+    local ChasePaxton = require("src.core.chase_paxton")
     love.graphics.setColor(0.5, 0.5, 0.5, 1)
     local dotSize = 8
     local dotSpacing = 15
-    local totalWidth = (#introMessages - 1) * dotSpacing
+    local totalWidth = (#ChasePaxton.INTRO_MESSAGES - 1) * dotSpacing
     local dotsStartX = WEBCAM_X + (WEBCAM_WIDTH - totalWidth) / 2
-    for i = 1, #introMessages - 1 do
+    for i = 1, #ChasePaxton.INTRO_MESSAGES - 1 do
         local dotX = dotsStartX + (i - 1) * dotSpacing
         local dotY = WEBCAM_Y + WEBCAM_HEIGHT - 15
         if i < currentStep then
@@ -1002,9 +1053,10 @@ function drawLifeLostAuditor()
         end)
         
         -- Show webcam with CRITICAL_ERROR
+        local Auditor = require("src.core.auditor")
         love.graphics.setColor(1, 0, 0, 1)
         love.graphics.setFont(Game.fonts.large)
-        local errorMsg = "CRITICAL_ERROR"
+        local errorMsg = Auditor.CRITICAL_ERROR
         local errorWidth = Game.fonts.large:getWidth(errorMsg)
         love.graphics.print(errorMsg, Constants.SCREEN_WIDTH / 2 - errorWidth / 2, Constants.SCREEN_HEIGHT / 2)
         
@@ -1033,10 +1085,11 @@ function drawLifeLostAuditor()
         drawAuditorFigure(1.0)
         
         -- Show "LIFE LOST" text
+        local Auditor = require("src.core.auditor")
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(1, 0, 0, 1)  -- Red text
         
-        local lifeLostMsg = "LIFE LOST"
+        local lifeLostMsg = Auditor.LIFE_LOST
         local msgWidth = Game.fonts.large:getWidth(lifeLostMsg)
         love.graphics.print(lifeLostMsg, Constants.SCREEN_WIDTH / 2 - msgWidth / 2, Constants.SCREEN_HEIGHT / 2)
         
@@ -1080,9 +1133,10 @@ function drawAuditor()
         end)
         
         -- Show webcam with CRITICAL_ERROR
+        local Auditor = require("src.core.auditor")
         love.graphics.setColor(1, 0, 0, 1)
         love.graphics.setFont(Game.fonts.large)
-        local errorMsg = "CRITICAL_ERROR"
+        local errorMsg = Auditor.CRITICAL_ERROR
         local errorWidth = Game.fonts.large:getWidth(errorMsg)
         love.graphics.print(errorMsg, Constants.SCREEN_WIDTH / 2 - errorWidth / 2, Constants.SCREEN_HEIGHT / 2)
         
@@ -1111,11 +1165,12 @@ function drawAuditor()
         drawAuditorFigure(1.0)
         
         -- Show verdict text
+        local Auditor = require("src.core.auditor")
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(1, 0, 0, 1)  -- Red text
         
-        local verdict1 = "YIELD INSUFFICIENT."
-        local verdict2 = "LIQUIDATING ASSET."
+        local verdict1 = Auditor.VERDICT[1]
+        local verdict2 = Auditor.VERDICT[2]
         
         local v1Width = Game.fonts.large:getWidth(verdict1)
         local v2Width = Game.fonts.large:getWidth(verdict2)
@@ -1224,16 +1279,10 @@ function drawWinTextScreen()
     end
     
     -- Draw win text
+    local Popups = require("src.core.popups")
     love.graphics.setFont(Game.fonts.large)
     love.graphics.setColor(0, 1, 0)  -- Green
-    local message = ""
-    if Game.winCondition == "blue_only" then
-        message = "LEVEL COMPLETE! Only Blue Units Remain"
-    elseif Game.winCondition == "red_only" then
-        message = "LEVEL COMPLETE! Only Red Units Remain"
-    elseif Game.winCondition == "neutral_only" then
-        message = "LEVEL COMPLETE! All Units Returned to Neutral"
-    end
+    local message = Popups.getWinMessage(Game.winCondition)
     local textWidth = Game.fonts.large:getWidth(message)
     love.graphics.print(message, (Constants.SCREEN_WIDTH - textWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
 end
@@ -1292,33 +1341,69 @@ function drawLevelCompleteScreen()
         love.graphics.arc("line", "open", charX, charY + 20, 15, 0, math.pi)
     end
     
-    -- Draw congratulatory messages
+    -- Draw congratulatory messages (from Chase Paxton dialogue)
+    local ChasePaxton = require("src.core.chase_paxton")
     love.graphics.setFont(Game.fonts.large)
     love.graphics.setColor(1, 1, 0, 1)  -- Yellow
-    local congratsMsg = "GREAT JOB!"
+    local congratsMsg = ChasePaxton.LEVEL_COMPLETE_MESSAGES[1] or "GREAT JOB!"
     local congratsWidth = Game.fonts.large:getWidth(congratsMsg)
     love.graphics.print(congratsMsg, WEBCAM_X + (WEBCAM_WIDTH - congratsWidth) / 2, WEBCAM_Y + 30)
     
     love.graphics.setFont(Game.fonts.medium)
     love.graphics.setColor(1, 1, 1, 1)
-    local readyMsg = "Get ready for the next level!"
+    local readyMsg = ChasePaxton.LEVEL_COMPLETE_MESSAGES[2] or "Get ready for the next level!"
     local readyWidth = Game.fonts.medium:getWidth(readyMsg)
     love.graphics.print(readyMsg, WEBCAM_X + (WEBCAM_WIDTH - readyWidth) / 2, WEBCAM_Y + WEBCAM_HEIGHT - 60)
     
     -- Show countdown timer
+    local Popups = require("src.core.popups")
     local timeLeft = math.ceil(Game.levelCompleteScreenTimer)
-    local timerText = "Starting in " .. timeLeft .. "..."
+    local timerText = Popups.getStartingIn(timeLeft)
     love.graphics.setColor(0.7, 0.7, 0.7, 1)
     local timerWidth = Game.fonts.medium:getWidth(timerText)
     love.graphics.print(timerText, WEBCAM_X + (WEBCAM_WIDTH - timerWidth) / 2, WEBCAM_Y + WEBCAM_HEIGHT - 30)
 end
 
+
 function love.update(dt)
     if love.keyboard.isDown("escape") then love.event.quit() end
     
+    -- Handle logo screen
+    if Game.logoMode then
+        Game.previousLogoTimer = Game.logoTimer
+        Game.logoTimer = Game.logoTimer + dt
+        
+        -- Play fanfare exactly when the blink animation starts (at 4.0 seconds)
+        -- This happens when the logo image changes to the blink version
+        if Game.previousLogoTimer < 4.0 and Game.logoTimer >= 4.0 then
+            Sound.playFanfare()
+        end
+        
+        -- After 7.25 seconds (1s slide + 3s wait + 0.25s blink + 3s wait), transition to attract mode
+        if Game.logoTimer >= 7.25 then
+            Game.logoMode = false
+            Game.logoTimer = 0
+            Game.previousLogoTimer = 0
+            Game.logoFanfarePlayed = false
+            Game.attractMode = true
+            Game.attractModeTimer = 0
+            -- Start playing intro music when transitioning to attract mode
+            Sound.playIntroMusic()
+        end
+        
+        return  -- Don't update game logic during logo screen
+    end
+    
+    -- Handle demo mode
+    if Game.demoMode then
+        DemoMode.update(dt)
+        -- Update game normally in demo mode
+        -- (AI will control turret, but game logic runs)
+    end
+    
     -- Handle attract mode
     if Game.attractMode then
-        Game.attractModeTimer = Game.attractModeTimer + dt
+        AttractMode.update(dt)
         return  -- Don't update game logic in attract mode
     end
     
@@ -1378,9 +1463,22 @@ function love.update(dt)
         elseif Game.auditorPhase == 3 and Game.auditorTimer >= 3.0 then
             Game.auditorPhase = 4
             Game.auditorTimer = 0
-        -- Phase 4: Crash to black (1 second), then return to attract mode
+        -- Phase 4: Crash to black (1 second), then check for high score
         elseif Game.auditorPhase == 4 and Game.auditorTimer >= 1.0 then
-            returnToAttractMode()
+            -- Check for high score before returning to attract mode
+            if isHighScore(Game.score) then
+                -- Start name entry (arcade style)
+                Game.auditorActive = false  -- Clear auditor sequence
+                Game.auditorTimer = 0
+                Game.auditorPhase = 1
+                Game.nameEntryActive = true
+                Game.nameEntryText = "AAA"  -- Initialize with 'A' in all positions
+                Game.nameEntryCursor = 1
+                Game.nameEntryCharIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
+            else
+                -- No high score, return to attract mode
+                returnToAttractMode()
+            end
         end
         
         return  -- Don't update game logic during THE AUDITOR sequence
@@ -1441,17 +1539,23 @@ function love.update(dt)
         -- Update sound system with normal dt (sounds should not be affected by slow-mo)
         Sound.update(dt)
         
-        -- When fully frozen, show win text first
+        -- When fully frozen, handle differently in demo mode vs normal gameplay
         if Game.timeScale <= 0.0 then
             Game.timeScale = 0.0
-            Game.slowMoActive = false
-            Game.winTextActive = true
-            Game.winTextTimer = 5.0  -- 5 second pause on win text
-            -- Clean up any remaining game sounds when frozen (fanfare should be done by now)
-            Sound.cleanup()
-            Sound.unmute()  -- Re-enable for any UI sounds
-            Sound.update(dt)
-            return
+            if Game.demoMode and Game.demoStep == 8 then
+                -- In demo mode step 8, just freeze - don't show win text
+                -- The freeze will be released when step completes
+            else
+                -- Normal gameplay: show win text
+                Game.slowMoActive = false
+                Game.winTextActive = true
+                Game.winTextTimer = 5.0  -- 5 second pause on win text
+                -- Clean up any remaining game sounds when frozen (fanfare should be done by now)
+                Sound.cleanup()
+                Sound.unmute()  -- Re-enable for any UI sounds
+                Sound.update(dt)
+                return
+            end
         end
     else
         -- Normal time handling
@@ -1491,33 +1595,9 @@ function love.update(dt)
             Game.levelTransitionActive = true
             Game.levelTransitionTimer = 2.0  -- 2 second transition
             Game.timeScale = 1.0  -- Reset time scale
-        end
-        -- Don't update game logic during completion screen (frozen)
-        return
-    end
-    
-    -- Handle level transition
-    if Game.levelTransitionActive then
-        Game.levelTransitionTimer = Game.levelTransitionTimer - dt
-        if Game.levelTransitionTimer <= 0 then
-            -- Transition complete, start next level
-            Game.level = Game.level + 1
-            Game.levelTransitionActive = false
-            Game.levelTransitionTimer = 0
-            Game.gameState = "playing"
-            Game.winCondition = nil
-            Game.hasUnitBeenConverted = false
             
-            -- Reset engagement to 100% for new level
-            Engagement.init()
-            
-            -- Reset point multiplier for new level
-            Game.pointMultiplier = 1
-            Game.pointMultiplierTimer = 0
-            Game.pointMultiplierActive = false
-            Game.pointMultiplierFlashTimer = 0
-            
-            -- Clear all game entities
+            -- Clear all game entities immediately when transition starts
+            -- This prevents showing the last frame of the previous level
             for i = #Game.units, 1, -1 do
                 local u = Game.units[i]
                 if u.body and not u.isDead then
@@ -1557,28 +1637,63 @@ function love.update(dt)
             Game.hazards = {}
             Game.effects = {}
             
-            -- Spawn new units for next level
-            spawnUnitsForLevel()
-        else
-            -- Allow projectiles to continue updating during transition so they can explode and stop sounds naturally
-            Time.checkRestore(dt); Time.update(dt); local gameDt = dt * Time.scale
-            for i = #Game.projectiles, 1, -1 do 
-                local p = Game.projectiles[i]
-                p:update(gameDt)
-                if p.isDead then 
-                    table.remove(Game.projectiles, i) 
-                end
+            -- Clear multiplier and rapid fire immediately when transition starts
+            Game.pointMultiplier = 1
+            Game.pointMultiplierTimer = 0
+            Game.pointMultiplierActive = false
+            Game.pointMultiplierFlashTimer = 0
+            Game.pointMultiplierTextTimer = 0
+            Game.pointMultiplierSparks = {}
+            Game.rapidFireTextTimer = 0
+            Game.rapidFireSparks = {}
+            
+            -- Clear turret rapid fire mode
+            if Game.turret then
+                Game.turret.puckModeTimer = 0
             end
+            
+            -- Reset powerup spawn timer
+            Game.powerupSpawnTimer = 5.0
+        end
+        -- Don't update game logic during completion screen (frozen)
+        return
+    end
+    
+    -- Handle level transition
+    if Game.levelTransitionActive then
+        Game.levelTransitionTimer = Game.levelTransitionTimer - dt
+        if Game.levelTransitionTimer <= 0 then
+            -- Transition complete, start next level
+            Game.level = Game.level + 1
+            Game.levelTransitionActive = false
+            Game.levelTransitionTimer = 0
+            Game.gameState = "playing"
+            Game.winCondition = nil
+            Game.hasUnitBeenConverted = false
+            
+            -- Reset engagement to 100% for new level
+            Engagement.init()
+            
+            -- Multiplier and rapid fire were already cleared when transition started
+            -- Entities were already cleared when transition started
+            -- Now spawn new units for next level
+            spawnUnitsForLevel()
+            
+            -- Restart music for new level
+            Sound.playMusic()
         end
         return  -- Don't update other game logic during transition
     end
     
-    Game.powerupSpawnTimer = Game.powerupSpawnTimer - dt
-    if Game.powerupSpawnTimer <= 0 then
-        Game.powerupSpawnTimer = math.random(15, 25)
-        local px = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
-        -- Only spawn puck powerups (bumpers removed)
-        table.insert(Game.powerups, PowerUp.new(px, -50, "puck"))
+    -- Don't spawn powerups in demo mode
+    if not Game.demoMode then
+        Game.powerupSpawnTimer = Game.powerupSpawnTimer - dt
+        if Game.powerupSpawnTimer <= 0 then
+            Game.powerupSpawnTimer = math.random(15, 25)
+            local px = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
+            -- Only spawn puck powerups (bumpers removed)
+            table.insert(Game.powerups, PowerUp.new(px, -50, "puck"))
+        end
     end
 
     if not Game.isUpgraded and Game.score >= Constants.UPGRADE_SCORE then
@@ -1587,11 +1702,13 @@ function love.update(dt)
     Constants.PUCK_LIFETIME = Constants.PUCK_LIFETIME_MAX
     Game.shake = 2.0
     end
+    -- Always update shake decay (even in demo mode) to prevent it from getting stuck
     if Game.shake > 0 then Game.shake = math.max(0, Game.shake - 2.5 * dt) end
 
     -- Skip main game updates during slow-mo or when game state is not playing
     -- This prevents new sounds from being created during win sequence
-    if Game.slowMoActive or Game.gameState ~= "playing" then
+    -- Exception: In demo mode, allow updates during slow-mo (for step 7 toxic sludge demo)
+    if (Game.slowMoActive or Game.gameState ~= "playing") and not Game.demoMode then
         -- Sound is already updated above during slow-mo handling
         if not Game.slowMoActive then
             Sound.update(dt)
@@ -1610,7 +1727,11 @@ function love.update(dt)
     -- Calculate toxic hazard count for engagement decay
     local toxicHazardCount = #Game.hazards
     
-    Engagement.update(gameDt, toxicHazardCount, Game.level); World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt)
+    -- Don't update engagement decay in demo mode
+    if not Game.demoMode then
+        Engagement.update(gameDt, toxicHazardCount, Game.level)
+    end
+    World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt)
     
     -- Check if engagement ran out (game over)
     -- Only check if we're actually playing and not already in a game over state
@@ -1627,14 +1748,35 @@ function love.update(dt)
         
         -- Check if engagement reached 100% (activate point multiplier)
         -- Only trigger when crossing the threshold from below, not when already at 100%
+        -- Skip multipliers in demo mode
         local isAtMax = Engagement.value >= Constants.ENGAGEMENT_MAX
-        if isAtMax and not Game.previousEngagementAtMax and not Game.pointMultiplierActive then
+        if isAtMax and not Game.previousEngagementAtMax and not Game.pointMultiplierActive and not Game.demoMode then
             -- Activate point multiplier
             Game.pointMultiplier = Game.pointMultiplier + 1  -- Incremental multiplier
             Game.pointMultiplierActive = true
             Game.pointMultiplierTimer = 10.0  -- 10 seconds
-            Game.pointMultiplierFlashTimer = 1.5  -- Flash animation duration
+            Game.pointMultiplierFlashTimer = 2.0  -- Flash animation duration (increased for spark effect)
+            Game.pointMultiplierTextTimer = 3.0  -- Text display duration (3 seconds before fade)
             Game.shake = math.max(Game.shake, 1.5)  -- Screen shake
+            
+            -- Create spark particles for the multiplier effect
+            Game.pointMultiplierSparks = {}
+            local centerX = Constants.SCREEN_WIDTH / 2
+            local centerY = Constants.SCREEN_HEIGHT / 2 - 100
+            local numSparks = 30  -- Number of sparks
+            for i = 1, numSparks do
+                local angle = (i / numSparks) * math.pi * 2
+                local speed = 200 + math.random() * 300  -- Random speed between 200-500
+                table.insert(Game.pointMultiplierSparks, {
+                    x = centerX,
+                    y = centerY,
+                    vx = math.cos(angle) * speed,
+                    vy = math.sin(angle) * speed,
+                    life = 1.0,  -- Full life
+                    maxLife = 1.0,
+                    size = 3 + math.random() * 4  -- Random size between 3-7
+                })
+            end
             
             -- Play sound effect
             Sound.playTone(800, 0.3, 0.8, 1.5)  -- High pitch success sound
@@ -1646,21 +1788,56 @@ function love.update(dt)
         -- Update tracking flag for next frame
         Game.previousEngagementAtMax = isAtMax
         
-        -- Update point multiplier timer
-        if Game.pointMultiplierActive then
+        -- Update point multiplier timer (skip in demo mode)
+        if Game.pointMultiplierActive and not Game.demoMode then
             Game.pointMultiplierTimer = Game.pointMultiplierTimer - dt
             if Game.pointMultiplierTimer <= 0 then
                 -- Timer expired - deactivate multiplier
                 Game.pointMultiplierActive = false
                 Game.pointMultiplierFlashTimer = 0
+                Game.pointMultiplierSparks = {}  -- Clear sparks
                 Game.previousEngagementAtMax = false  -- Reset flag to allow re-triggering
             else
                 -- Update flash timer
                 if Game.pointMultiplierFlashTimer > 0 then
                     Game.pointMultiplierFlashTimer = Game.pointMultiplierFlashTimer - dt
                 end
+                
+                -- Update text timer (fades out after 3 seconds)
+                if Game.pointMultiplierTextTimer > 0 then
+                    Game.pointMultiplierTextTimer = Game.pointMultiplierTextTimer - dt
+                end
+                
+                -- Update spark particles
+                for i = #Game.pointMultiplierSparks, 1, -1 do
+                    local spark = Game.pointMultiplierSparks[i]
+                    spark.x = spark.x + spark.vx * dt
+                    spark.y = spark.y + spark.vy * dt
+                    spark.vy = spark.vy + 200 * dt  -- Gravity effect
+                    spark.life = spark.life - dt * 0.8  -- Fade out
+                    if spark.life <= 0 then
+                        table.remove(Game.pointMultiplierSparks, i)
+                    end
+                end
             end
             -- Note: Multiplier stays active for full duration regardless of engagement level
+        end
+        
+        -- Update rapid fire text timer and sparks
+        if Game.rapidFireTextTimer > 0 then
+            Game.rapidFireTextTimer = Game.rapidFireTextTimer - dt
+            
+            -- Update rapid fire spark particles
+            for i = #Game.rapidFireSparks, 1, -1 do
+                local spark = Game.rapidFireSparks[i]
+                spark.x = spark.x + spark.vx * dt
+                spark.y = spark.y + spark.vy * dt
+                spark.vy = spark.vy + 200 * dt  -- Gravity effect
+                spark.life = spark.life - dt * 0.8  -- Fade out
+                if spark.life <= 0 then
+                    table.remove(Game.rapidFireSparks, i)
+                end
+            end
         end
         
         if engagementPct < 0.25 and math.random() < 0.01 then  -- 1% chance per frame when low
@@ -1698,13 +1875,68 @@ function love.update(dt)
         end
     end
 
-    if Game.turret then Game.turret:update(dt, Game.projectiles, Game.isUpgraded) end
+    if Game.turret then 
+        -- In demo mode, AI controls the turret
+        if Game.demoMode then
+            DemoMode.updateAI(dt)
+        end
+        Game.turret:update(dt, Game.projectiles, Game.isUpgraded) 
+    end
     
-    for i = #Game.units, 1, -1 do local u = Game.units[i]; u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret); if u.isDead then table.remove(Game.units, i) end end
+    -- Update units (freeze movement in demo mode to prevent random wandering, except step 4 for enrage demo)
+    for i = #Game.units, 1, -1 do 
+        local u = Game.units[i]
+        if Game.demoMode then
+            -- Step 4: Allow full unit updates to show enraged unit attacking
+            if Game.demoStep == 4 then
+                u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret)
+            -- In demo mode, freeze unit movement but allow state changes
+            elseif not u.isDead then
+                -- Freeze unit velocity to prevent wandering
+                u.body:setLinearVelocity(0, 0)
+                
+                -- Update speech bubbles
+                if u.speechBubble then
+                    u.speechBubble.timer = u.speechBubble.timer + gameDt
+                    if u.speechBubble.timer >= u.speechBubble.duration then
+                        u.speechBubble = nil
+                    end
+                end
+                if u.groupSpeechBubble then
+                    u.groupSpeechBubble.timer = u.groupSpeechBubble.timer + gameDt
+                    if u.groupSpeechBubble.timer >= u.groupSpeechBubble.duration then
+                        u.groupSpeechBubble = nil
+                    end
+                end
+                
+                -- Only update isolation timer for insane units demo steps
+                if (Game.demoStep == 6 or Game.demoStep == 8) and u.state == "neutral" then
+                    u:checkIsolation(gameDt, Game.units)
+                end
+                
+                -- Check if unit went insane
+                if u.isInsane and not u.isDead then
+                    u:goInsane()
+                end
+                
+                -- Update enrage timer if enraged
+                if u.state == "enraged" then
+                    u.enrageTimer = u.enrageTimer - gameDt
+                    if u.enrageTimer <= 0 then
+                        u.state = "passive"
+                    end
+                end
+            end
+        else
+            -- Normal gameplay: full unit update
+            u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret)
+        end
+        if u.isDead then table.remove(Game.units, i) end 
+    end
     for i = #Game.projectiles, 1, -1 do local p = Game.projectiles[i]; p:update(gameDt); if p.isDead then table.remove(Game.projectiles, i) end end
     
-    -- Check win conditions
-    if Game.gameState == "playing" then
+    -- Check win conditions (skip in demo mode)
+    if Game.gameState == "playing" and not Game.demoMode then
         local blueCount = 0
         local redCount = 0
         local neutralCount = 0
@@ -1738,7 +1970,9 @@ function love.update(dt)
             if not Game.levelTransitionActive and not Game.gameOverActive then
                 handleGameOver("no_units")
             end
-        -- Win condition 4: Only neutral units left (but only if a unit has been converted)
+        -- Win condition 4: Only neutral units left (grey win condition)
+        -- IMPORTANT: This win condition is ONLY active if at least one unit has been converted on this stage
+        -- This prevents winning immediately if all units start as neutral and none are converted
         elseif totalUnits > 0 and neutralCount == totalUnits and Game.hasUnitBeenConverted then
             if not Game.levelTransitionActive then
                 advanceToNextLevel("neutral_only")
@@ -1821,6 +2055,17 @@ function love.keypressed(key)
         if key == "space" or key == "return" or key == "enter" then
             startGame()
             return
+        elseif key == "d" then
+            -- Start demo mode
+            DemoMode.start()
+            return
+        end
+    end
+    
+    -- Handle demo mode input
+    if Game.demoMode then
+        if DemoMode.keypressed(key) then
+            return
         end
     end
     
@@ -1832,18 +2077,13 @@ function love.keypressed(key)
             return
         elseif key == "right" or key == "d" then
             -- Advance to next step
-            local introMessages = {
-                {duration = 3.0},
-                {duration = 4.0},
-                {duration = 4.0},
-                {duration = 999.0}
-            }
-            if Game.introStep < #introMessages then
+            local ChasePaxton = require("src.core.chase_paxton")
+            if Game.introStep < #ChasePaxton.INTRO_MESSAGES then
                 Game.introStep = Game.introStep + 1
                 -- Reset timer for new step
                 local stepStartTime = 0
                 for i = 1, Game.introStep - 1 do
-                    stepStartTime = stepStartTime + introMessages[i].duration
+                    stepStartTime = stepStartTime + ChasePaxton.INTRO_MESSAGES[i].duration
                 end
                 Game.introTimer = stepStartTime
             end
@@ -1885,6 +2125,146 @@ function love.keyreleased(key)
     if key == "z" or key == "x" then Game.turret:releaseCharge(Game.projectiles) end
 end
 
+-- Drawing function that will be wrapped by Moonshine if CRT is enabled
+function drawGame()
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Apply shake transform to everything (background, game, foreground, HUD)
+    love.graphics.push()
+        if Game.shake > 0 then
+            local s = Game.shake * Game.shake * 15; love.graphics.translate(love.math.random(-s, s), love.math.random(-s, s))
+        end
+        
+    -- Draw background image if loaded and enabled (full screen) - now affected by shake
+    if Game.showBackgroundForeground and Game.background then
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(Game.background, 0, 0, 0, 
+            Constants.SCREEN_WIDTH / Game.background:getWidth(),
+            Constants.SCREEN_HEIGHT / Game.background:getHeight())
+    end
+    
+    World.draw(function()
+        for _, h in ipairs(Game.hazards) do
+            local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+            love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+            love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+        end
+        
+        if #Game.explosionZones > 0 then
+            love.graphics.clear(false, true, false) 
+            for _, z in ipairs(Game.explosionZones) do
+                love.graphics.setStencilTest("equal", 0)
+                if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3) else love.graphics.setColor(0, 0, 1, 0.3) end
+                love.graphics.circle("fill", z.x, z.y, z.radius, 64)
+                love.graphics.setLineWidth(3); love.graphics.setColor(1, 1, 1, 0.5); love.graphics.circle("line", z.x, z.y, z.radius, 64)
+                love.graphics.setStencilTest(); love.graphics.stencil(function() love.graphics.circle("fill", z.x, z.y, z.radius, 64) end, "replace", 1)
+            end
+            love.graphics.setStencilTest()
+        end
+        
+        for _, u in ipairs(Game.units) do u:draw() end
+        for _, p in ipairs(Game.projectiles) do p:draw() end
+        for _, pup in ipairs(Game.powerups) do pup:draw() end
+        
+        for _, e in ipairs(Game.effects) do
+            if e.type == "explosion" then
+                love.graphics.setLineWidth(3)
+                if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
+                elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
+                else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
+                love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+                
+                -- Draw speech bubble if present (for insane units)
+                if e.speechBubble and e.speechBubble.text then
+                    local bubbleX = e.x
+                    local bubbleY = e.y - Constants.UNIT_RADIUS - 40
+                    local padding = 10
+                    local fontSize = 18  -- Larger font for dialogue
+                    local font = love.graphics.newFont(fontSize)
+                    
+                    local textWidth = font:getWidth(e.speechBubble.text)
+                    local textHeight = font:getHeight()
+                    local bubbleWidth = textWidth + padding * 2
+                    local bubbleHeight = textHeight + padding * 2
+                    
+                    -- Fade out with explosion (timer is updated in update loop)
+                    local bubbleAlpha = math.max(e.alpha, 0.5)  -- Keep it visible even during explosion
+                    if e.speechBubble and e.speechBubble.timer and e.speechBubble.duration then
+                        if e.speechBubble.timer > e.speechBubble.duration * 0.7 then
+                            bubbleAlpha = bubbleAlpha * (1.0 - ((e.speechBubble.timer - e.speechBubble.duration * 0.7) / (e.speechBubble.duration * 0.3)))
+                        end
+                    end
+                    
+                    -- Draw speech bubble background (more opaque)
+                    love.graphics.setColor(0, 0, 0, bubbleAlpha * 0.9)
+                    love.graphics.rectangle("fill", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+                    
+                    -- Draw speech bubble border (brighter)
+                    love.graphics.setColor(0.8, 0.8, 0.8, bubbleAlpha)
+                    love.graphics.setLineWidth(2)
+                    love.graphics.rectangle("line", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+                    
+                    -- Draw speech bubble tail
+                    love.graphics.setColor(0, 0, 0, bubbleAlpha * 0.9)
+                    love.graphics.polygon("fill", 
+                        bubbleX - 10, bubbleY - 6,
+                        bubbleX + 10, bubbleY - 6,
+                        bubbleX, bubbleY + 6
+                    )
+                    love.graphics.setColor(0.8, 0.8, 0.8, bubbleAlpha)
+                    love.graphics.setLineWidth(2)
+                    love.graphics.polygon("line", 
+                        bubbleX - 10, bubbleY - 6,
+                        bubbleX + 10, bubbleY - 6,
+                        bubbleX, bubbleY + 6
+                    )
+                    
+                    -- Draw text (brighter)
+                    love.graphics.setColor(1, 0.5, 0.5, bubbleAlpha)
+                    love.graphics.setFont(font)
+                    love.graphics.print(e.speechBubble.text, bubbleX - textWidth / 2, bubbleY - bubbleHeight + padding)
+                end
+            elseif e.type == "forcefield" then
+                love.graphics.setLineWidth(4)
+                love.graphics.setColor(0.2, 0.6, 1, e.alpha * 0.6)
+                love.graphics.circle("line", e.x, e.y, e.radius, 32)
+                love.graphics.setColor(0.3, 0.7, 1, e.alpha * 0.3)
+                love.graphics.circle("fill", e.x, e.y, e.radius, 32)
+            end
+        end
+        
+        if Game.turret then Game.turret:draw() end
+    end)
+    
+    -- Draw foreground image if loaded and enabled (full screen, on top of game elements) - now affected by shake
+    if Game.showBackgroundForeground and Game.foreground then
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(Game.foreground, 0, 0, 0, 
+            Constants.SCREEN_WIDTH / Game.foreground:getWidth(),
+            Constants.SCREEN_HEIGHT / Game.foreground:getHeight())
+    end
+    
+    -- Draw HUD - now affected by shake and CRT
+    drawHUD()
+    
+    -- Draw webcam window (below playfield, affected by shake)
+    Webcam.draw()
+    
+    -- Draw engagement plot (next to webcam, affected by shake)
+    EngagementPlot.draw()
+    
+    -- Draw multiplier window (below engagement plot) - skip in demo mode
+    if not Game.demoMode then
+        drawMultiplierWindow()
+    end
+    
+    love.graphics.pop()
+    
+    -- CRITICAL: Reset color to white before Moonshine processes the canvas
+    -- Otherwise, any color set by effects (like gold explosion) will tint the entire screen
+    love.graphics.setColor(1, 1, 1, 1)
+end
+
 function love.draw()
     -- Helper function to apply CRT shader to any drawing function
     local function drawWithCRT(drawFunc)
@@ -1895,9 +2275,21 @@ function love.draw()
         end
     end
     
+    -- Draw logo screen (before attract mode)
+    if Game.logoMode then
+        drawWithCRT(drawLogoScreen)
+        return
+    end
+    
     -- Draw attract mode screen
     if Game.attractMode then
-        drawWithCRT(drawAttractMode)
+        drawWithCRT(AttractMode.draw)
+        return
+    end
+    
+    -- Draw demo mode screen
+    if Game.demoMode then
+        drawWithCRT(DemoMode.draw)
         return
     end
     
@@ -1929,144 +2321,6 @@ function love.draw()
     if Game.auditorActive and not Game.introMode then
         drawWithCRT(drawAuditor)
         return
-    end
-    
-    -- Drawing function that will be wrapped by Moonshine if CRT is enabled
-    local function drawGame()
-        love.graphics.clear(Constants.COLORS.BACKGROUND)
-        
-        -- Apply shake transform to everything (background, game, foreground, HUD)
-        love.graphics.push()
-        if Game.shake > 0 then
-            local s = Game.shake * Game.shake * 15; love.graphics.translate(love.math.random(-s, s), love.math.random(-s, s))
-        end
-        
-        -- Draw background image if loaded and enabled (full screen) - now affected by shake
-        if Game.showBackgroundForeground and Game.background then
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.draw(Game.background, 0, 0, 0, 
-                Constants.SCREEN_WIDTH / Game.background:getWidth(),
-                Constants.SCREEN_HEIGHT / Game.background:getHeight())
-        end
-        
-        World.draw(function()
-            for _, h in ipairs(Game.hazards) do
-                local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
-                love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
-                love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
-            end
-            
-            if #Game.explosionZones > 0 then
-                love.graphics.clear(false, true, false) 
-                for _, z in ipairs(Game.explosionZones) do
-                    love.graphics.setStencilTest("equal", 0)
-                    if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3) else love.graphics.setColor(0, 0, 1, 0.3) end
-                    love.graphics.circle("fill", z.x, z.y, z.radius, 64)
-                    love.graphics.setLineWidth(3); love.graphics.setColor(1, 1, 1, 0.5); love.graphics.circle("line", z.x, z.y, z.radius, 64)
-                    love.graphics.setStencilTest(); love.graphics.stencil(function() love.graphics.circle("fill", z.x, z.y, z.radius, 64) end, "replace", 1)
-                end
-                love.graphics.setStencilTest()
-            end
-            
-            for _, u in ipairs(Game.units) do u:draw() end
-            for _, p in ipairs(Game.projectiles) do p:draw() end
-            for _, pup in ipairs(Game.powerups) do pup:draw() end
-            
-            for _, e in ipairs(Game.effects) do
-                if e.type == "explosion" then
-                    love.graphics.setLineWidth(3)
-                    if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
-                    elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
-                    else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
-                    love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
-                    
-                    -- Draw speech bubble if present (for insane units)
-                    if e.speechBubble and e.speechBubble.text then
-                        local bubbleX = e.x
-                        local bubbleY = e.y - Constants.UNIT_RADIUS - 40
-                        local padding = 10
-                        local fontSize = 18  -- Larger font for dialogue
-                        local font = love.graphics.newFont(fontSize)
-                        
-                        local textWidth = font:getWidth(e.speechBubble.text)
-                        local textHeight = font:getHeight()
-                        local bubbleWidth = textWidth + padding * 2
-                        local bubbleHeight = textHeight + padding * 2
-                        
-                        -- Fade out with explosion (timer is updated in update loop)
-                        local bubbleAlpha = math.max(e.alpha, 0.5)  -- Keep it visible even during explosion
-                        if e.speechBubble and e.speechBubble.timer and e.speechBubble.duration then
-                            if e.speechBubble.timer > e.speechBubble.duration * 0.7 then
-                                bubbleAlpha = bubbleAlpha * (1.0 - ((e.speechBubble.timer - e.speechBubble.duration * 0.7) / (e.speechBubble.duration * 0.3)))
-                            end
-                        end
-                        
-                        -- Draw speech bubble background (more opaque)
-                        love.graphics.setColor(0, 0, 0, bubbleAlpha * 0.9)
-                        love.graphics.rectangle("fill", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
-                        
-                        -- Draw speech bubble border (brighter)
-                        love.graphics.setColor(0.8, 0.8, 0.8, bubbleAlpha)
-                        love.graphics.setLineWidth(2)
-                        love.graphics.rectangle("line", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
-                        
-                        -- Draw speech bubble tail
-                        love.graphics.setColor(0, 0, 0, bubbleAlpha * 0.9)
-                        love.graphics.polygon("fill", 
-                            bubbleX - 10, bubbleY - 6,
-                            bubbleX + 10, bubbleY - 6,
-                            bubbleX, bubbleY + 6
-                        )
-                        love.graphics.setColor(0.8, 0.8, 0.8, bubbleAlpha)
-                        love.graphics.setLineWidth(2)
-                        love.graphics.polygon("line", 
-                            bubbleX - 10, bubbleY - 6,
-                            bubbleX + 10, bubbleY - 6,
-                            bubbleX, bubbleY + 6
-                        )
-                        
-                        -- Draw text (brighter)
-                        love.graphics.setColor(1, 0.5, 0.5, bubbleAlpha)
-                        love.graphics.setFont(font)
-                        love.graphics.print(e.speechBubble.text, bubbleX - textWidth / 2, bubbleY - bubbleHeight + padding)
-                    end
-                elseif e.type == "forcefield" then
-                    love.graphics.setLineWidth(4)
-                    love.graphics.setColor(0.2, 0.6, 1, e.alpha * 0.6)
-                    love.graphics.circle("line", e.x, e.y, e.radius, 32)
-                    love.graphics.setColor(0.3, 0.7, 1, e.alpha * 0.3)
-                    love.graphics.circle("fill", e.x, e.y, e.radius, 32)
-                end
-            end
-            
-            if Game.turret then Game.turret:draw() end
-        end)
-        
-        -- Draw foreground image if loaded and enabled (full screen, on top of game elements) - now affected by shake
-        if Game.showBackgroundForeground and Game.foreground then
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.draw(Game.foreground, 0, 0, 0, 
-                Constants.SCREEN_WIDTH / Game.foreground:getWidth(),
-                Constants.SCREEN_HEIGHT / Game.foreground:getHeight())
-        end
-        
-        -- Draw HUD - now affected by shake and CRT
-        drawHUD()
-        
-        -- Draw webcam window (below playfield, affected by shake)
-        Webcam.draw()
-        
-        -- Draw engagement plot (next to webcam, affected by shake)
-        EngagementPlot.draw()
-        
-        -- Draw multiplier window (below engagement plot)
-        drawMultiplierWindow()
-        
-        love.graphics.pop()
-        
-        -- CRITICAL: Reset color to white before Moonshine processes the canvas
-        -- Otherwise, any color set by effects (like gold explosion) will tint the entire screen
-        love.graphics.setColor(1, 1, 1, 1)
     end
     
     -- Apply CRT effect if enabled, otherwise draw normally
@@ -2149,104 +2403,197 @@ function drawHUD()
     
     if Game.isUpgraded then love.graphics.setColor(1, 1, 0); love.graphics.print("WEAPONS UPGRADED!", barX + 60, barY + 80) end
     
-    -- Draw point multiplier announcement (flashy text)
-    if Game.pointMultiplierActive then
-        local flashAlpha = 1.0
-        if Game.pointMultiplierFlashTimer > 0 then
-            -- Flash animation during first 1.5 seconds
-            flashAlpha = 0.5 + 0.5 * (math.sin(Game.pointMultiplierFlashTimer * 10) + 1) / 2
+    -- Draw point multiplier announcement (giant flashing "2X" with sparks) - skip in demo mode
+    if Game.pointMultiplierActive and not Game.demoMode then
+        local centerX = Constants.SCREEN_WIDTH / 2
+        local centerY = Constants.SCREEN_HEIGHT / 2 - 100
+        
+        -- Draw spark particles
+        for _, spark in ipairs(Game.pointMultiplierSparks) do
+            local alpha = spark.life / spark.maxLife
+            -- Gold/yellow sparks with fade
+            local sparkColor = 0.3 + (spark.life / spark.maxLife) * 0.7  -- Fade from bright to dim
+            love.graphics.setColor(1, 0.8 + sparkColor * 0.2, 0.2, alpha)
+            love.graphics.circle("fill", spark.x, spark.y, spark.size)
+            -- Add glow effect
+            love.graphics.setColor(1, 0.9, 0.3, alpha * 0.3)
+            love.graphics.circle("fill", spark.x, spark.y, spark.size * 2)
         end
         
-        love.graphics.setFont(Game.fonts.large)
-        local multiplierText = "x" .. Game.pointMultiplier .. " POINT MULTIPLIER!"
-        local multiplierWidth = Game.fonts.large:getWidth(multiplierText)
-        local multiplierX = (Constants.SCREEN_WIDTH - multiplierWidth) / 2
-        local multiplierY = Constants.SCREEN_HEIGHT / 2 - 100
+        -- Calculate flash alpha
+        local flashAlpha = 1.0
+        if Game.pointMultiplierFlashTimer > 0 then
+            -- Flash animation during first 2 seconds
+            flashAlpha = 0.6 + 0.4 * (math.sin(Game.pointMultiplierFlashTimer * 12) + 1) / 2
+        end
+        
+        -- Create giant font for "2X" text (much larger than large font)
+        local giantFontSize = 120
+        local giantFont = love.graphics.newFont(giantFontSize)
+        love.graphics.setFont(giantFont)
+        
+        local multiplierText = Game.pointMultiplier .. "X"
+        local multiplierWidth = giantFont:getWidth(multiplierText)
+        local multiplierX = centerX - multiplierWidth / 2
+        local multiplierY = centerY - giantFontSize / 2
         
         -- Flashy colors (gold/yellow pulsing)
-        local flash = (math.sin(love.timer.getTime() * 5) + 1) / 2
-        love.graphics.setColor(1, 0.8 + flash * 0.2, 0.2, flashAlpha)
+        local flash = (math.sin(love.timer.getTime() * 8) + 1) / 2
+        local r = 1
+        local g = 0.7 + flash * 0.3
+        local b = 0.1
         
-        -- Draw text with outline for visibility
-        love.graphics.setLineWidth(4)
-        love.graphics.setColor(0, 0, 0, flashAlpha * 0.8)
-        for dx = -2, 2 do
-            for dy = -2, 2 do
+        -- Draw text with thick outline for visibility
+        love.graphics.setLineWidth(8)
+        love.graphics.setColor(0, 0, 0, flashAlpha * 0.9)
+        for dx = -4, 4, 2 do
+            for dy = -4, 4, 2 do
                 if dx ~= 0 or dy ~= 0 then
                     love.graphics.print(multiplierText, multiplierX + dx, multiplierY + dy)
                 end
             end
         end
-        love.graphics.setColor(1, 0.8 + flash * 0.2, 0.2, flashAlpha)
+        
+        -- Draw main text with pulsing color
+        love.graphics.setColor(r, g, b, flashAlpha)
         love.graphics.print(multiplierText, multiplierX, multiplierY)
         
-        -- Show timer
-        love.graphics.setFont(Game.fonts.medium)
-        local timerText = math.ceil(Game.pointMultiplierTimer) .. "s"
-        local timerWidth = Game.fonts.medium:getWidth(timerText)
-        love.graphics.setColor(1, 1, 1, flashAlpha)
-        love.graphics.print(timerText, multiplierX + (multiplierWidth - timerWidth) / 2, multiplierY + 40)
+        -- Add extra glow effect
+        love.graphics.setColor(r, g, b, flashAlpha * 0.3)
+        for i = 1, 3 do
+            love.graphics.print(multiplierText, multiplierX, multiplierY)
+        end
     end
     
-    if Game.turret and Game.turret.puckModeTimer > 0 then
-        love.graphics.setColor(1, 0.8, 0.2)
-        love.graphics.print("RAPID FIRE ACTIVE: " .. math.ceil(Game.turret.puckModeTimer), barX + 80, barY + 110)
-    else
-        love.graphics.setColor(1, 1, 1)
-        love.graphics.setFont(Game.fonts.small)
-        love.graphics.print("Hold Z/X to charge Bomb. Collect Powerup for Rapid Fire.", barX + 50, barY + 110)
+    -- Draw rapid fire announcement (giant flashing "RAPID FIRE" with sparks)
+    if Game.rapidFireTextTimer > 0 then
+        local centerX = Constants.SCREEN_WIDTH / 2
+        -- Position rapid fire text above multiplier text if multiplier is active
+        local centerY
+        if Game.pointMultiplierActive then
+            -- Place above multiplier text (multiplier is at SCREEN_HEIGHT/2 - 100, with 120px font)
+            -- Rapid fire should be about 150px above the multiplier text center
+            centerY = Constants.SCREEN_HEIGHT / 2 - 250
+        else
+            -- Same position as multiplier when multiplier is not active
+            centerY = Constants.SCREEN_HEIGHT / 2 - 100
+        end
+        
+        -- Draw spark particles (adjust their visual position if multiplier is active)
+        local sparkOffsetY = 0
+        if Game.pointMultiplierActive then
+            -- Adjust spark positions to match the rapid fire text position above multiplier
+            sparkOffsetY = -150  -- Move sparks up by 150px to match text position
+        end
+        for _, spark in ipairs(Game.rapidFireSparks) do
+            local alpha = spark.life / spark.maxLife
+            -- Gold/yellow sparks with fade
+            local sparkColor = 0.3 + (spark.life / spark.maxLife) * 0.7  -- Fade from bright to dim
+            love.graphics.setColor(1, 0.8 + sparkColor * 0.2, 0.2, alpha)
+            love.graphics.circle("fill", spark.x, spark.y + sparkOffsetY, spark.size)
+            -- Add glow effect
+            love.graphics.setColor(1, 0.9, 0.3, alpha * 0.3)
+            love.graphics.circle("fill", spark.x, spark.y + sparkOffsetY, spark.size * 2)
+        end
+        
+        -- Calculate flash alpha and fade out after 3 seconds
+        local flashAlpha = 1.0
+        local flashTimer = 3.0 - Game.rapidFireTextTimer
+        if flashTimer < 2.0 then
+            -- Flash animation during first 2 seconds
+            flashAlpha = 0.6 + 0.4 * (math.sin(flashTimer * 12) + 1) / 2
+        end
+        -- Fade out after 3 seconds
+        if Game.rapidFireTextTimer < 1.0 then
+            -- Fade out over last second
+            flashAlpha = flashAlpha * (Game.rapidFireTextTimer / 1.0)
+        end
+        
+        -- Create giant font for "RAPID FIRE" text
+        local giantFontSize = 120
+        local giantFont = love.graphics.newFont(giantFontSize)
+        love.graphics.setFont(giantFont)
+        
+        local rapidFireText = "RAPID FIRE"
+        local textWidth = giantFont:getWidth(rapidFireText)
+        local textX = centerX - textWidth / 2
+        local textY = centerY - giantFontSize / 2
+        
+        -- Flashy colors (gold/yellow pulsing)
+        local flash = (math.sin(love.timer.getTime() * 8) + 1) / 2
+        local r = 1
+        local g = 0.7 + flash * 0.3
+        local b = 0.1
+        
+        -- Draw text with thick outline for visibility
+        love.graphics.setLineWidth(8)
+        love.graphics.setColor(0, 0, 0, flashAlpha * 0.9)
+        for dx = -4, 4, 2 do
+            for dy = -4, 4, 2 do
+                if dx ~= 0 or dy ~= 0 then
+                    love.graphics.print(rapidFireText, textX + dx, textY + dy)
+                end
+            end
+        end
+        
+        -- Draw main text with pulsing color
+        love.graphics.setColor(r, g, b, flashAlpha)
+        love.graphics.print(rapidFireText, textX, textY)
+        
+        -- Add extra glow effect
+        love.graphics.setColor(r, g, b, flashAlpha * 0.3)
+        for i = 1, 3 do
+            love.graphics.print(rapidFireText, textX, textY)
+        end
     end
+    
     
     -- Display level transition message
     if Game.levelTransitionActive then
+        local Popups = require("src.core.popups")
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(0, 1, 0)
-        local message = ""
-        if Game.winCondition == "blue_only" then
-            message = "LEVEL COMPLETE! Only Blue Units Remain"
-        elseif Game.winCondition == "red_only" then
-            message = "LEVEL COMPLETE! Only Red Units Remain"
-        elseif Game.winCondition == "neutral_only" then
-            message = "LEVEL COMPLETE! All Units Returned to Neutral"
-        end
+        local message = Popups.getWinMessage(Game.winCondition)
         local textWidth = Game.fonts.large:getWidth(message)
         love.graphics.print(message, (Constants.SCREEN_WIDTH - textWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 100)
         
         love.graphics.setFont(Game.fonts.medium)
         love.graphics.setColor(1, 1, 0)
-        local nextLevelMsg = "ADVANCING TO LEVEL " .. (Game.level + 1) .. "..."
+        local nextLevelMsg = Popups.getAdvancingMessage(Game.level + 1)
         local nextLevelWidth = Game.fonts.medium:getWidth(nextLevelMsg)
         love.graphics.print(nextLevelMsg, (Constants.SCREEN_WIDTH - nextLevelWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
     elseif Game.gameOverActive and Game.lives > 0 then
         -- Display "LIFE LOST" message when player loses a life but still has lives remaining
+        local Auditor = require("src.core.auditor")
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(1, 0.2, 0.2)  -- Red color
-        local lifeLostMsg = "LIFE LOST"
+        local lifeLostMsg = Auditor.LIFE_LOST
         local lifeLostWidth = Game.fonts.large:getWidth(lifeLostMsg)
         love.graphics.print(lifeLostMsg, (Constants.SCREEN_WIDTH - lifeLostWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
         
+        local Popups = require("src.core.popups")
         love.graphics.setFont(Game.fonts.medium)
         love.graphics.setColor(1, 1, 1)
-        local livesRemainingMsg = "LIVES REMAINING: " .. Game.lives
+        local livesRemainingMsg = Popups.getLivesRemaining(Game.lives)
         local livesRemainingWidth = Game.fonts.medium:getWidth(livesRemainingMsg)
         love.graphics.print(livesRemainingMsg, (Constants.SCREEN_WIDTH - livesRemainingWidth) / 2, Constants.SCREEN_HEIGHT / 2 + 20)
     elseif Game.nameEntryActive then
         -- Draw name entry screen (check this before game over screen)
-        -- Draw name entry screen
+        local Popups = require("src.core.popups")
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(1, 1, 0)
-        local titleMsg = "NEW HIGH SCORE!"
+        local titleMsg = Popups.HIGH_SCORE.TITLE
         local titleWidth = Game.fonts.large:getWidth(titleMsg)
         love.graphics.print(titleMsg, (Constants.SCREEN_WIDTH - titleWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 150)
         
         love.graphics.setFont(Game.fonts.medium)
         love.graphics.setColor(1, 1, 1)
-        local scoreMsg = "SCORE: " .. Game.score
+        local scoreMsg = Popups.HIGH_SCORE.getScore(Game.score)
         local scoreWidth = Game.fonts.medium:getWidth(scoreMsg)
         love.graphics.print(scoreMsg, (Constants.SCREEN_WIDTH - scoreWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 100)
         
         love.graphics.setColor(0.8, 0.8, 0.8)
-        local enterMsg = "ENTER YOUR NAME:"
+        local enterMsg = Popups.HIGH_SCORE.ENTER_NAME
         local enterWidth = Game.fonts.medium:getWidth(enterMsg)
         love.graphics.print(enterMsg, (Constants.SCREEN_WIDTH - enterWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
         

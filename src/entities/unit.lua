@@ -195,6 +195,10 @@ function Unit:updateEnraged(dt, allUnits)
             
             -- Much stronger seeking force - enraged units are aggressive
             local force = self.body:getMass() * 4000  -- Doubled from 2000 for more aggression
+            -- Apply speed multiplier in demo mode
+            if self.demoSpeedMultiplier then
+                force = force * self.demoSpeedMultiplier
+            end
             
             -- If close to enemy, boost velocity directly for ramming attacks
             if dist < 100 then
@@ -615,12 +619,15 @@ function Unit:updateFlocking(dt, allUnits)
     local myX, myY = self.body:getPosition()
     local mass = self.body:getMass()
     
+    -- Apply speed multiplier in demo mode
+    local speedMultiplier = self.demoSpeedMultiplier or 1.0
+    
     -- Flocking parameters
     local neighborRadius = 100  -- How far to look for flockmates
     local separationRadius = 30  -- Minimum distance to maintain
-    local separationForce = mass * 500
-    local alignmentForce = mass * 400
-    local cohesionForce = mass * 300
+    local separationForce = mass * 500 * speedMultiplier
+    local alignmentForce = mass * 400 * speedMultiplier
+    local cohesionForce = mass * 300 * speedMultiplier
     
     local separationX, separationY = 0, 0
     local alignmentX, alignmentY = 0, 0
@@ -685,7 +692,7 @@ function Unit:updateFlocking(dt, allUnits)
         local currentSpeed = math.sqrt(vx^2 + vy^2)
         if currentSpeed < Constants.UNIT_SPEED_NEUTRAL * 0.3 then
             -- Apply small wander force to keep moving
-            local forceMag = self.body:getMass() * 200
+            local forceMag = self.body:getMass() * 200 * speedMultiplier
             self.body:applyForce(math.cos(self.currentMoveAngle)*forceMag, math.sin(self.currentMoveAngle)*forceMag)
         end
     end
@@ -848,6 +855,11 @@ function Unit:updateWander(dt)
     if currentSpeed < Constants.UNIT_SPEED_NEUTRAL * 0.5 then
         -- If very slow, apply stronger force
         forceMag = forceMag * 2
+    end
+    
+    -- Apply speed multiplier in demo mode
+    if self.demoSpeedMultiplier then
+        forceMag = forceMag * self.demoSpeedMultiplier
     end
     
     -- Always apply wander force to keep units moving

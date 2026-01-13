@@ -4,6 +4,7 @@
 local Sound = {}
 local activeSounds = {}  -- Track active sound sources
 local loopingSounds = {}  -- Track looping sound sources separately
+local musicSource = nil  -- Background music source
 local masterVolume = 1.0
 local soundsMuted = false  -- Flag to prevent new sounds from playing
 
@@ -23,6 +24,11 @@ local SOUND_CONFIG = {
     
     -- Path to sound files (if using prerecorded mode)
     SOUND_PATH = "assets/sounds/",
+    
+    -- Music file path
+    MUSIC_PATH = "assets/music.wav",  -- Background music file
+    INTRO_MUSIC_PATH = "assets/intromusic.wav",  -- Intro/attract mode music file
+    MUSIC_VOLUME = 0.6,  -- Music volume (lower than SFX to not overpower)
 }
 
 -- Helper: Generate a simple tone (sine wave)
@@ -369,6 +375,7 @@ end
 -- Set master volume
 function Sound.setMasterVolume(volume)
     masterVolume = math.max(0, math.min(1, volume))
+    Sound.updateMusicVolume()  -- Update music volume when master volume changes
 end
 
 -- Get master volume
@@ -397,6 +404,9 @@ end
 function Sound.cleanup()
     -- Mute all new sounds first
     soundsMuted = true
+    
+    -- Stop music
+    Sound.stopMusic()
     
     -- First, aggressively stop ALL audio sources immediately
     love.audio.stop()
@@ -428,6 +438,77 @@ end
 -- Unmute sounds (call when starting a new game)
 function Sound.unmute()
     soundsMuted = false
+end
+
+-- Play background music (looping)
+function Sound.playMusic()
+    -- Stop existing music if playing
+    if musicSource then
+        pcall(function()
+            musicSource:stop()
+            musicSource:release()
+        end)
+        musicSource = nil
+    end
+    
+    -- Try to load and play music file
+    local success, source = pcall(love.audio.newSource, SOUND_CONFIG.MUSIC_PATH, "stream")
+    if success and source then
+        musicSource = source
+        musicSource:setLooping(true)
+        musicSource:setVolume(SOUND_CONFIG.MUSIC_VOLUME * masterVolume)
+        musicSource:play()
+        return musicSource
+    else
+        print("Warning: Could not load music file: " .. tostring(SOUND_CONFIG.MUSIC_PATH))
+        return nil
+    end
+end
+
+-- Play intro/attract mode music (looping)
+function Sound.playIntroMusic()
+    -- Ensure sounds are not muted
+    soundsMuted = false
+    
+    -- Stop existing music if playing
+    if musicSource then
+        pcall(function()
+            musicSource:stop()
+            musicSource:release()
+        end)
+        musicSource = nil
+    end
+    
+    -- Try to load and play intro music file
+    local success, source = pcall(love.audio.newSource, SOUND_CONFIG.INTRO_MUSIC_PATH, "stream")
+    if success and source then
+        musicSource = source
+        musicSource:setLooping(true)
+        musicSource:setVolume(SOUND_CONFIG.MUSIC_VOLUME * masterVolume)
+        musicSource:play()
+        return musicSource
+    else
+        print("Warning: Could not load intro music file: " .. tostring(SOUND_CONFIG.INTRO_MUSIC_PATH))
+        return nil
+    end
+end
+
+-- Stop background music
+function Sound.stopMusic()
+    if musicSource then
+        pcall(function()
+            musicSource:stop()
+            musicSource:release()
+        end)
+        musicSource = nil
+    end
+end
+
+-- Update music volume if master volume changes
+function Sound.updateMusicVolume()
+    if musicSource then
+        musicSource:setVolume(SOUND_CONFIG.MUSIC_VOLUME * masterVolume)
+    end
 end
 
 return Sound

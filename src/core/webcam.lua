@@ -28,70 +28,8 @@ local currentComment = nil
 local commentTimer = 0
 local commentDuration = 3.0  -- How long to show a comment
 
--- Comment pool organized by event type
--- Chase Paxton: Middle manager from hell, tech bro lingo, panicky
-local comments = {
-    game_start = {
-        "Let's maximize engagement!",
-        "Time to hit those KPIs!",
-        "Show me those metrics!",
-        "Let's optimize this workflow!"
-    },
-    unit_killed = {
-        "Great conversion rate!",
-        "That's a quality engagement!",
-        "Synergy achieved!",
-        "Disrupting the status quo!"
-    },
-    multiple_kills = {
-        "Viral growth!",
-        "Exponential scaling!",
-        "Network effects in action!",
-        "That's leverage!"
-    },
-    powerup_collected = {
-        "Performance boost acquired!",
-        "Upgrading your stack!",
-        "That's a game-changer!",
-        "Optimization unlocked!"
-    },
-    engagement_low = {
-        "Watch those metrics!",
-        "Engagement is tanking!",
-        "We're bleeding users!",
-        "The Auditor will see this!"
-    },
-    engagement_high = {
-        "Crushing those KPIs!",
-        "We're in the green!",
-        "Metrics are off the charts!",
-        "This is what I'm talking about!"
-    },
-    level_complete = {
-        "Quarterly goals achieved!",
-        "We're crushing it!",
-        "That's a win-win!",
-        "Moving the needle!"
-    },
-    game_over = {
-        "We're in deep trouble!",
-        "The Auditor will not be happy!",
-        "This is a critical failure!",
-        "We need to pivot NOW!"
-    },
-    combo = {
-        "Compound growth!",
-        "That's a multiplier!",
-        "Cascading engagement!",
-        "Momentum building!"
-    },
-    near_miss = {
-        "Almost optimized!",
-        "Close to peak performance!",
-        "We need better targeting!",
-        "A/B test that approach!"
-    }
-}
+-- Import Chase Paxton dialogue
+local ChasePaxton = require("src.core.chase_paxton")
 
 -- Initialize webcam
 function Webcam.init()
@@ -137,12 +75,10 @@ end
 
 -- Show a comment
 function Webcam.showComment(eventType, count)
-    local commentList = comments[eventType]
-    if not commentList or #commentList == 0 then return end
+    local comment = ChasePaxton.getComment(eventType)
+    if not comment then return end
     
-    -- Select random comment from the list
-    local index = math.random(1, #commentList)
-    currentComment = commentList[index]
+    currentComment = comment
     commentTimer = commentDuration
     
     -- Trigger talking animation
@@ -199,8 +135,10 @@ function Webcam.draw()
     
     -- Draw comment text if active
     if currentComment then
-        love.graphics.setFont(love.graphics.getFont() or love.graphics.newFont(14))
-        local textWidth = love.graphics.getFont():getWidth(currentComment)
+        -- Explicitly use 14px font (don't rely on getFont() which may return a different font from elsewhere)
+        local commentFont = love.graphics.newFont(14)
+        love.graphics.setFont(commentFont)
+        local textWidth = commentFont:getWidth(currentComment)
         local textX = WEBCAM_X + (WEBCAM_WIDTH - textWidth) / 2
         local textY = WEBCAM_Y + WEBCAM_HEIGHT - 25
         
