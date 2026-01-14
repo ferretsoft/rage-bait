@@ -8,6 +8,7 @@ local Engagement = require("src.core.engagement")
 local Sound = require("src.core.sound")
 local ChasePaxton = require("src.core.chase_paxton")
 local Unit = require("src.entities.unit")
+local WindowFrame = require("src.core.window_frame")
 local World = require("src.core.world")
 
 -- Scripted demo actions for each step
@@ -740,23 +741,20 @@ function DemoMode.draw()
             local WEBCAM_HEIGHT = 280
             local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
             local WEBCAM_Y = 50  -- Position at top of screen
+            local titleBarHeight = 20
+            local borderWidth = 3
             
-            -- Semi-transparent background for better visibility
-            love.graphics.setColor(0, 0, 0, 0.8)
-            love.graphics.rectangle("fill", WEBCAM_X - 10, WEBCAM_Y - 10, WEBCAM_WIDTH + 20, WEBCAM_HEIGHT + 20)
+            -- Draw transparent black background for content area
+            love.graphics.setColor(0, 0, 0, 0.7)
+            love.graphics.rectangle("fill", WEBCAM_X + borderWidth, WEBCAM_Y + borderWidth + titleBarHeight, 
+                WEBCAM_WIDTH - (borderWidth * 2), WEBCAM_HEIGHT - (borderWidth * 2) - titleBarHeight)
             
-            -- Webcam window frame
-            love.graphics.setColor(0.2, 0.2, 0.2, 0.95)
-            love.graphics.rectangle("fill", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+            -- Draw Windows 95 style frame with title bar
+            WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
             
-            -- Border
-            love.graphics.setColor(0.5, 0.5, 0.5, 1)
-            love.graphics.setLineWidth(4)
-            love.graphics.rectangle("line", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
-            
-            -- Draw Chase Paxton character (smaller, on left side)
+            -- Draw Chase Paxton character (smaller, on left side) - adjust for title bar
             local charX = WEBCAM_X + 80
-            local charY = WEBCAM_Y + 80
+            local charY = WEBCAM_Y + titleBarHeight + borderWidth + 60
             
             -- Character head
             love.graphics.setColor(0.9, 0.8, 0.7, 1)
@@ -783,12 +781,12 @@ function DemoMode.draw()
             love.graphics.setFont(Game.fonts.large)  -- Use large font for better visibility
             love.graphics.setColor(1, 1, 1, 1)
             
-            -- Calculate available space for text
+            -- Calculate available space for text - adjust for title bar
             local charWidth = 160  -- Character takes up ~160px (80px radius circle + padding)
             local textX = WEBCAM_X + charWidth + 20  -- Start after character with padding
-            local textY = WEBCAM_Y + 20  -- Top padding
+            local textY = WEBCAM_Y + titleBarHeight + borderWidth + 20  -- Top padding
             local textWidth = WEBCAM_WIDTH - charWidth - 40  -- Available width (window - char - padding)
-            local textHeight = WEBCAM_HEIGHT - 40  -- Available height (window - padding)
+            local textHeight = WEBCAM_HEIGHT - titleBarHeight - borderWidth - 40  -- Available height (window - title bar - padding)
             
             -- Split message by newlines first
             local paragraphs = {}

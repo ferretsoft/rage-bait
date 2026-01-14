@@ -9,6 +9,7 @@ local Webcam = require("src.core.webcam")
 local EngagementPlot = require("src.core.engagement_plot")
 local AttractMode = require("src.core.attract_mode")
 local DemoMode = require("src.core.demo_mode")
+local WindowFrame = require("src.core.window_frame")
 local Unit = require("src.entities.unit")
 local Turret = require("src.entities.turret")
 local Projectile = require("src.entities.projectile")
@@ -36,7 +37,9 @@ Game = {
     logoBlink = nil,  -- Company logo blink image
     splash = nil,  -- Splash screen image for attract mode
     showBackgroundForeground = false,  -- Toggle for background/foreground layers
-    logoMode = true,  -- Start with logo screen
+    bootingMode = true,  -- Start with booting screen
+    bootingTimer = 0,  -- Timer for booting screen
+    logoMode = false,  -- Logo screen (after booting)
     logoTimer = 0,  -- Timer for logo animation
     logoFanfarePlayed = false,  -- Track if fanfare has been played
     previousLogoTimer = 0,  -- Track previous timer value to detect threshold crossings
@@ -361,8 +364,10 @@ function love.load()
     Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init(); EmojiSprites.init(); Webcam.init(); EngagementPlot.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
-    -- Start with logo screen
-    Game.logoMode = true
+    -- Start with booting screen
+    Game.bootingMode = true
+    Game.bootingTimer = 0
+    Game.logoMode = false
     Game.logoTimer = 0
     Game.previousLogoTimer = 0
     Game.logoFanfarePlayed = false
@@ -840,6 +845,21 @@ function returnToAttractMode()
     Game.effects = {}
 end
 
+-- Draw booting screen
+function drawBootingScreen()
+    love.graphics.clear(0, 0, 0)  -- Black background
+    
+    -- Draw "Booting..." text centered
+    love.graphics.setFont(Game.fonts.large)
+    love.graphics.setColor(1, 1, 1, 1)  -- White text
+    local text = "Booting..."
+    local textWidth = Game.fonts.large:getWidth(text)
+    local textHeight = Game.fonts.large:getHeight()
+    local centerX = Constants.SCREEN_WIDTH / 2
+    local centerY = Constants.SCREEN_HEIGHT / 2
+    love.graphics.print(text, centerX - textWidth / 2, centerY - textHeight / 2)
+end
+
 -- Draw logo screen with slide-in animation
 function drawLogoScreen()
     love.graphics.clear(0, 0, 0)  -- Black background
@@ -870,10 +890,10 @@ function drawLogoScreen()
     
     -- Animation phases:
     -- 0-1s: Slide in from left (silently, no sound)
-    -- 1-4s: Hold at center (3 seconds)
-    -- 4-4.25s: Show blink version (0.25 seconds)
-    -- 4.25-7.25s: Show normal version (3 seconds)
-    -- 7.25s+: Transition to attract mode
+    -- 1-2.5s: Hold at center (1.5 seconds)
+    -- 2.5-2.75s: Show blink version (0.25 seconds)
+    -- 2.75-5.75s: Show normal version (3 seconds)
+    -- 5.75s+: Transition to attract mode
     
     local t = Game.logoTimer
     local x, y = centerX, centerY
@@ -888,7 +908,7 @@ function drawLogoScreen()
     
     -- Determine which logo to show (blink or normal)
     local logoToShow = Game.logo
-    if Game.logoBlink and t >= 4.0 and t < 4.25 then
+    if Game.logoBlink and t >= 2.5 and t < 2.75 then
         logoToShow = Game.logoBlink
     end
     
@@ -932,24 +952,20 @@ function drawIntroScreen()
     local WEBCAM_HEIGHT = 300
     local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
     local WEBCAM_Y = (Constants.SCREEN_HEIGHT - WEBCAM_HEIGHT) / 2 - 50
+    local titleBarHeight = 20
+    local borderWidth = 3
     
-    -- Webcam window frame
-    love.graphics.setColor(0.2, 0.2, 0.2, 1)
-    love.graphics.rectangle("fill", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    -- Draw transparent black background for content area
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", WEBCAM_X + borderWidth, WEBCAM_Y + borderWidth + titleBarHeight, 
+        WEBCAM_WIDTH - (borderWidth * 2), WEBCAM_HEIGHT - (borderWidth * 2) - titleBarHeight)
     
-    -- Border
-    love.graphics.setColor(0.5, 0.5, 0.5, 1)
-    love.graphics.setLineWidth(3)
-    love.graphics.rectangle("line", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    -- Draw Windows 95 style frame with title bar
+    WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
     
-    -- Inner border
-    love.graphics.setColor(0.1, 0.1, 0.1, 1)
-    love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", WEBCAM_X + 5, WEBCAM_Y + 5, WEBCAM_WIDTH - 10, WEBCAM_HEIGHT - 10)
-    
-    -- Draw character (animated)
+    -- Draw character (animated) - adjust for title bar
     local charX = WEBCAM_X + WEBCAM_WIDTH / 2
-    local charY = WEBCAM_Y + WEBCAM_HEIGHT / 2 - 40
+    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2 - 40
     
     -- Character head
     love.graphics.setColor(0.9, 0.8, 0.7, 1)
@@ -984,7 +1000,7 @@ function drawIntroScreen()
     local titleWidth = Game.fonts.large:getWidth(currentMessage.title)
     love.graphics.print(currentMessage.title, WEBCAM_X + (WEBCAM_WIDTH - titleWidth) / 2, WEBCAM_Y + 20)
     
-    -- Draw message
+    -- Draw message (positioned below Chase's face so it doesn't overlap)
     love.graphics.setFont(Game.fonts.medium)
     love.graphics.setColor(1, 1, 1, 1)
     local lines = {}
@@ -993,7 +1009,8 @@ function drawIntroScreen()
     end
     
     local lineHeight = Game.fonts.medium:getHeight() + 5
-    local startY = WEBCAM_Y + WEBCAM_HEIGHT - 80 - (#lines * lineHeight)
+    -- Place the first line well below the character's chin
+    local startY = charY + 60
     for i, line in ipairs(lines) do
         local lineWidth = Game.fonts.medium:getWidth(line)
         love.graphics.print(line, WEBCAM_X + (WEBCAM_WIDTH - lineWidth) / 2, startY + (i - 1) * lineHeight)
@@ -1295,24 +1312,20 @@ function drawLevelCompleteScreen()
     local WEBCAM_HEIGHT = 450
     local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
     local WEBCAM_Y = (Constants.SCREEN_HEIGHT - WEBCAM_HEIGHT) / 2 - 100
+    local titleBarHeight = 20
+    local borderWidth = 3
     
-    -- Webcam window frame
-    love.graphics.setColor(0.2, 0.2, 0.2, 1)
-    love.graphics.rectangle("fill", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    -- Draw transparent black background for content area
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", WEBCAM_X + borderWidth, WEBCAM_Y + borderWidth + titleBarHeight, 
+        WEBCAM_WIDTH - (borderWidth * 2), WEBCAM_HEIGHT - (borderWidth * 2) - titleBarHeight)
     
-    -- Border
-    love.graphics.setColor(0.5, 0.5, 0.5, 1)
-    love.graphics.setLineWidth(4)
-    love.graphics.rectangle("line", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    -- Draw Windows 95 style frame with title bar
+    WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
     
-    -- Inner border
-    love.graphics.setColor(0.1, 0.1, 0.1, 1)
-    love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", WEBCAM_X + 5, WEBCAM_Y + 5, WEBCAM_WIDTH - 10, WEBCAM_HEIGHT - 10)
-    
-    -- Draw Chase Paxton character (larger)
+    -- Draw Chase Paxton character (larger) - adjust for title bar
     local charX = WEBCAM_X + WEBCAM_WIDTH / 2
-    local charY = WEBCAM_Y + WEBCAM_HEIGHT / 2 - 40
+    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2 - 40
     
     -- Character head (larger circle)
     love.graphics.setColor(0.9, 0.8, 0.7, 1)  -- Skin tone
@@ -1368,19 +1381,36 @@ end
 function love.update(dt)
     if love.keyboard.isDown("escape") then love.event.quit() end
     
+    -- Handle booting screen
+    if Game.bootingMode then
+        Game.bootingTimer = Game.bootingTimer + dt
+        
+        -- After 10 seconds, transition to logo screen
+        if Game.bootingTimer >= 10.0 then
+            Game.bootingMode = false
+            Game.bootingTimer = 0
+            Game.logoMode = true
+            Game.logoTimer = 0
+            Game.previousLogoTimer = 0
+            Game.logoFanfarePlayed = false
+        end
+        
+        return  -- Don't update game logic during booting screen
+    end
+    
     -- Handle logo screen
     if Game.logoMode then
         Game.previousLogoTimer = Game.logoTimer
         Game.logoTimer = Game.logoTimer + dt
         
-        -- Play fanfare exactly when the blink animation starts (at 4.0 seconds)
+        -- Play fanfare exactly when the blink animation starts (at 2.5 seconds)
         -- This happens when the logo image changes to the blink version
-        if Game.previousLogoTimer < 4.0 and Game.logoTimer >= 4.0 then
+        if Game.previousLogoTimer < 2.5 and Game.logoTimer >= 2.5 then
             Sound.playFanfare()
         end
         
-        -- After 7.25 seconds (1s slide + 3s wait + 0.25s blink + 3s wait), transition to attract mode
-        if Game.logoTimer >= 7.25 then
+        -- After 5.75 seconds (1s slide + 1.5s wait + 0.25s blink + 3s wait), transition to attract mode
+        if Game.logoTimer >= 5.75 then
             Game.logoMode = false
             Game.logoTimer = 0
             Game.previousLogoTimer = 0
@@ -2235,6 +2265,19 @@ function drawGame()
         
         if Game.turret then Game.turret:draw() end
     end)
+
+    -- Draw Windows 95 style frame around the playfield (A.R.A.C. Control Interface)
+    -- Position the frame so the playfield content begins at Constants.OFFSET_X/Y (no gameplay coordinate changes)
+    do
+        local titleBarHeight = 20
+        local borderWidth = 3
+        local frameX = Constants.OFFSET_X - borderWidth
+        local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+        local frameW = Constants.PLAYFIELD_WIDTH + (borderWidth * 2)
+        local frameH = Constants.PLAYFIELD_HEIGHT + titleBarHeight + (borderWidth * 2)
+
+        WindowFrame.draw(frameX, frameY, frameW, frameH, "A.R.A.C. Control Interface")
+    end
     
     -- Draw foreground image if loaded and enabled (full screen, on top of game elements) - now affected by shake
     if Game.showBackgroundForeground and Game.foreground then
@@ -2273,6 +2316,12 @@ function love.draw()
         else
             drawFunc()
         end
+    end
+    
+    -- Draw booting screen (before logo)
+    if Game.bootingMode then
+        drawWithCRT(drawBootingScreen)
+        return
     end
     
     -- Draw logo screen (before attract mode)
@@ -2338,23 +2387,19 @@ function drawMultiplierWindow()
     local MULTIPLIER_HEIGHT = 60
     local MULTIPLIER_X = PLOT_X
     local MULTIPLIER_Y = PLOT_Y + PLOT_HEIGHT + 10
+    local titleBarHeight = 20
+    local borderWidth = 3
     
-    -- Draw multiplier window frame
-    love.graphics.setColor(0.2, 0.2, 0.2, 1)
-    love.graphics.rectangle("fill", MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT)
+    -- Draw transparent black background for content area
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", MULTIPLIER_X + borderWidth, MULTIPLIER_Y + borderWidth + titleBarHeight, 
+        MULTIPLIER_WIDTH - (borderWidth * 2), MULTIPLIER_HEIGHT - (borderWidth * 2) - titleBarHeight)
     
-    -- Draw border
-    love.graphics.setColor(0.5, 0.5, 0.5, 1)
-    love.graphics.setLineWidth(3)
-    love.graphics.rectangle("line", MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT)
-    
-    -- Draw inner border
-    love.graphics.setColor(0.1, 0.1, 0.1, 1)
-    love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", MULTIPLIER_X + 5, MULTIPLIER_Y + 5, MULTIPLIER_WIDTH - 10, MULTIPLIER_HEIGHT - 10)
+    -- Draw Windows 95 style frame with title bar
+    WindowFrame.draw(MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT, "Multiplier")
     
     if Game.pointMultiplierActive then
-        -- Draw multiplier content
+        -- Draw multiplier content - adjust for title bar
         love.graphics.setFont(Game.fonts.medium)
         
         -- Multiplier value with gold/yellow pulsing
@@ -2362,20 +2407,20 @@ function drawMultiplierWindow()
         love.graphics.setColor(1, 0.8 + flash * 0.2, 0.2, 1)
         local multiplierText = "x" .. Game.pointMultiplier .. " POINT MULTIPLIER"
         local multiplierWidth = Game.fonts.medium:getWidth(multiplierText)
-        love.graphics.print(multiplierText, MULTIPLIER_X + (MULTIPLIER_WIDTH - multiplierWidth) / 2, MULTIPLIER_Y + 10)
+        love.graphics.print(multiplierText, MULTIPLIER_X + (MULTIPLIER_WIDTH - multiplierWidth) / 2, MULTIPLIER_Y + titleBarHeight + borderWidth + 10)
         
         -- Timer
         love.graphics.setColor(1, 1, 1, 0.9)
         local timerText = math.ceil(Game.pointMultiplierTimer) .. "s remaining"
         local timerWidth = Game.fonts.medium:getWidth(timerText)
-        love.graphics.print(timerText, MULTIPLIER_X + (MULTIPLIER_WIDTH - timerWidth) / 2, MULTIPLIER_Y + 35)
+        love.graphics.print(timerText, MULTIPLIER_X + (MULTIPLIER_WIDTH - timerWidth) / 2, MULTIPLIER_Y + titleBarHeight + borderWidth + 35)
     else
-        -- Show inactive state
+        -- Show inactive state - adjust for title bar
         love.graphics.setColor(0.5, 0.5, 0.5, 0.7)
         love.graphics.setFont(Game.fonts.medium)
         local inactiveText = "MULTIPLIER: INACTIVE"
         local inactiveWidth = Game.fonts.medium:getWidth(inactiveText)
-        love.graphics.print(inactiveText, MULTIPLIER_X + (MULTIPLIER_WIDTH - inactiveWidth) / 2, MULTIPLIER_Y + 20)
+        love.graphics.print(inactiveText, MULTIPLIER_X + (MULTIPLIER_WIDTH - inactiveWidth) / 2, MULTIPLIER_Y + titleBarHeight + borderWidth + 20)
     end
 end
 

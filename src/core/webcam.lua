@@ -3,6 +3,7 @@
 
 local Webcam = {}
 local Constants = require("src.constants")
+local WindowFrame = require("src.core.window_frame")
 
 -- Webcam window dimensions and position
 local WEBCAM_WIDTH = 300
@@ -89,23 +90,20 @@ end
 
 -- Draw webcam window
 function Webcam.draw()
-    -- Draw webcam window frame
-    love.graphics.setColor(0.2, 0.2, 0.2, 1)
-    love.graphics.rectangle("fill", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    local titleBarHeight = 20
+    local borderWidth = 3
     
-    -- Draw border
-    love.graphics.setColor(0.5, 0.5, 0.5, 1)
-    love.graphics.setLineWidth(3)
-    love.graphics.rectangle("line", WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT)
+    -- Draw transparent black background for content area
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", WEBCAM_X + borderWidth, WEBCAM_Y + borderWidth + titleBarHeight, 
+        WEBCAM_WIDTH - (borderWidth * 2), WEBCAM_HEIGHT - (borderWidth * 2) - titleBarHeight)
     
-    -- Draw inner border (webcam style)
-    love.graphics.setColor(0.1, 0.1, 0.1, 1)
-    love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", WEBCAM_X + 5, WEBCAM_Y + 5, WEBCAM_WIDTH - 10, WEBCAM_HEIGHT - 10)
+    -- Draw Windows 95 style frame with title bar
+    WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Webcam")
     
-    -- Draw character (simple animated face)
+    -- Draw character (simple animated face) - adjust for title bar
     local charX = WEBCAM_X + WEBCAM_WIDTH / 2
-    local charY = WEBCAM_Y + WEBCAM_HEIGHT / 2 - 20
+    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2 - 20
     
     -- Character head (circle)
     love.graphics.setColor(0.9, 0.8, 0.7, 1)  -- Skin tone
@@ -140,7 +138,7 @@ function Webcam.draw()
         love.graphics.setFont(commentFont)
         local textWidth = commentFont:getWidth(currentComment)
         local textX = WEBCAM_X + (WEBCAM_WIDTH - textWidth) / 2
-        local textY = WEBCAM_Y + WEBCAM_HEIGHT - 25
+        local textY = WEBCAM_Y + WEBCAM_HEIGHT - 25 - titleBarHeight
         
         -- Text background
         love.graphics.setColor(0, 0, 0, 0.7)

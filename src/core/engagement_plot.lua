@@ -4,6 +4,7 @@
 local EngagementPlot = {}
 local Constants = require("src.constants")
 local Engagement = require("src.core.engagement")
+local WindowFrame = require("src.core.window_frame")
 
 -- Plot window dimensions and position
 local PLOT_WIDTH = 300
@@ -44,33 +45,23 @@ end
 
 -- Draw plot window
 function EngagementPlot.draw()
-    -- Draw plot window frame
-    love.graphics.setColor(0.2, 0.2, 0.2, 1)
-    love.graphics.rectangle("fill", PLOT_X, PLOT_Y, PLOT_WIDTH, PLOT_HEIGHT)
+    local titleBarHeight = 20
+    local borderWidth = 3
     
-    -- Draw border
-    love.graphics.setColor(0.5, 0.5, 0.5, 1)
-    love.graphics.setLineWidth(3)
-    love.graphics.rectangle("line", PLOT_X, PLOT_Y, PLOT_WIDTH, PLOT_HEIGHT)
+    -- Draw transparent black background for content area
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", PLOT_X + borderWidth, PLOT_Y + borderWidth + titleBarHeight, 
+        PLOT_WIDTH - (borderWidth * 2), PLOT_HEIGHT - (borderWidth * 2) - titleBarHeight)
     
-    -- Draw inner border
-    love.graphics.setColor(0.1, 0.1, 0.1, 1)
-    love.graphics.setLineWidth(2)
-    love.graphics.rectangle("line", PLOT_X + 5, PLOT_Y + 5, PLOT_WIDTH - 10, PLOT_HEIGHT - 10)
+    -- Draw Windows 95 style frame with title bar
+    WindowFrame.draw(PLOT_X, PLOT_Y, PLOT_WIDTH, PLOT_HEIGHT, "Engagement")
     
     -- Draw plot area (with padding)
     local plotPadding = 15
     local plotX = PLOT_X + plotPadding
-    local plotY = PLOT_Y + plotPadding + 20  -- Extra space for title
+    local plotY = PLOT_Y + plotPadding + titleBarHeight + borderWidth
     local plotW = PLOT_WIDTH - plotPadding * 2
-    local plotH = PLOT_HEIGHT - plotPadding * 2 - 20
-    
-    -- Draw title
-    love.graphics.setColor(1, 1, 1, 1)
-    love.graphics.setFont(love.graphics.getFont() or love.graphics.newFont(14))
-    local title = "ENGAGEMENT"
-    local titleWidth = love.graphics.getFont():getWidth(title)
-    love.graphics.print(title, PLOT_X + (PLOT_WIDTH - titleWidth) / 2, PLOT_Y + 8)
+    local plotH = PLOT_HEIGHT - plotPadding * 2 - titleBarHeight - borderWidth
     
     -- Draw grid lines
     love.graphics.setColor(0.3, 0.3, 0.3, 1)
@@ -154,7 +145,7 @@ function EngagementPlot.draw()
         love.graphics.setFont(love.graphics.getFont() or love.graphics.newFont(12))
         local valueText = string.format("%.0f", currentValue)
         local valueWidth = love.graphics.getFont():getWidth(valueText)
-        love.graphics.print(valueText, PLOT_X + PLOT_WIDTH - valueWidth - 10, PLOT_Y + PLOT_HEIGHT - 20)
+        love.graphics.print(valueText, PLOT_X + PLOT_WIDTH - valueWidth - 10, PLOT_Y + PLOT_HEIGHT - 20 - titleBarHeight)
     end
 end
 
