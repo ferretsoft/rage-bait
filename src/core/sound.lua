@@ -511,5 +511,23 @@ function Sound.updateMusicVolume()
     end
 end
 
+-- Set music volume directly (for fading)
+function Sound.setMusicVolume(volume)
+    if musicSource then
+        -- Volume should be between 0 and 1, and will be multiplied by master volume
+        local targetVolume = math.max(0, math.min(1, volume))
+        musicSource:setVolume(targetVolume * masterVolume)
+    end
+end
+
+-- Get current music volume (returns the base volume, not accounting for master)
+function Sound.getMusicVolume()
+    if musicSource then
+        -- Return the base volume (divide by masterVolume to get original)
+        return musicSource:getVolume() / masterVolume
+    end
+    return SOUND_CONFIG.MUSIC_VOLUME
+end
+
 return Sound
 

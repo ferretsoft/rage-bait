@@ -56,6 +56,12 @@ Game = {
     demoUnitConverted = false,  -- Track if a unit was converted (for verification)
     demoUnitEnraged = false,  -- Track if a unit was enraged (for verification)
     demoUnitsFighting = false,  -- Track if units are fighting (for verification)
+    videoMode = false,  -- Intro video mode (plays before intro screen)
+    introVideo = nil,  -- Intro video object
+    introMusicFadeActive = false,  -- Whether intro music fade is active
+    introMusicFadeTimer = 0,  -- Timer for intro music fade
+    introMusicFadeStartVolume = 0.6,  -- Starting volume for fade (from SOUND_CONFIG.MUSIC_VOLUME)
+    introMusicFadeTargetVolume = 0.3,  -- Target volume (50% of start)
     introMode = false,  -- Intro screen mode
     introTimer = 0,  -- Timer for intro screen
     introStep = 1,  -- Current intro step/page
@@ -361,6 +367,16 @@ function love.load()
         print("Warning: Could not load splash: assets/splash.png")
     end
     
+    -- Load intro video
+    local success6, vid = pcall(love.graphics.newVideo, "assets/introvideo.ogv")
+    if success6 then
+        Game.introVideo = vid
+        -- Videos don't loop by default in LÖVE, so no need to set looping
+    else
+        Game.introVideo = nil
+        print("Warning: Could not load intro video: assets/introvideo.ogv")
+    end
+    
     Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init(); EmojiSprites.init(); Webcam.init(); EngagementPlot.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
@@ -515,10 +531,25 @@ function startGame()
     Game.nameEntryCursor = 1
     Game.nameEntryCharIndex = {}
     
-    -- Start intro screen instead of immediately starting gameplay
-    Game.introMode = true
-    Game.introTimer = 0
-    Game.introStep = 1
+    -- Start intro video first, then intro screen
+    if Game.introVideo then
+        Game.videoMode = true
+        Game.introVideo:play()
+        Game.introMode = false
+        
+        -- Start music fade: fade from current volume to 50% over 3 seconds
+        Game.introMusicFadeActive = true
+        Game.introMusicFadeTimer = 0
+        Game.introMusicFadeStartVolume = Sound.getMusicVolume() or 0.6
+        Game.introMusicFadeTargetVolume = Game.introMusicFadeStartVolume * 0.5  -- 50% of start volume
+    else
+        -- If video doesn't exist, skip directly to intro screen
+        Game.videoMode = false
+        Game.introMode = true
+        Game.introTimer = 0
+        Game.introStep = 1
+        Game.introMusicFadeActive = false
+    end
 end
 
 
@@ -764,8 +795,18 @@ function returnToAttractMode()
     Game.logoMode = false
     Game.logoTimer = 0
     Game.previousLogoTimer = 0
+    Game.videoMode = false
+    Game.introMode = false
     Game.attractMode = true
     Game.attractModeTimer = 0
+    
+    -- Stop and reset video if it's playing
+    if Game.introVideo then
+        if Game.introVideo:isPlaying() then
+            Game.introVideo:stop()
+        end
+        Game.introVideo:seek(0)  -- Reset to beginning
+    end
     Game.gameOverActive = false
     Game.gameOverTimer = 0
     Game.auditorActive = false
@@ -927,6 +968,39 @@ function drawLogoScreen()
     love.graphics.setBlendMode("alpha")
 end
 
+
+-- Draw intro video screen
+function drawIntroVideo()
+    love.graphics.clear(0, 0, 0, 1)  -- Black background
+    
+    if Game.introVideo then
+        -- Get video dimensions
+        local videoWidth = Game.introVideo:getWidth()
+        local videoHeight = Game.introVideo:getHeight()
+        
+        -- Calculate scaling to fit screen while maintaining aspect ratio
+        local scaleX = Constants.SCREEN_WIDTH / videoWidth
+        local scaleY = Constants.SCREEN_HEIGHT / videoHeight
+        local scale = math.min(scaleX, scaleY)
+        
+        -- Calculate centered position
+        local drawWidth = videoWidth * scale
+        local drawHeight = videoHeight * scale
+        local x = (Constants.SCREEN_WIDTH - drawWidth) / 2
+        local y = (Constants.SCREEN_HEIGHT - drawHeight) / 2
+        
+        -- Draw video centered
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(Game.introVideo, x, y, 0, scale, scale)
+    else
+        -- If video doesn't exist, show a message (shouldn't happen, but fallback)
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setFont(Game.fonts.large)
+        local msg = "Video not found"
+        local msgWidth = Game.fonts.large:getWidth(msg)
+        love.graphics.print(msg, (Constants.SCREEN_WIDTH - msgWidth) / 2, Constants.SCREEN_HEIGHT / 2)
+    end
+end
 
 -- Draw intro screen with centered webcam
 function drawIntroScreen()
@@ -1435,6 +1509,46 @@ function love.update(dt)
     if Game.attractMode then
         AttractMode.update(dt)
         return  -- Don't update game logic in attract mode
+    end
+    
+    -- Handle intro video
+    if Game.videoMode then
+        -- Update music fade
+        if Game.introMusicFadeActive then
+            Game.introMusicFadeTimer = Game.introMusicFadeTimer + dt
+            local fadeDuration = 3.0  -- 3 seconds
+            local fadeProgress = math.min(1.0, Game.introMusicFadeTimer / fadeDuration)
+            
+            -- Interpolate volume from start to target
+            local currentVolume = Game.introMusicFadeStartVolume + 
+                (Game.introMusicFadeTargetVolume - Game.introMusicFadeStartVolume) * fadeProgress
+            Sound.setMusicVolume(currentVolume)
+            
+            -- Fade complete
+            if fadeProgress >= 1.0 then
+                Game.introMusicFadeActive = false
+            end
+        end
+        
+        if Game.introVideo then
+            -- Check if video has finished
+            if not Game.introVideo:isPlaying() and Game.introVideo:tell() > 0 then
+                -- Video has finished, transition to intro screen
+                Game.videoMode = false
+                Game.introMode = true
+                Game.introTimer = 0
+                Game.introStep = 1
+                Game.introMusicFadeActive = false
+            end
+        else
+            -- If video doesn't exist, skip directly to intro screen
+            Game.videoMode = false
+            Game.introMode = true
+            Game.introTimer = 0
+            Game.introStep = 1
+            Game.introMusicFadeActive = false
+        end
+        return  -- Don't update game logic during video
     end
     
     -- Handle intro screen
@@ -2092,6 +2206,22 @@ function love.keypressed(key)
         end
     end
     
+    -- Handle video mode input (allow skipping)
+    if Game.videoMode then
+        if key == "space" or key == "return" or key == "enter" or key == "escape" then
+            -- Skip video and go directly to intro screen
+            if Game.introVideo and Game.introVideo:isPlaying() then
+                Game.introVideo:stop()
+            end
+            Game.videoMode = false
+            Game.introMode = true
+            Game.introTimer = 0
+            Game.introStep = 1
+            Game.introMusicFadeActive = false
+            return
+        end
+    end
+    
     -- Handle demo mode input
     if Game.demoMode then
         if DemoMode.keypressed(key) then
@@ -2339,6 +2469,12 @@ function love.draw()
     -- Draw demo mode screen
     if Game.demoMode then
         drawWithCRT(DemoMode.draw)
+        return
+    end
+    
+    -- Draw intro video (before intro screen)
+    if Game.videoMode then
+        drawWithCRT(drawIntroVideo)
         return
     end
     
