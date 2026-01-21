@@ -36,8 +36,25 @@ Game = {
     logo = nil,  -- Company logo image
     logoBlink = nil,  -- Company logo blink image
     splash = nil,  -- Splash screen image for attract mode
+    topBanner = nil,  -- Top banner base image for playfield
+    topBannerVigilant = nil,  -- Vigilant state layer (low engagement)
+    topBannerActivated = nil,  -- Activated state layer (half engagement)
+    topBannerDormant = nil,  -- Dormant state layer (high engagement)
+    topBannerCurrentState = nil,  -- Current banner state layer (preserved during game over/win)
+    topBannerVigilantAlpha = 0,  -- Alpha for fading in vigilant state
+    topBannerCriticalEffects = false,  -- Whether critical effects are active (25% or below)
+    topBannerBlinkTimer = 0,  -- Timer for blinking effect
+    topBannerAnimationState = "normal",  -- "normal", "dropping", "rising", "waiting"
+    topBannerAnimationTimer = 0,  -- Timer for banner animation
+    topBannerWaitTimer = 0,  -- Timer for waiting at original position (15 seconds)
+    topBannerHasDropped = false,  -- Track if banner has dropped for current 25% engagement period
+    topBannerYOffset = 0,  -- Y offset for banner animation
+    topBannerVelocity = 0,  -- Velocity for banner drop/rise animation
+    topBannerOriginalY = 0,  -- Store original Y position
+    gameOverBannerDrop = false,  -- Whether banner should drop on game over
+    gameOverGreyFade = 0,  -- Alpha for grey overlay fade (0-1)
     showBackgroundForeground = false,  -- Toggle for background/foreground layers
-    bootingMode = true,  -- Start with booting screen
+    bootingMode = false,  -- Start with booting screen (disabled)
     bootingTimer = 0,  -- Timer for booting screen
     logoMode = false,  -- Logo screen (after booting)
     logoTimer = 0,  -- Timer for logo animation
@@ -45,6 +62,7 @@ Game = {
     previousLogoTimer = 0,  -- Track previous timer value to detect threshold crossings
     attractMode = false,  -- Attract mode (after logo)
     attractModeTimer = 0,  -- Timer for attract mode animations
+    joystickTestMode = false,  -- Joystick test screen (accessible from attract mode)
     demoMode = false,  -- Demo mode (AI-controlled gameplay with tutorial)
     demoTimer = 0,  -- Timer for demo mode
     demoStep = 1,  -- Current tutorial step
@@ -101,6 +119,10 @@ Game = {
     nameEntryMaxLength = 3,  -- Maximum name length (arcade style, usually 3)
     nameEntryCharSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",  -- Available characters
     nameEntryCharIndex = {},  -- Current character index for each position
+    joystickTestMode = false,  -- Whether joystick test/diagnostics screen is active
+    joystickButton1Pressed = false,  -- Track if joystick button 1 is currently pressed (for charge/release)
+    joystickButton2Pressed = false,  -- Track if joystick button 2 is currently pressed (for charge/release)
+    crtOutputCanvas = nil,  -- Canvas to capture CRT output for fullscreen scaling
     fonts = {
         small = nil,
         medium = nil,
@@ -367,6 +389,40 @@ function love.load()
         print("Warning: Could not load splash: assets/splash.png")
     end
     
+    -- Load top banner images (base + state layers)
+    local success7, img7 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0003_Banner.png")
+    if success7 then
+        Game.topBanner = img7
+    else
+        Game.topBanner = nil
+        print("Warning: Could not load top banner: assets/OverlordTopBanner/overlord_top_banner_0003_Banner.png")
+    end
+    
+    -- Load banner state layers
+    local success8, img8 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0000_Vigilant.png")
+    if success8 then
+        Game.topBannerVigilant = img8
+    else
+        Game.topBannerVigilant = nil
+        print("Warning: Could not load vigilant banner: assets/OverlordTopBanner/overlord_top_banner_0000_Vigilant.png")
+    end
+    
+    local success9, img9 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0001_Activated.png")
+    if success9 then
+        Game.topBannerActivated = img9
+    else
+        Game.topBannerActivated = nil
+        print("Warning: Could not load activated banner: assets/OverlordTopBanner/overlord_top_banner_0001_Activated.png")
+    end
+    
+    local success10, img10 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0002_Dormant.png")
+    if success10 then
+        Game.topBannerDormant = img10
+    else
+        Game.topBannerDormant = nil
+        print("Warning: Could not load dormant banner: assets/OverlordTopBanner/overlord_top_banner_0002_Dormant.png")
+    end
+    
     -- Load intro video
     local success6, vid = pcall(love.graphics.newVideo, "assets/introvideo.ogv")
     if success6 then
@@ -380,10 +436,10 @@ function love.load()
     Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init(); EmojiSprites.init(); Webcam.init(); EngagementPlot.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
-    -- Start with booting screen
-    Game.bootingMode = true
+    -- Start with logo screen (booting screen disabled)
+    Game.bootingMode = false
     Game.bootingTimer = 0
-    Game.logoMode = false
+    Game.logoMode = true
     Game.logoTimer = 0
     Game.previousLogoTimer = 0
     Game.logoFanfarePlayed = false
@@ -427,7 +483,8 @@ function love.load()
     -- chromaIntensity: Controls chromatic aberration (color separation) (default: 0.5)
     --   Higher values = more color separation. Try 0.8 for strong, 0.2 for subtle
     --   0.0 = no chromatic aberration
-    crtEffect.chromaIntensity = 0.3
+    --   Disabled in fullscreen to prevent edge sampling issues with glow
+    crtEffect.chromaIntensity = 0.0  -- Disabled to fix glow coverage issue
     
     -- screenSize: Screen dimensions (needed for scanlines)
     crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
@@ -442,11 +499,19 @@ function love.load()
     
     -- strength: Glow blur radius/intensity (default: 5)
     --   Higher values = stronger blur/glow. Try 10 for strong, 2 for subtle
-    glowEffect.strength = 7
+    glowEffect.strength = 5.25  -- Reduced to 75% of previous value (7 * 0.75)
+    
+    -- Store original glow strength for temporary reduction during video
+    Game.glowStrengthNormal = 5.25
+    Game.glowStrengthVideo = 5.25 * 0.75  -- 75% of normal during video
     
     -- Create effect chain: glow first, then CRT
     Game.crtChain = moonshine.chain(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT, glowEffect)
     Game.crtChain.next(crtEffect)
+    
+    -- Store effect references for later access
+    Game.glowEffect = glowEffect
+    Game.crtEffect = crtEffect
     
     for i=1, 20 do
         local x = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
@@ -531,11 +596,20 @@ function startGame()
     Game.nameEntryCursor = 1
     Game.nameEntryCharIndex = {}
     
+    -- Reset joystick button states
+    Game.joystickButton1Pressed = false
+    Game.joystickButton2Pressed = false
+    
     -- Start intro video first, then intro screen
     if Game.introVideo then
         Game.videoMode = true
         Game.introVideo:play()
         Game.introMode = false
+        
+        -- Reduce glow strength when video starts
+        if Game.glowEffect and Game.glowStrengthVideo then
+            Game.glowEffect.strength = Game.glowStrengthVideo
+        end
         
         -- Start music fade: fade from current volume to 50% over 3 seconds
         Game.introMusicFadeActive = true
@@ -698,6 +772,17 @@ function handleGameOver(condition)
         Game.lifeLostAuditorPhase = 1  -- Start with system freeze
         Game.gameState = "life_lost_auditor"
         Sound.cleanup()  -- Stop all sounds for the auditor sequence
+        -- Trigger banner drop animation
+        Game.gameOverBannerDrop = true
+        Game.gameOverGreyFade = 0
+        Game.gameOverBannerDropped = false  -- Track when banner has finished dropping
+        -- Reset banner animation state for life lost drop
+        if Game.topBannerAnimationState == "normal" then
+            Game.topBannerAnimationState = "dropping"
+            Game.topBannerAnimationTimer = 0
+            Game.topBannerVelocity = 0
+            Game.topBannerYOffset = 0
+        end
         return
     end
     
@@ -713,11 +798,22 @@ function handleGameOver(condition)
     
     -- Normal game over (lose a life, but not engagement depletion)
     Game.gameOverActive = true
-    Game.gameOverTimer = 2.0  -- 2 second game over screen
+    Game.gameOverTimer = 2.0  -- 2 second wait at dropped banner position
     Game.gameState = "lost"
     Game.winCondition = condition
     -- Store whether we should restart (have lives remaining after this loss)
     Game.shouldRestartLevel = hasLivesRemaining
+    -- Trigger banner drop animation
+    Game.gameOverBannerDrop = true
+    Game.gameOverGreyFade = 0
+    Game.gameOverBannerDropped = false  -- Track when banner has finished dropping
+    -- Reset banner animation state for game over drop
+    if Game.topBannerAnimationState == "normal" then
+        Game.topBannerAnimationState = "dropping"
+        Game.topBannerAnimationTimer = 0
+        Game.topBannerVelocity = 0
+        Game.topBannerYOffset = 0
+    end
 end
 
 -- Restart the current level after losing a life
@@ -732,6 +828,8 @@ function restartLevel()
     Game.lifeLostAuditorActive = false  -- Make sure life lost auditor is not active
     Game.lifeLostAuditorTimer = 0
     Game.lifeLostAuditorPhase = 1
+    Game.gameOverBannerDrop = false
+    Game.gameOverGreyFade = 0
     Game.gameState = "playing"
     Game.winCondition = nil
     Game.hasUnitBeenConverted = false
@@ -802,13 +900,28 @@ function returnToAttractMode()
     
     -- Stop and reset video if it's playing
     if Game.introVideo then
-        if Game.introVideo:isPlaying() then
-            Game.introVideo:stop()
+        -- Safely check if video is playing and pause it
+        local success, isPlaying = pcall(function()
+            return Game.introVideo:isPlaying()
+        end)
+        if success and isPlaying then
+            pcall(function()
+                if Game.introVideo.pause then
+                    Game.introVideo:pause()
+                end
+            end)
         end
-        Game.introVideo:seek(0)  -- Reset to beginning
+        -- Safely seek to beginning
+        pcall(function()
+            if Game.introVideo.seek then
+                Game.introVideo:seek(0)  -- Reset to beginning
+            end
+        end)
     end
     Game.gameOverActive = false
     Game.gameOverTimer = 0
+    Game.gameOverBannerDrop = false
+    Game.gameOverGreyFade = 0
     Game.auditorActive = false
     Game.auditorTimer = 0
     Game.auditorPhase = 1
@@ -884,6 +997,138 @@ function returnToAttractMode()
     end
     Game.hazards = {}
     Game.effects = {}
+end
+
+-- Draw joystick test / input diagnostics screen
+function drawJoystickTestScreen()
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+
+    local titleBarHeight = 20
+    local border = 3
+    local boxWidth = 800
+    local boxHeight = 500
+    local boxX = (Constants.SCREEN_WIDTH - boxWidth) / 2
+    local boxY = (Constants.SCREEN_HEIGHT - boxHeight) / 2
+
+    -- Background panel
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle(
+        "fill",
+        boxX + border,
+        boxY + border + titleBarHeight,
+        boxWidth - border * 2,
+        boxHeight - border * 2 - titleBarHeight
+    )
+
+    -- Windows 95 style frame
+    WindowFrame.draw(boxX, boxY, boxWidth, boxHeight, "Joystick Test")
+
+    local contentX = boxX + border + 12
+    local contentY = boxY + titleBarHeight + border + 16
+
+    love.graphics.setFont(Game.fonts.large)
+    love.graphics.setColor(1, 1, 1, 1)
+    local header = "USB Joystick Diagnostics"
+    local headerWidth = Game.fonts.large:getWidth(header)
+    love.graphics.print(header, boxX + (boxWidth - headerWidth) / 2, contentY)
+
+    contentY = contentY + 40
+
+    love.graphics.setFont(Game.fonts.medium)
+
+    -- Instructions
+    love.graphics.setColor(0.8, 0.8, 0.8, 1)
+    local inst1 = "Press any joystick button while in attract mode or press J to open this screen."
+    local inst2 = "Press ESC or SPACE to return to attract mode."
+    love.graphics.print(inst1, contentX, contentY)
+    love.graphics.print(inst2, contentX, contentY + 24)
+
+    contentY = contentY + 60
+
+    -- Joystick information
+    local joysticks = love.joystick.getJoysticks()
+    local joystick = joysticks[1]
+
+    if not joystick then
+        love.graphics.setColor(1, 0.4, 0.4, 1)
+        love.graphics.print(
+            "No joystick detected. Connect your USB interface and make sure it shows up as a joystick in Windows.",
+            contentX,
+            contentY
+        )
+        return
+    end
+
+    love.graphics.setColor(0.8, 0.9, 1.0, 1)
+    local nameLabel = "Active Joystick:"
+    love.graphics.print(nameLabel, contentX, contentY)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.print(joystick:getName(), contentX + Game.fonts.medium:getWidth(nameLabel) + 8, contentY)
+
+    contentY = contentY + 28
+
+    love.graphics.setColor(0.7, 0.9, 0.7, 1)
+    local guidLabel = "GUID:"
+    love.graphics.print(guidLabel, contentX, contentY)
+    love.graphics.setColor(0.9, 0.9, 0.9, 1)
+    love.graphics.print(joystick:getGUID(), contentX + Game.fonts.medium:getWidth(guidLabel) + 8, contentY)
+
+    contentY = contentY + 36
+
+    -- Buttons
+    local buttonCount = joystick:getButtonCount()
+    love.graphics.setColor(1, 0.9, 0.6, 1)
+    love.graphics.print("Buttons (" .. tostring(buttonCount) .. "):", contentX, contentY)
+
+    contentY = contentY + 22
+    love.graphics.setColor(1, 1, 1, 1)
+
+    local col1X = contentX
+    local col2X = contentX + 260
+    local maxPerColumn = 12
+
+    for i = 1, buttonCount do
+        local col = math.floor((i - 1) / maxPerColumn)
+        local row = (i - 1) % maxPerColumn
+        local x = col == 0 and col1X or col2X
+        local y = contentY + row * 18
+
+        local down = joystick:isDown(i)
+        if down then
+            love.graphics.setColor(0.2, 1.0, 0.2, 1)
+        else
+            love.graphics.setColor(0.6, 0.6, 0.6, 1)
+        end
+
+        local label = string.format("Button %02d : %s", i, down and "PRESSED" or "released")
+        love.graphics.print(label, x, y)
+    end
+
+    -- Axes
+    local axisStartY = contentY + maxPerColumn * 18 + 16
+    local axisCount = joystick:getAxisCount()
+    love.graphics.setColor(0.6, 0.9, 1.0, 1)
+    love.graphics.print("Axes (" .. tostring(axisCount) .. "):", contentX, axisStartY)
+
+    love.graphics.setColor(0.9, 0.9, 0.9, 1)
+    for i = 1, axisCount do
+        local value = joystick:getAxis(i)
+        local text = string.format("Axis %02d : %.2f", i, value)
+        love.graphics.print(text, contentX, axisStartY + 18 * i)
+    end
+
+    -- Hats
+    local hatStartY = axisStartY + 18 * (axisCount + 2)
+    local hatCount = joystick:getHatCount()
+    love.graphics.setColor(0.9, 0.8, 1.0, 1)
+    love.graphics.print("Hats (" .. tostring(hatCount) .. "):", contentX, hatStartY)
+
+    love.graphics.setColor(0.9, 0.9, 0.9, 1)
+    for i = 1, hatCount do
+        local dir = joystick:getHat(i)
+        local text = string.format("Hat %02d : %s", i, dir)
+        love.graphics.print(text, contentX, hatStartY + 18 * i)
+    end
 end
 
 -- Draw booting screen
@@ -1113,81 +1358,69 @@ end
 
 -- Draw life lost auditor screen (engagement depleted but lives remain)
 function drawLifeLostAuditor()
-    -- Phase 1: System freeze - show frozen game state
-    if Game.lifeLostAuditorPhase == 1 then
-        -- Draw frozen game state (no updates, but visible)
-        love.graphics.clear(Constants.COLORS.BACKGROUND)
-        
-        -- Draw frozen game elements
-        World.draw(function()
-            for _, h in ipairs(Game.hazards) do
-                local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
-                love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
-                love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
-            end
-            
-            for _, u in ipairs(Game.units) do u:draw() end
-            for _, p in ipairs(Game.projectiles) do p:draw() end
-            for _, pup in ipairs(Game.powerups) do pup:draw() end
-            
-            for _, e in ipairs(Game.effects) do
-                if e.type == "explosion" then
-                    love.graphics.setLineWidth(3)
-                    if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
-                    elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
-                    else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
-                    love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
-                end
-            end
-            
-            if Game.turret then Game.turret:draw() end
-        end)
-        
-        -- Show webcam with CRITICAL_ERROR
-        local Auditor = require("src.core.auditor")
-        love.graphics.setColor(1, 0, 0, 1)
-        love.graphics.setFont(Game.fonts.large)
-        local errorMsg = Auditor.CRITICAL_ERROR
-        local errorWidth = Game.fonts.large:getWidth(errorMsg)
-        love.graphics.print(errorMsg, Constants.SCREEN_WIDTH / 2 - errorWidth / 2, Constants.SCREEN_HEIGHT / 2)
-        
-    -- Phase 2: Fade to black, show THE AUDITOR
-    elseif Game.lifeLostAuditorPhase == 2 then
-        local fadeProgress = Game.lifeLostAuditorTimer / 2.0
-        local fadeAlpha = math.min(fadeProgress, 1.0)
-        
-        -- Fade to black
-        love.graphics.setColor(0, 0, 0, fadeAlpha)
-        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
-        
-        -- Show THE AUDITOR (hooded figure with red camera lens)
-        if fadeAlpha >= 0.5 then
-            local auditorAlpha = (fadeAlpha - 0.5) * 2  -- Fade in during second half
-            drawAuditorFigure(auditorAlpha)
+    -- Draw frozen game state (no updates, but visible)
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Draw frozen game elements
+    World.draw(function()
+        for _, h in ipairs(Game.hazards) do
+            local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+            love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+            love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
         end
         
-    -- Phase 3: Show "LIFE LOST" message
-    elseif Game.lifeLostAuditorPhase == 3 then
-        -- Black background
-        love.graphics.setColor(0, 0, 0, 1)
+        for _, u in ipairs(Game.units) do u:draw() end
+        for _, p in ipairs(Game.projectiles) do p:draw() end
+        for _, pup in ipairs(Game.powerups) do pup:draw() end
+        
+        for _, e in ipairs(Game.effects) do
+            if e.type == "explosion" then
+                love.graphics.setLineWidth(3)
+                if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
+                elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
+                else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
+                love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+            end
+        end
+        
+        if Game.turret then Game.turret:draw() end
+    end)
+    
+    -- Draw grey overlay during life lost (behind banner, in front of game)
+    if Game.gameOverBannerDrop and Game.gameOverGreyFade > 0 then
+        love.graphics.setColor(0.3, 0.3, 0.3, Game.gameOverGreyFade)
         love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    end
+    
+    -- Draw top banner with animation offset
+    if Game.topBanner then
+        local bannerX = 0
+        local bannerWidth = Constants.SCREEN_WIDTH
+        local bannerImgWidth = Game.topBanner:getWidth()
+        local bannerImgHeight = Game.topBanner:getHeight()
+        local scaleX = bannerWidth / bannerImgWidth
+        local scale = scaleX
+        local scaledHeight = bannerImgHeight * scale
+        local titleBarHeight = 20
+        local borderWidth = 3
+        local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+        local baseBannerY = frameY - scaledHeight + 120
+        local bannerY = baseBannerY + Game.topBannerYOffset
         
-        -- Draw THE AUDITOR
-        drawAuditorFigure(1.0)
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(Game.topBanner, bannerX, bannerY, 0, scale, scale)
         
-        -- Show "LIFE LOST" text
-        local Auditor = require("src.core.auditor")
-        love.graphics.setFont(Game.fonts.large)
-        love.graphics.setColor(1, 0, 0, 1)  -- Red text
+        -- Draw activated state if present
+        if Game.topBannerActivated then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.topBannerActivated, bannerX, bannerY, 0, scale, scale)
+        end
         
-        local lifeLostMsg = Auditor.LIFE_LOST
-        local msgWidth = Game.fonts.large:getWidth(lifeLostMsg)
-        love.graphics.print(lifeLostMsg, Constants.SCREEN_WIDTH / 2 - msgWidth / 2, Constants.SCREEN_HEIGHT / 2)
-        
-    -- Phase 4: Transition back to game
-    elseif Game.lifeLostAuditorPhase == 4 then
-        love.graphics.setColor(0, 0, 0, 1)
-        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        -- Draw vigilant state if present (preserve alpha from before life lost)
+        if Game.topBannerVigilant and Game.topBannerVigilantAlpha > 0 then
+            love.graphics.setColor(1, 1, 1, Game.topBannerVigilantAlpha)
+            love.graphics.draw(Game.topBannerVigilant, bannerX, bannerY, 0, scale, scale)
+        end
     end
 end
 
@@ -1497,6 +1730,11 @@ function love.update(dt)
         
         return  -- Don't update game logic during logo screen
     end
+
+    -- Handle joystick test mode (input-only screen, no game simulation)
+    if Game.joystickTestMode then
+        return
+    end
     
     -- Handle demo mode
     if Game.demoMode then
@@ -1539,6 +1777,10 @@ function love.update(dt)
                 Game.introTimer = 0
                 Game.introStep = 1
                 Game.introMusicFadeActive = false
+                -- Restore normal glow strength when video ends
+                if Game.glowEffect and Game.glowStrengthNormal then
+                    Game.glowEffect.strength = Game.glowStrengthNormal
+                end
             end
         else
             -- If video doesn't exist, skip directly to intro screen
@@ -1547,6 +1789,10 @@ function love.update(dt)
             Game.introTimer = 0
             Game.introStep = 1
             Game.introMusicFadeActive = false
+            -- Restore normal glow strength when video ends
+            if Game.glowEffect and Game.glowStrengthNormal then
+                Game.glowEffect.strength = Game.glowStrengthNormal
+            end
         end
         return  -- Don't update game logic during video
     end
@@ -1564,27 +1810,57 @@ function love.update(dt)
     
     -- Handle life lost auditor screen (engagement depleted but lives remain)
     if Game.lifeLostAuditorActive then
-        Game.lifeLostAuditorTimer = Game.lifeLostAuditorTimer + dt
+        -- Update banner drop animation during life lost
+        if Game.gameOverBannerDrop then
+            if Game.topBannerAnimationState == "dropping" then
+                -- Fall down with gravity
+                local gravity = 800  -- pixels per second squared
+                Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
+                Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
+                
+                -- Target: stop at a reasonable distance down (about 250 pixels from original position)
+                local targetOffset = 250
+                
+                -- Add shake while dropping
+                local shakeAmount = 3
+                Game.topBannerYOffset = Game.topBannerYOffset + (math.random() - 0.5) * shakeAmount * dt * 10
+                
+                -- Check if we've reached target
+                if Game.topBannerYOffset >= targetOffset then
+                    Game.topBannerYOffset = targetOffset  -- Clamp to target
+                    Game.topBannerAnimationState = "normal"  -- Stay at dropped position
+                    Game.topBannerVelocity = 0
+                    Game.gameOverBannerDropped = true
+                    Game.lifeLostAuditorTimer = 0  -- Start timer when banner finishes dropping
+                end
+            end
+            
+            -- Fade in grey overlay (fade over 1 second)
+            if Game.gameOverGreyFade < 1.0 then
+                Game.gameOverGreyFade = math.min(1.0, Game.gameOverGreyFade + dt)
+            end
+            
+            -- Wait at dropped position for 5.5 seconds (same as old phases: 1.0 + 2.0 + 2.0 + 0.5)
+            if Game.gameOverBannerDropped then
+                Game.lifeLostAuditorTimer = Game.lifeLostAuditorTimer + dt
+                if Game.lifeLostAuditorTimer >= 5.5 then
+                    -- Restart the level, keeping score and level
+                    Game.lifeLostAuditorActive = false
+                    Game.lifeLostAuditorTimer = 0
+                    Game.lifeLostAuditorPhase = 1
+                    restartLevel()
+                end
+            end
+        end
         
-        -- Phase 1: System freeze (1 second)
-        if Game.lifeLostAuditorPhase == 1 and Game.lifeLostAuditorTimer >= 1.0 then
-            Game.lifeLostAuditorPhase = 2
-            Game.lifeLostAuditorTimer = 0
-        -- Phase 2: Fade to black and show THE AUDITOR (2 seconds)
-        elseif Game.lifeLostAuditorPhase == 2 and Game.lifeLostAuditorTimer >= 2.0 then
-            Game.lifeLostAuditorPhase = 3
-            Game.lifeLostAuditorTimer = 0
-        -- Phase 3: Show "LIFE LOST" message (2 seconds)
-        elseif Game.lifeLostAuditorPhase == 3 and Game.lifeLostAuditorTimer >= 2.0 then
-            Game.lifeLostAuditorPhase = 4
-            Game.lifeLostAuditorTimer = 0
-        -- Phase 4: Restart level (keep points, same level)
-        elseif Game.lifeLostAuditorPhase == 4 and Game.lifeLostAuditorTimer >= 0.5 then
-            -- Restart the level, keeping score and level
-            Game.lifeLostAuditorActive = false
-            Game.lifeLostAuditorTimer = 0
-            Game.lifeLostAuditorPhase = 1
-            restartLevel()
+        -- Allow projectiles to continue updating so they can explode and stop sounds naturally
+        Time.checkRestore(dt); Time.update(dt); local gameDt = dt * Time.scale
+        for i = #Game.projectiles, 1, -1 do 
+            local p = Game.projectiles[i]
+            p:update(gameDt)
+            if p.isDead then 
+                table.remove(Game.projectiles, i) 
+            end
         end
         
         return  -- Don't update game logic during life lost auditor sequence
@@ -1631,28 +1907,63 @@ function love.update(dt)
     -- Handle game over screen
     if Game.gameOverActive then
         -- Don't stop sounds here - let projectile whistles continue until they explode
-        Game.gameOverTimer = Game.gameOverTimer - dt
-        if Game.gameOverTimer <= 0 then
-            -- Game over screen complete
-            if Game.shouldRestartLevel and Game.lives > 0 then
-                -- Restart the level (we had lives remaining after losing this one)
-                restartLevel()
-            elseif Game.lives == 0 then
-                -- All lives lost - check for high score
-                if isHighScore(Game.score) then
-                    -- Start name entry (arcade style)
-                    Game.gameOverActive = false  -- Clear game over screen
-                    Game.nameEntryActive = true
-                    Game.nameEntryText = "AAA"  -- Initialize with 'A' in all positions
-                    Game.nameEntryCursor = 1
-                    Game.nameEntryCharIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
-                else
-                    -- No high score, return to attract mode
-                    returnToAttractMode()
+        
+        -- Update banner drop animation during game over
+        if Game.gameOverBannerDrop then
+            if Game.topBannerAnimationState == "dropping" then
+                -- Fall down with gravity
+                local gravity = 800  -- pixels per second squared
+                Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
+                Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
+                
+                -- Target: stop at a reasonable distance down (about 250 pixels from original position)
+                local targetOffset = 250
+                
+                -- Add shake while dropping
+                local shakeAmount = 3
+                Game.topBannerYOffset = Game.topBannerYOffset + (math.random() - 0.5) * shakeAmount * dt * 10
+                
+                -- Check if we've reached target
+                if Game.topBannerYOffset >= targetOffset then
+                    Game.topBannerYOffset = targetOffset  -- Clamp to target
+                    Game.topBannerAnimationState = "normal"  -- Stay at dropped position
+                    Game.topBannerVelocity = 0
+                    Game.gameOverBannerDropped = true
+                    Game.gameOverTimer = 2.0  -- Start 2 second timer when banner finishes dropping
                 end
-            else
-                -- Safety fallback: if somehow we have lives but shouldn't restart, restart anyway
-                restartLevel()
+            end
+            
+            -- Fade in grey overlay (fade over 1 second)
+            if Game.gameOverGreyFade < 1.0 then
+                Game.gameOverGreyFade = math.min(1.0, Game.gameOverGreyFade + dt)
+            end
+            
+            -- Wait at dropped position for 2 seconds
+            if Game.gameOverBannerDropped then
+                Game.gameOverTimer = Game.gameOverTimer - dt
+                if Game.gameOverTimer <= 0 then
+                    -- Game over screen complete
+                    if Game.shouldRestartLevel and Game.lives > 0 then
+                        -- Restart the level (we had lives remaining after losing this one)
+                        restartLevel()
+                    elseif Game.lives == 0 then
+                        -- All lives lost - check for high score
+                        if isHighScore(Game.score) then
+                            -- Start name entry (arcade style)
+                            Game.gameOverActive = false  -- Clear game over screen
+                            Game.nameEntryActive = true
+                            Game.nameEntryText = "AAA"  -- Initialize with 'A' in all positions
+                            Game.nameEntryCursor = 1
+                            Game.nameEntryCharIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
+                        else
+                            -- No high score, return to attract mode
+                            returnToAttractMode()
+                        end
+                    else
+                        -- Safety fallback: if somehow we have lives but shouldn't restart, restart anyway
+                        restartLevel()
+                    end
+                end
             end
         end
         
@@ -1875,6 +2186,91 @@ function love.update(dt)
     if not Game.demoMode then
         Engagement.update(gameDt, toxicHazardCount, Game.level)
     end
+    
+    -- Update banner animation when at 25% or below
+    if Game.gameState == "playing" and Engagement.value then
+        local engagementPct = Engagement.value / Constants.ENGAGEMENT_MAX
+        if engagementPct <= 0.25 then
+            -- Update blink timer for flashing effect
+            Game.topBannerBlinkTimer = Game.topBannerBlinkTimer + dt * 3  -- Fast blink (3x speed)
+            
+            -- Update banner animation
+            Game.topBannerAnimationTimer = Game.topBannerAnimationTimer + dt
+            
+            -- Animation states
+            if Game.topBannerAnimationState == "normal" then
+                if not Game.topBannerHasDropped then
+                    -- First time hitting 25% - drop immediately (no wait)
+                    Game.topBannerAnimationState = "dropping"
+                    Game.topBannerAnimationTimer = 0
+                    Game.topBannerWaitTimer = 0
+                    Game.topBannerVelocity = 0
+                    Game.topBannerYOffset = 0
+                    Game.topBannerHasDropped = true
+                else
+                    -- Wait at original position for 15 seconds before checking again
+                    Game.topBannerWaitTimer = Game.topBannerWaitTimer + dt
+                    if Game.topBannerWaitTimer >= 15.0 then
+                        -- 15 seconds passed, check engagement and drop if still at 25% or below
+                        if engagementPct <= 0.25 then
+                            Game.topBannerAnimationState = "dropping"
+                            Game.topBannerAnimationTimer = 0
+                            Game.topBannerWaitTimer = 0
+                            Game.topBannerVelocity = 0
+                            Game.topBannerYOffset = 0
+                        else
+                            -- Engagement went above 25%, reset wait timer
+                            Game.topBannerWaitTimer = 0
+                        end
+                    end
+                end
+            elseif Game.topBannerAnimationState == "dropping" then
+                -- Fall down to above center screen with gravity
+                local gravity = 800  -- pixels per second squared
+                Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
+                Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
+                
+                -- Target: stop at a reasonable distance down (about 250 pixels from original position)
+                local targetOffset = 250
+                
+                -- Add shake while dropping
+                local shakeAmount = 3
+                Game.topBannerYOffset = Game.topBannerYOffset + (math.random() - 0.5) * shakeAmount * dt * 10
+                
+                -- Check if we've reached target (stop earlier, above center)
+                if Game.topBannerYOffset >= targetOffset then
+                    Game.topBannerYOffset = targetOffset  -- Clamp to target
+                    Game.topBannerAnimationState = "rising"
+                    Game.topBannerAnimationTimer = 0
+                    Game.topBannerVelocity = -150  -- Start rising slowly (negative = upward)
+                end
+            elseif Game.topBannerAnimationState == "rising" then
+                -- Rise back up slowly with upward force
+                local upwardForce = -400  -- Negative = upward acceleration
+                Game.topBannerVelocity = Game.topBannerVelocity + upwardForce * dt
+                Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
+                
+                -- Check if we've returned to original position
+                if Game.topBannerYOffset <= 0 then
+                    Game.topBannerYOffset = 0
+                    Game.topBannerVelocity = 0
+                    Game.topBannerAnimationState = "normal"  -- Stay at original position
+                    Game.topBannerAnimationTimer = 0
+                    Game.topBannerWaitTimer = 0  -- Start 15 second wait timer
+                end
+            end
+        else
+            -- Reset animation when above 25%
+            Game.topBannerAnimationState = "normal"
+            Game.topBannerAnimationTimer = 0
+            Game.topBannerWaitTimer = 0
+            Game.topBannerYOffset = 0
+            Game.topBannerVelocity = 0
+            Game.topBannerBlinkTimer = 0
+            Game.topBannerHasDropped = false  -- Reset drop flag when above 25%
+        end
+    end
+    
     World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt)
     
     -- Check if engagement ran out (game over)
@@ -2138,6 +2534,34 @@ function love.update(dt)
 end
 
 function love.keypressed(key)
+    -- Quick start: Press 'q' to skip directly to gameplay from any screen
+    if key == "q" then
+        -- Skip all intro screens and go straight to gameplay
+        Game.bootingMode = false
+        Game.logoMode = false
+        Game.attractMode = false
+        Game.videoMode = false
+        Game.introMode = false
+        Game.joystickTestMode = false
+        Game.demoMode = false
+        
+        -- Stop video if playing
+        if Game.introVideo then
+            pcall(function()
+                if Game.introVideo.pause then
+                    Game.introVideo:pause()
+                end
+            end)
+        end
+        
+        -- Unmute sounds
+        Sound.unmute()
+        
+        -- Start gameplay directly (this will initialize everything)
+        startGameplay()
+        return
+    end
+    
     -- Handle name entry (arcade style)
     if Game.nameEntryActive then
         local charSet = Game.nameEntryCharSet
@@ -2194,10 +2618,25 @@ function love.keypressed(key)
         return
     end
     
-    -- Handle coin insertion in attract mode
+    -- Handle joystick test exit
+    if Game.joystickTestMode then
+        if key == "escape" or key == "space" or key == "return" or key == "enter" then
+            Game.joystickTestMode = false
+            Game.attractMode = true
+            Game.attractModeTimer = 0
+        end
+        return
+    end
+
+    -- Handle coin insertion and options in attract mode
     if Game.attractMode then
         if key == "space" or key == "return" or key == "enter" then
             startGame()
+            return
+        elseif key == "j" then
+            -- Open joystick test screen from attract mode
+            Game.attractMode = false
+            Game.joystickTestMode = true
             return
         elseif key == "d" then
             -- Start demo mode
@@ -2206,12 +2645,25 @@ function love.keypressed(key)
         end
     end
     
+    -- Handle joystick button 4 (start game) in attract mode
+    -- This is also handled in love.joystickpressed, but we check here too for consistency
+    
     -- Handle video mode input (allow skipping)
     if Game.videoMode then
         if key == "space" or key == "return" or key == "enter" or key == "escape" then
             -- Skip video and go directly to intro screen
-            if Game.introVideo and Game.introVideo:isPlaying() then
-                Game.introVideo:stop()
+            if Game.introVideo then
+                -- Safely check if video is playing and pause it
+                local success, isPlaying = pcall(function()
+                    return Game.introVideo:isPlaying()
+                end)
+                if success and isPlaying then
+                    pcall(function()
+                        if Game.introVideo.pause then
+                            Game.introVideo:pause()
+                        end
+                    end)
+                end
             end
             Game.videoMode = false
             Game.introMode = true
@@ -2265,6 +2717,61 @@ function love.keypressed(key)
         return
     end
     
+    -- Toggle fullscreen on second monitor (F11)
+    if key == "f11" then
+        local isFullscreen = love.window.getFullscreen()
+        local displayCount = love.window.getDisplayCount()
+        
+        if isFullscreen then
+            -- Exit fullscreen: restore windowed mode on primary display
+            love.window.setFullscreen(false)
+            love.window.setMode(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+            -- Recreate CRT chain for windowed mode
+            if Game.crtChain then
+                -- Resize the chain (this recreates the buffer canvases)
+                -- The glow effect will now automatically recreate its internal canvas
+                Game.crtChain.resize(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+                
+                -- Update CRT effect screen size
+                if Game.crtEffect and Game.crtEffect.screenSize then
+                    Game.crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
+                end
+            end
+        else
+            -- Enter fullscreen using the monitor's full native resolution
+            local width, height
+            if displayCount > 1 then
+                -- Get the native resolution of the second monitor
+                width, height = love.window.getDesktopDimensions(2)
+                -- Use exclusive fullscreen mode to ensure native resolution is used
+                love.window.setMode(width, height, {
+                    fullscreen = true,
+                    fullscreentype = "exclusive",  -- Use exclusive fullscreen for native resolution
+                    display = 2  -- Second monitor (1-indexed in LÖVE)
+                })
+            else
+                -- Only one monitor, get its native resolution
+                width, height = love.window.getDesktopDimensions(1)
+                love.window.setMode(width, height, {
+                    fullscreen = true,
+                    fullscreentype = "exclusive"  -- Use exclusive fullscreen for native resolution
+                })
+            end
+            -- Recreate CRT chain for fullscreen resolution
+            if Game.crtChain then
+                -- Resize the chain (this recreates the buffer canvases)
+                -- The glow effect will now automatically recreate its internal canvas
+                Game.crtChain.resize(width, height)
+                
+                -- Update CRT effect screen size - keep at original for proper scanline spacing
+                if Game.crtEffect and Game.crtEffect.screenSize then
+                    Game.crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
+                end
+            end
+        end
+        return
+    end
+    
     if not Game.turret then return end
     -- Don't allow charging if game state is not playing (prevents charging during win sequence)
     if Game.gameState ~= "playing" then return end
@@ -2283,6 +2790,75 @@ function love.keyreleased(key)
     -- Don't allow releasing charge if game state is not playing
     if Game.gameState ~= "playing" then return end
     if key == "z" or key == "x" then Game.turret:releaseCharge(Game.projectiles) end
+end
+
+function love.joystickreleased(joystick, button)
+    if not Game.turret then return end
+    -- Don't allow releasing charge if game state is not playing
+    if Game.gameState ~= "playing" then return end
+    
+    -- Handle button releases for firing
+    if button == 1 then
+        -- Button 1 released = release red charge
+        Game.joystickButton1Pressed = false
+        Game.turret:releaseCharge(Game.projectiles)
+    elseif button == 2 then
+        -- Button 2 released = release blue charge
+        Game.joystickButton2Pressed = false
+        Game.turret:releaseCharge(Game.projectiles)
+    end
+end
+
+-- Handle joystick button presses
+function love.joystickpressed(joystick, button)
+    -- Handle attract mode navigation
+    if Game.attractMode and not Game.joystickTestMode then
+        if button == 4 then
+            -- Button 4 = start game (equivalent to SPACE/ENTER)
+            startGame()
+        elseif button == 3 then
+            -- Button 3 = insert coin (placeholder for future implementation)
+            -- TODO: Implement coin insertion logic when ready
+        else
+            -- Any other button opens joystick test screen
+            Game.attractMode = false
+            Game.joystickTestMode = true
+        end
+        return
+    end
+    
+    -- Handle joystick test mode exit
+    if Game.joystickTestMode then
+        if button == 4 then
+            -- Button 4 = exit test mode and return to attract mode
+            Game.joystickTestMode = false
+            Game.attractMode = true
+            Game.attractModeTimer = 0
+        end
+        return
+    end
+    
+    -- Handle intro screen (Chase Paxton onboarding)
+    if Game.introMode then
+        if button == 4 then
+            -- Button 4 = skip to gameplay (equivalent to SPACE/ENTER)
+            startGameplay()
+        end
+        return
+    end
+    
+    -- Handle gameplay firing (buttons 1 and 2)
+    if Game.turret and Game.gameState == "playing" then
+        if button == 1 then
+            -- Button 1 = red fire
+            Game.turret:startCharge("red")
+            Game.joystickButton1Pressed = true
+        elseif button == 2 then
+            -- Button 2 = blue fire
+            Game.turret:startCharge("blue")
+            Game.joystickButton2Pressed = true
+        end
+    end
 end
 
 -- Drawing function that will be wrapped by Moonshine if CRT is enabled
@@ -2409,6 +2985,110 @@ function drawGame()
         WindowFrame.draw(frameX, frameY, frameW, frameH, "A.R.A.C. Control Interface")
     end
     
+    -- Draw grey overlay during game over (behind banner, in front of game)
+    if Game.gameOverActive and Game.gameOverBannerDrop and Game.gameOverGreyFade > 0 then
+        love.graphics.setColor(0.3, 0.3, 0.3, Game.gameOverGreyFade)
+        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    end
+    
+    -- Draw top banner overlapping ARAC window (full screen width)
+    -- Draw after window frame so it appears on top
+    if Game.topBanner then
+        local bannerX = 0  -- Start at left edge of screen
+        local bannerWidth = Constants.SCREEN_WIDTH  -- Full screen width
+        
+        -- Scale banner to fill full screen width, maintaining aspect ratio
+        local bannerImgWidth = Game.topBanner:getWidth()
+        local bannerImgHeight = Game.topBanner:getHeight()
+        local scaleX = bannerWidth / bannerImgWidth
+        local scale = scaleX  -- Use same scale for Y to maintain aspect ratio
+        
+        -- Calculate actual height after scaling
+        local scaledHeight = bannerImgHeight * scale
+        
+        -- Position banner to overlap ARAC window (frame starts at OFFSET_Y - borderWidth - titleBarHeight)
+        -- Move it down so it overlaps the window frame
+        local titleBarHeight = 20
+        local borderWidth = 3
+        local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+        local baseBannerY = frameY - scaledHeight + 120  -- Overlap by moving down 120px into the window
+        
+        -- Store original Y position on first draw
+        if Game.topBannerOriginalY == 0 then
+            Game.topBannerOriginalY = baseBannerY
+        end
+        
+        -- Apply animation offset (only Y axis)
+        local bannerY = baseBannerY + Game.topBannerYOffset
+        
+        love.graphics.setColor(1, 1, 1, 1)
+        
+        -- Draw base banner
+        love.graphics.draw(Game.topBanner, bannerX, bannerY, 0, scale, scale)
+        
+        -- Draw banner layers: Activated always on, Vigilant composites over with fade
+        -- Activated state stays on forever
+        if Game.topBannerActivated then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.topBannerActivated, bannerX, bannerY, 0, scale, scale)
+        end
+        
+        -- Vigilant state composites over Activated, fading from 0 alpha at 100% to 1 alpha at 50%
+        if Game.gameState == "playing" and Engagement.value and Game.topBannerVigilant then
+            local engagementPct = Engagement.value / Constants.ENGAGEMENT_MAX
+            
+            -- Calculate alpha: 1.0 at 50% engagement, 0.0 at 100% engagement
+            -- Linear fade from 100% (alpha 0) to 50% (alpha 1)
+            local fadeRange = 0.5  -- Fade over 50% of engagement (from 100% to 50%)
+            local fadeProgress = (1.0 - engagementPct) / fadeRange  -- 0 at 100%, 1 at 50%
+            fadeProgress = math.max(0, math.min(1, fadeProgress))  -- Clamp to 0-1
+            Game.topBannerVigilantAlpha = fadeProgress
+            
+            -- Check for critical state (25% or below) for additional effects
+            Game.topBannerCriticalEffects = engagementPct <= 0.25
+        else
+            -- Preserve critical effects state during game over/win
+        end
+        
+        -- Draw Vigilant layer on top with calculated alpha
+        -- Use regular alpha blending - if white outlines persist, the image may need editing
+        if Game.topBannerVigilant and Game.topBannerVigilantAlpha > 0 then
+            -- Apply blinking effect when at 25% or below
+            local blinkAlpha = Game.topBannerVigilantAlpha
+            if Game.topBannerCriticalEffects then
+                -- Fast blinking: on/off every 0.2 seconds
+                local blinkPhase = math.sin(Game.topBannerBlinkTimer * math.pi) * 0.5 + 0.5
+                blinkAlpha = blinkAlpha * (0.3 + blinkPhase * 0.7)  -- Blink between 30% and 100% of base alpha
+            end
+            
+            love.graphics.setColor(1, 1, 1, blinkAlpha)
+            love.graphics.draw(Game.topBannerVigilant, bannerX, bannerY, 0, scale, scale)
+        end
+        
+        -- Draw critical effects (glow and lens flares) when at 25% or below
+        if Game.topBannerCriticalEffects then
+            -- Draw glow effect around banner
+            local glowAlpha = 0.4 * (math.sin(Game.topBannerBlinkTimer * math.pi * 2) + 1) / 2
+            love.graphics.setColor(1, 0.2, 0.2, glowAlpha)  -- Red glow
+            love.graphics.setLineWidth(8)
+            local glowRectX = bannerX - 10
+            local glowRectY = bannerY - 10
+            local glowRectW = Constants.SCREEN_WIDTH + 20
+            local glowRectH = scaledHeight + 20
+            love.graphics.rectangle("line", glowRectX, glowRectY, glowRectW, glowRectH)
+            
+            -- Draw multiple glow layers for intensity
+            love.graphics.setLineWidth(4)
+            love.graphics.setColor(1, 0.4, 0.4, glowAlpha * 0.6)
+            love.graphics.rectangle("line", glowRectX + 5, glowRectY + 5, glowRectW - 10, glowRectH - 10)
+            
+        end
+        
+        -- Reset color and line width
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setLineWidth(1)
+    end
+    
     -- Draw foreground image if loaded and enabled (full screen, on top of game elements) - now affected by shake
     if Game.showBackgroundForeground and Game.foreground then
         love.graphics.setColor(1, 1, 1, 1)
@@ -2426,6 +3106,9 @@ function drawGame()
     -- Draw engagement plot (next to webcam, affected by shake)
     EngagementPlot.draw()
     
+    -- Draw score window (below playfield, centered)
+    drawScoreWindow()
+    
     -- Draw multiplier window (below engagement plot) - skip in demo mode
     if not Game.demoMode then
         drawMultiplierWindow()
@@ -2439,15 +3122,66 @@ function drawGame()
 end
 
 function love.draw()
+    -- Calculate scaling for fullscreen mode
+    local scaleX, scaleY = 1, 1
+    local offsetX, offsetY = 0, 0
+    local isFullscreen = love.window.getFullscreen()
+    
+    if isFullscreen then
+        -- Get actual window dimensions (will be the fullscreen resolution)
+        local windowWidth, windowHeight = love.graphics.getDimensions()
+        
+        -- Calculate scale to stretch and fill the entire screen
+        scaleX = windowWidth / Constants.SCREEN_WIDTH
+        scaleY = windowHeight / Constants.SCREEN_HEIGHT
+        
+        -- No offset needed when stretching to fill
+        offsetX = 0
+        offsetY = 0
+    end
+    
     -- Helper function to apply CRT shader to any drawing function
     local function drawWithCRT(drawFunc)
         if Game.crtEnabled and Game.crtChain then
-            Game.crtChain.draw(drawFunc)
+            -- In fullscreen, the CRT chain was already resized when entering fullscreen
+            if isFullscreen then
+                -- Get fullscreen dimensions
+                local windowWidth, windowHeight = love.graphics.getDimensions()
+                
+                -- Draw scene directly at fullscreen resolution (scaled) so glow processes full area
+                -- The CRT chain is already resized to fullscreen, so it will process at fullscreen resolution
+                love.graphics.setColor(1, 1, 1, 1)
+                Game.crtChain.draw(function()
+                    love.graphics.setColor(1, 1, 1, 1)
+                    -- Draw the scene with scaling transformation so it fills fullscreen
+                    -- This ensures glow processes the full screen area from the start
+                    local scaleX = windowWidth / Constants.SCREEN_WIDTH
+                    local scaleY = windowHeight / Constants.SCREEN_HEIGHT
+                    love.graphics.push()
+                    love.graphics.scale(scaleX, scaleY)
+                    drawFunc()
+                    love.graphics.pop()
+                end)
+            else
+                -- Windowed mode: just apply CRT normally
+                Game.crtChain.draw(drawFunc)
+            end
         else
+            -- No CRT: apply scaling transformation, then draw
+            love.graphics.push()
+            love.graphics.translate(offsetX, offsetY)
+            love.graphics.scale(scaleX, scaleY)
             drawFunc()
+            love.graphics.pop()
         end
     end
     
+    -- Draw joystick test screen (from attract mode)
+    if Game.joystickTestMode then
+        drawWithCRT(drawJoystickTestScreen)
+        return
+    end
+
     -- Draw booting screen (before logo)
     if Game.bootingMode then
         drawWithCRT(drawBootingScreen)
@@ -2512,6 +3246,31 @@ function love.draw()
     drawWithCRT(drawGame)
 end
 
+function drawScoreWindow()
+    -- Score window dimensions and position (below playfield, centered)
+    local SCORE_WIDTH = 300
+    local SCORE_HEIGHT = 80
+    local SCORE_X = (Constants.SCREEN_WIDTH - SCORE_WIDTH) / 2  -- Centered
+    local SCORE_Y = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + 20
+    local titleBarHeight = 20
+    local borderWidth = 3
+    
+    -- Draw transparent black background for content area
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", SCORE_X + borderWidth, SCORE_Y + borderWidth + titleBarHeight, 
+        SCORE_WIDTH - (borderWidth * 2), SCORE_HEIGHT - (borderWidth * 2) - titleBarHeight)
+    
+    -- Draw Windows 95 style frame with title bar
+    WindowFrame.draw(SCORE_X, SCORE_Y, SCORE_WIDTH, SCORE_HEIGHT, "Score")
+    
+    -- Draw score content - adjust for title bar
+    love.graphics.setFont(Game.fonts.large)
+    love.graphics.setColor(1, 1, 1, 1)
+    local scoreText = "SCORE: " .. Game.score
+    local scoreWidth = Game.fonts.large:getWidth(scoreText)
+    love.graphics.print(scoreText, SCORE_X + (SCORE_WIDTH - scoreWidth) / 2, SCORE_Y + titleBarHeight + borderWidth + 15)
+end
+
 function drawMultiplierWindow()
     -- Multiplier window dimensions and position (below engagement plot)
     local PLOT_WIDTH = 300
@@ -2572,17 +3331,11 @@ function drawHUD()
         love.graphics.print("CRT: OFF (Press C to toggle)", 10, 30)
     end
 
-    local barW, barH = 400, 40; local barX = (Constants.SCREEN_WIDTH - barW)/2; local barY = 80
-    local pct = Engagement.value / Constants.ENGAGEMENT_MAX
-    love.graphics.setColor(0.2, 0.2, 0.2); love.graphics.rectangle("fill", barX, barY, barW, barH)
-    if pct < 0.25 then love.graphics.setColor(1, 0, 0) elseif pct < 0.5 then love.graphics.setColor(1, 1, 0) else love.graphics.setColor(0, 1, 0) end
-    love.graphics.rectangle("fill", barX+2, barY+2, (barW-4)*pct, barH-4)
-    love.graphics.setColor(1, 1, 1); love.graphics.print("ENGAGEMENT", barX, barY - 20)
-    love.graphics.setFont(Game.fonts.large); love.graphics.print("SCORE: " .. Game.score, barX, barY + 50)
-    love.graphics.setColor(0.8, 0.8, 0.8); love.graphics.setFont(Game.fonts.medium); love.graphics.print("LEVEL: " .. Game.level, barX, barY - 50)
-    love.graphics.setColor(1, 0.2, 0.2); love.graphics.print("LIVES: " .. Game.lives, barX + 300, barY - 50)
+    -- Removed engagement meter and score - now in separate window below playfield
+    love.graphics.setColor(0.8, 0.8, 0.8); love.graphics.setFont(Game.fonts.medium); love.graphics.print("LEVEL: " .. Game.level, 10, 50)
+    love.graphics.setColor(1, 0.2, 0.2); love.graphics.print("LIVES: " .. Game.lives, 200, 50)
     
-    if Game.isUpgraded then love.graphics.setColor(1, 1, 0); love.graphics.print("WEAPONS UPGRADED!", barX + 60, barY + 80) end
+    if Game.isUpgraded then love.graphics.setColor(1, 1, 0); love.graphics.print("WEAPONS UPGRADED!", 10, 70) end
     
     -- Draw point multiplier announcement (giant flashing "2X" with sparks) - skip in demo mode
     if Game.pointMultiplierActive and not Game.demoMode then
@@ -2743,20 +3496,7 @@ function drawHUD()
         local nextLevelMsg = Popups.getAdvancingMessage(Game.level + 1)
         local nextLevelWidth = Game.fonts.medium:getWidth(nextLevelMsg)
         love.graphics.print(nextLevelMsg, (Constants.SCREEN_WIDTH - nextLevelWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
-    elseif Game.gameOverActive and Game.lives > 0 then
-        -- Display "LIFE LOST" message when player loses a life but still has lives remaining
-        local Auditor = require("src.core.auditor")
-        love.graphics.setFont(Game.fonts.large)
-        love.graphics.setColor(1, 0.2, 0.2)  -- Red color
-        local lifeLostMsg = Auditor.LIFE_LOST
-        local lifeLostWidth = Game.fonts.large:getWidth(lifeLostMsg)
-        love.graphics.print(lifeLostMsg, (Constants.SCREEN_WIDTH - lifeLostWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
-        
-        local Popups = require("src.core.popups")
-        love.graphics.setFont(Game.fonts.medium)
-        love.graphics.setColor(1, 1, 1)
-        local livesRemainingMsg = Popups.getLivesRemaining(Game.lives)
-        local livesRemainingWidth = Game.fonts.medium:getWidth(livesRemainingMsg)
+    -- Removed old game over screen messages - banner drop replaces them
         love.graphics.print(livesRemainingMsg, (Constants.SCREEN_WIDTH - livesRemainingWidth) / 2, Constants.SCREEN_HEIGHT / 2 + 20)
     elseif Game.nameEntryActive then
         -- Draw name entry screen (check this before game over screen)

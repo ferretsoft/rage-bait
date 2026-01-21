@@ -58,9 +58,22 @@ return function(moonshine)
     threshold:send("min_luma", math.max(0, math.min(1, tonumber(v) or 0.5)))
   end
 
-  local scene = love.graphics.newCanvas()
+  local scene = nil  -- Will be created on first use with correct dimensions
   local draw = function(buffer)
     local front, back = buffer() -- scene so far is in `back'
+    
+    -- Ensure scene canvas exists and matches buffer dimensions
+    local backWidth, backHeight = back:getDimensions()
+    if not scene then
+      scene = love.graphics.newCanvas(backWidth, backHeight)
+    else
+      local sceneWidth, sceneHeight = scene:getDimensions()
+      if sceneWidth ~= backWidth or sceneHeight ~= backHeight then
+        -- Recreate scene canvas with correct dimensions
+        scene = love.graphics.newCanvas(backWidth, backHeight)
+      end
+    end
+    
     scene, back = back, scene    -- save it for second draw below
 
     -- 1st pass: draw scene with brightness threshold

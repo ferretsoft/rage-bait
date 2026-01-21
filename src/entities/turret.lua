@@ -239,12 +239,26 @@ function Turret:update(dt, projectiles, isUpgraded)
     
     -- GAME LOGIC (preserved)
     local turning = false
+    -- Check keyboard input
     if love.keyboard.isDown("left") or love.keyboard.isDown("a") then
         self.rotationVelocity = self.rotationVelocity - self.rotationAccel * dt
         turning = true
     elseif love.keyboard.isDown("right") or love.keyboard.isDown("d") then
         self.rotationVelocity = self.rotationVelocity + self.rotationAccel * dt
         turning = true
+    end
+    
+    -- Check joystick input (axis 1, typically X axis for left/right)
+    local joysticks = love.joystick.getJoysticks()
+    if #joysticks > 0 then
+        local joystick = joysticks[1]
+        local axisValue = joystick:getAxis(1)  -- Get first axis (usually X axis)
+        -- Dead zone to prevent drift
+        if math.abs(axisValue) > 0.15 then
+            -- Map axis value to rotation (negative = left, positive = right)
+            self.rotationVelocity = self.rotationVelocity + axisValue * self.rotationAccel * dt * 2.0
+            turning = true
+        end
     end
     
     if not turning then
@@ -288,12 +302,26 @@ function Turret:update(dt, projectiles, isUpgraded)
     if self.puckModeTimer > 0 and projectiles then
         self.fireTimer = math.max(0, self.fireTimer - dt)
         if self.fireTimer <= 0 then
+            -- Check keyboard input
             if love.keyboard.isDown("z") then
                 self:firePuck("red", projectiles)
                 self.fireTimer = self.fireRate
             elseif love.keyboard.isDown("x") then
                 self:firePuck("blue", projectiles)
                 self.fireTimer = self.fireRate
+            end
+            
+            -- Check joystick input for rapid fire mode
+            local joysticks = love.joystick.getJoysticks()
+            if #joysticks > 0 then
+                local joystick = joysticks[1]
+                if joystick:isDown(1) then  -- Button 1 = red fire
+                    self:firePuck("red", projectiles)
+                    self.fireTimer = self.fireRate
+                elseif joystick:isDown(2) then  -- Button 2 = blue fire
+                    self:firePuck("blue", projectiles)
+                    self.fireTimer = self.fireRate
+                end
             end
         end
     end
