@@ -51,8 +51,11 @@ Game = {
     topBannerYOffset = 0,  -- Y offset for banner animation
     topBannerVelocity = 0,  -- Velocity for banner drop/rise animation
     topBannerOriginalY = 0,  -- Store original Y position
+    topBannerAbove25Timer = 0,  -- Timer for how long engagement has been above 25%
     gameOverBannerDrop = false,  -- Whether banner should drop on game over
-    gameOverGreyFade = 0,  -- Alpha for grey overlay fade (0-1)
+    gameOverGreyFade = 0,  -- Alpha for black overlay fade (0-1)
+    gameOverBannerStartY = 0,  -- Starting Y position for game over drop
+    gameOverBannerTargetY = 0,  -- Target Y position for game over drop (320px down from start)
     showBackgroundForeground = false,  -- Toggle for background/foreground layers
     bootingMode = false,  -- Start with booting screen (disabled)
     bootingTimer = 0,  -- Timer for booting screen
@@ -126,8 +129,11 @@ Game = {
     fonts = {
         small = nil,
         medium = nil,
-        large = nil
-    }
+        large = nil,
+        terminal = nil  -- Monospace font for terminal text
+    },
+    glitchTextTimer = 0,  -- Timer for glitch effects
+    glitchTextWriteProgress = 0  -- Progress of write-on effect (0-1)
 }
 
 -- --- HELPER: ACTIVATE POWERUP ---
@@ -342,6 +348,14 @@ function love.load()
     Game.fonts.small = love.graphics.newFont(12)
     Game.fonts.medium = love.graphics.newFont(14)
     Game.fonts.large = love.graphics.newFont(24)
+    -- Try to load a monospace font, fallback to default if not available
+    local success, font = pcall(love.graphics.newFont, "assets/NotoColorEmoji.ttf", 32)
+    if success and font then
+        Game.fonts.terminal = font
+    else
+        -- Fallback to default monospace font
+        Game.fonts.terminal = love.graphics.newFont(32)
+    end
     
     -- Load high scores
     loadHighScores()
@@ -772,17 +786,16 @@ function handleGameOver(condition)
         Game.lifeLostAuditorPhase = 1  -- Start with system freeze
         Game.gameState = "life_lost_auditor"
         Sound.cleanup()  -- Stop all sounds for the auditor sequence
-        -- Trigger banner drop animation
+        -- Trigger banner drop animation (drop 120px from current position)
         Game.gameOverBannerDrop = true
         Game.gameOverGreyFade = 0
         Game.gameOverBannerDropped = false  -- Track when banner has finished dropping
-        -- Reset banner animation state for life lost drop
-        if Game.topBannerAnimationState == "normal" then
-            Game.topBannerAnimationState = "dropping"
-            Game.topBannerAnimationTimer = 0
-            Game.topBannerVelocity = 0
-            Game.topBannerYOffset = 0
-        end
+        Game.gameOverBannerStartY = Game.topBannerYOffset  -- Store current position
+        Game.gameOverBannerTargetY = Game.topBannerYOffset + 120  -- Target is 120px down from current
+        -- Set banner to dropping state (don't reset position, drop from current)
+        Game.topBannerAnimationState = "dropping"
+        Game.topBannerAnimationTimer = 0
+        Game.topBannerVelocity = 0
         return
     end
     
@@ -803,17 +816,17 @@ function handleGameOver(condition)
     Game.winCondition = condition
     -- Store whether we should restart (have lives remaining after this loss)
     Game.shouldRestartLevel = hasLivesRemaining
-    -- Trigger banner drop animation
+    -- Trigger banner drop animation (drop 320px from current position)
     Game.gameOverBannerDrop = true
     Game.gameOverGreyFade = 0
     Game.gameOverBannerDropped = false  -- Track when banner has finished dropping
-    -- Reset banner animation state for game over drop
-    if Game.topBannerAnimationState == "normal" then
-        Game.topBannerAnimationState = "dropping"
-        Game.topBannerAnimationTimer = 0
-        Game.topBannerVelocity = 0
-        Game.topBannerYOffset = 0
-    end
+    Game.gameOverBannerStartY = Game.topBannerYOffset  -- Store current position
+    Game.gameOverBannerTargetY = Game.topBannerYOffset + 320  -- Target is 320px down from current
+    Game.glitchTextWriteProgress = 0  -- Reset write-on effect
+    -- Set banner to dropping state (don't reset position, drop from current)
+    Game.topBannerAnimationState = "dropping"
+    Game.topBannerAnimationTimer = 0
+    Game.topBannerVelocity = 0
 end
 
 -- Restart the current level after losing a life
@@ -830,6 +843,10 @@ function restartLevel()
     Game.lifeLostAuditorPhase = 1
     Game.gameOverBannerDrop = false
     Game.gameOverGreyFade = 0
+    -- Reset banner to original position on restart
+    Game.topBannerYOffset = 0
+    Game.topBannerVelocity = 0
+    Game.topBannerAnimationState = "normal"
     Game.gameState = "playing"
     Game.winCondition = nil
     Game.hasUnitBeenConverted = false
@@ -1000,6 +1017,71 @@ function returnToAttractMode()
 end
 
 -- Draw joystick test / input diagnostics screen
+-- Draw glitchy terminal text with write-on effect
+local function drawGlitchyTerminalText(text, x, y, fontSize)
+    if not Game.fonts.terminal then return end
+    
+    love.graphics.setFont(Game.fonts.terminal)
+    
+    -- Calculate how many characters to show based on write progress
+    local charsToShow = math.floor(Game.glitchTextWriteProgress * #text)
+    local displayText = text:sub(1, charsToShow)
+    
+    -- Subtle glitch: only corrupt 3% of characters (much less glitchy)
+    local glitchChars = {"█", "▓", "▒"}
+    local corruptedText = ""
+    
+    -- Use timer-based seed for consistent corruption per frame
+    math.randomseed(math.floor(Game.glitchTextTimer * 100))
+    
+    for i = 1, #displayText do
+        local char = displayText:sub(i, i)
+        -- Randomly corrupt some characters (much less frequent)
+        if math.random() < 0.03 then  -- 3% chance of corruption
+            corruptedText = corruptedText .. glitchChars[math.random(#glitchChars)]
+        else
+            corruptedText = corruptedText .. char
+        end
+    end
+    
+    -- Pulsing effect (alpha pulses smoothly)
+    local pulse = (math.sin(Game.glitchTextTimer * 3) + 1) / 2  -- 0 to 1
+    local alpha = 0.6 + pulse * 0.4  -- Pulse between 0.6 and 1.0
+    
+    -- Scaling effect (starts small, scales up during write-on, then pulses slightly)
+    local baseScale = 1.0
+    if Game.glitchTextWriteProgress < 1.0 then
+        -- Scale up during write-on (from 0.5 to 1.0)
+        baseScale = 0.5 + Game.glitchTextWriteProgress * 0.5
+    else
+        -- Slight pulse after write-on completes
+        baseScale = 1.0 + math.sin(Game.glitchTextTimer * 4) * 0.05  -- Pulse between 0.95 and 1.05
+    end
+    
+    -- Get text width for centering (use full text for width calculation)
+    local fullTextWidth = Game.fonts.terminal:getWidth(text)
+    local textWidth = Game.fonts.terminal:getWidth(corruptedText)
+    local centerX = x - fullTextWidth / 2
+    
+    -- Draw text with scaling and pulsing
+    love.graphics.push()
+    love.graphics.translate(centerX + fullTextWidth / 2, y)
+    love.graphics.scale(baseScale, baseScale)
+    love.graphics.translate(-fullTextWidth / 2, 0)
+    
+    -- Main text with green terminal color, pulsing alpha
+    love.graphics.setColor(0, 1, 0, alpha)  -- Green terminal text with pulsing alpha
+    love.graphics.print(corruptedText, 0, 0)
+    
+    -- Subtle red glitch overlay (much less frequent)
+    if math.random() < 0.1 then
+        love.graphics.setColor(1, 0, 0, alpha * 0.2)
+        love.graphics.print(corruptedText, 1, 1)
+    end
+    
+    love.graphics.pop()
+end
+
 function drawJoystickTestScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
 
@@ -1386,11 +1468,11 @@ function drawLifeLostAuditor()
         if Game.turret then Game.turret:draw() end
     end)
     
-    -- Draw grey overlay during life lost (behind banner, in front of game)
-    if Game.gameOverBannerDrop and Game.gameOverGreyFade > 0 then
-        love.graphics.setColor(0.3, 0.3, 0.3, Game.gameOverGreyFade)
-        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
-    end
+        -- Draw black overlay during life lost (behind banner, in front of game)
+        if Game.gameOverBannerDrop and Game.gameOverGreyFade > 0 then
+            love.graphics.setColor(0, 0, 0, Game.gameOverGreyFade)
+            love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        end
     
     -- Draw top banner with animation offset
     if Game.topBanner then
@@ -1420,6 +1502,93 @@ function drawLifeLostAuditor()
         if Game.topBannerVigilant and Game.topBannerVigilantAlpha > 0 then
             love.graphics.setColor(1, 1, 1, Game.topBannerVigilantAlpha)
             love.graphics.draw(Game.topBannerVigilant, bannerX, bannerY, 0, scale, scale)
+        end
+        
+        -- Draw glitchy terminal text under banner for life lost
+        if Game.lifeLostAuditorActive and Game.gameOverBannerDrop then
+            local textY = bannerY + scaledHeight + 20
+            local textX = Constants.SCREEN_WIDTH / 2
+            local text = "LOW PERFORMANCE DETECTED - INITIALIZE REASSIGNMENT"
+            if Game.fonts.terminal then
+                local textWidth = Game.fonts.terminal:getWidth(text)
+                drawGlitchyTerminalText(text, textX, textY, 32)
+            end
+        end
+    end
+end
+
+-- Draw game over screen (same as life lost but with different text)
+function drawGameOver()
+    -- Draw frozen game state (no updates, but visible)
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Draw frozen game elements
+    World.draw(function()
+        for _, h in ipairs(Game.hazards) do
+            local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+            love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+            love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+        end
+        
+        for _, u in ipairs(Game.units) do u:draw() end
+        for _, p in ipairs(Game.projectiles) do p:draw() end
+        for _, pup in ipairs(Game.powerups) do pup:draw() end
+        
+        for _, e in ipairs(Game.effects) do
+            if e.type == "explosion" then
+                love.graphics.setLineWidth(3)
+                if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
+                elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
+                else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
+                love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+            end
+        end
+        
+        if Game.turret then Game.turret:draw() end
+    end)
+    
+    -- Draw black overlay during game over (behind banner, in front of game)
+    if Game.gameOverBannerDrop and Game.gameOverGreyFade > 0 then
+        love.graphics.setColor(0, 0, 0, Game.gameOverGreyFade)
+        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    end
+    
+    -- Draw top banner with animation offset
+    if Game.topBanner then
+        local bannerX = 0
+        local bannerWidth = Constants.SCREEN_WIDTH
+        local bannerImgWidth = Game.topBanner:getWidth()
+        local bannerImgHeight = Game.topBanner:getHeight()
+        local scaleX = bannerWidth / bannerImgWidth
+        local scale = scaleX
+        local scaledHeight = bannerImgHeight * scale
+        local titleBarHeight = 20
+        local borderWidth = 3
+        local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+        local baseBannerY = frameY - scaledHeight + 120
+        local bannerY = baseBannerY + Game.topBannerYOffset
+        
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(Game.topBanner, bannerX, bannerY, 0, scale, scale)
+        
+        -- Draw activated state if present
+        if Game.topBannerActivated then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.topBannerActivated, bannerX, bannerY, 0, scale, scale)
+        end
+        
+        -- Draw vigilant state if present (preserve alpha from before game over)
+        if Game.topBannerVigilant and Game.topBannerVigilantAlpha > 0 then
+            love.graphics.setColor(1, 1, 1, Game.topBannerVigilantAlpha)
+            love.graphics.draw(Game.topBannerVigilant, bannerX, bannerY, 0, scale, scale)
+        end
+        
+        -- Draw glitchy terminal text under banner for game over
+        if Game.gameOverActive and Game.gameOverBannerDrop then
+            local textY = bannerY + scaledHeight + 20
+            local textX = Constants.SCREEN_WIDTH / 2
+            local text = "YIELD NOT SATISFACTORY - LIQUIDATING ASSET"
+            drawGlitchyTerminalText(text, textX, textY, 32)
         end
     end
 end
@@ -1810,16 +1979,22 @@ function love.update(dt)
     
     -- Handle life lost auditor screen (engagement depleted but lives remain)
     if Game.lifeLostAuditorActive then
+        -- Update glitch text timer and write-on progress
+        Game.glitchTextTimer = Game.glitchTextTimer + dt
+        if Game.glitchTextWriteProgress < 1.0 then
+            Game.glitchTextWriteProgress = math.min(1.0, Game.glitchTextWriteProgress + dt * 1.5)
+        end
+        
         -- Update banner drop animation during life lost
         if Game.gameOverBannerDrop then
             if Game.topBannerAnimationState == "dropping" then
-                -- Fall down with gravity
+                -- Fall down with gravity (drop 120px from current position)
                 local gravity = 800  -- pixels per second squared
                 Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
                 Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
                 
-                -- Target: stop at a reasonable distance down (about 250 pixels from original position)
-                local targetOffset = 250
+                -- Target: 320px down from starting position
+                local targetOffset = Game.gameOverBannerTargetY
                 
                 -- Add shake while dropping
                 local shakeAmount = 3
@@ -1835,7 +2010,7 @@ function love.update(dt)
                 end
             end
             
-            -- Fade in grey overlay (fade over 1 second)
+            -- Fade in black overlay (fade over 1 second)
             if Game.gameOverGreyFade < 1.0 then
                 Game.gameOverGreyFade = math.min(1.0, Game.gameOverGreyFade + dt)
             end
@@ -1908,16 +2083,22 @@ function love.update(dt)
     if Game.gameOverActive then
         -- Don't stop sounds here - let projectile whistles continue until they explode
         
+        -- Update glitch text timer and write-on progress
+        Game.glitchTextTimer = Game.glitchTextTimer + dt
+        if Game.glitchTextWriteProgress < 1.0 then
+            Game.glitchTextWriteProgress = math.min(1.0, Game.glitchTextWriteProgress + dt * 1.5)
+        end
+        
         -- Update banner drop animation during game over
         if Game.gameOverBannerDrop then
             if Game.topBannerAnimationState == "dropping" then
-                -- Fall down with gravity
+                -- Fall down with gravity (drop 120px from current position)
                 local gravity = 800  -- pixels per second squared
                 Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
                 Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
                 
-                -- Target: stop at a reasonable distance down (about 250 pixels from original position)
-                local targetOffset = 250
+                -- Target: 320px down from starting position
+                local targetOffset = Game.gameOverBannerTargetY
                 
                 -- Add shake while dropping
                 local shakeAmount = 3
@@ -1933,7 +2114,7 @@ function love.update(dt)
                 end
             end
             
-            -- Fade in grey overlay (fade over 1 second)
+            -- Fade in black overlay (fade over 1 second)
             if Game.gameOverGreyFade < 1.0 then
                 Game.gameOverGreyFade = math.min(1.0, Game.gameOverGreyFade + dt)
             end
@@ -2187,10 +2368,14 @@ function love.update(dt)
         Engagement.update(gameDt, toxicHazardCount, Game.level)
     end
     
-    -- Update banner animation when at 25% or below
+    -- Update banner animation
     if Game.gameState == "playing" and Engagement.value then
         local engagementPct = Engagement.value / Constants.ENGAGEMENT_MAX
+        
         if engagementPct <= 0.25 then
+            -- Reset above 25% timer when engagement drops to 25% or below
+            Game.topBannerAbove25Timer = 0
+            
             -- Update blink timer for flashing effect
             Game.topBannerBlinkTimer = Game.topBannerBlinkTimer + dt * 3  -- Fast blink (3x speed)
             
@@ -2199,6 +2384,7 @@ function love.update(dt)
             
             -- Animation states
             if Game.topBannerAnimationState == "normal" then
+                -- Only allow dropping if engagement was above 25% for 6 seconds (reset flag)
                 if not Game.topBannerHasDropped then
                     -- First time hitting 25% - drop immediately (no wait)
                     Game.topBannerAnimationState = "dropping"
@@ -2225,21 +2411,51 @@ function love.update(dt)
                     end
                 end
             elseif Game.topBannerAnimationState == "dropping" then
-                -- Fall down to above center screen with gravity
-                local gravity = 800  -- pixels per second squared
-                Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
-                Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
-                
-                -- Target: stop at a reasonable distance down (about 250 pixels from original position)
-                local targetOffset = 250
-                
-                -- Add shake while dropping
-                local shakeAmount = 3
-                Game.topBannerYOffset = Game.topBannerYOffset + (math.random() - 0.5) * shakeAmount * dt * 10
-                
-                -- Check if we've reached target (stop earlier, above center)
-                if Game.topBannerYOffset >= targetOffset then
-                    Game.topBannerYOffset = targetOffset  -- Clamp to target
+                -- Check if engagement went above 25% - if so, start rising immediately
+                if engagementPct > 0.25 then
+                    Game.topBannerAnimationState = "rising"
+                    Game.topBannerAnimationTimer = 0
+                    Game.topBannerVelocity = -150  -- Start rising slowly (negative = upward)
+                else
+                    -- Fall down to above center screen with gravity
+                    local gravity = 800  -- pixels per second squared
+                    Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
+                    Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
+                    
+                    -- Target: stop at a reasonable distance down (about 330 pixels from original position)
+                    local targetOffset = 330
+                    
+                    -- Add shake while dropping
+                    local shakeAmount = 3
+                    Game.topBannerYOffset = Game.topBannerYOffset + (math.random() - 0.5) * shakeAmount * dt * 10
+                    
+                    -- Check if we've reached target - stay at lower position
+                    if Game.topBannerYOffset >= targetOffset then
+                        Game.topBannerYOffset = targetOffset  -- Clamp to target
+                        Game.topBannerAnimationState = "normal"  -- Stay at lower position, don't rise yet
+                        Game.topBannerAnimationTimer = 0
+                        Game.topBannerVelocity = 0
+                    end
+                end
+            elseif Game.topBannerAnimationState == "normal" and Game.topBannerYOffset >= 330 then
+                -- Banner is at lower position (330px down) - check if engagement has been above 25% for 6 seconds
+                -- This check happens in the "else" block when engagement > 25%
+            end
+            -- Note: "rising" state is handled when engagement > 25% and timer >= 6 seconds
+        else
+            -- Engagement is above 25%
+            -- Track how long engagement has been above 25%
+            Game.topBannerAbove25Timer = Game.topBannerAbove25Timer + dt
+            
+            if Game.topBannerAnimationState == "dropping" then
+                -- If engagement went above 25% while dropping, stop dropping and stay at current position
+                Game.topBannerAnimationState = "normal"
+                Game.topBannerAnimationTimer = 0
+                Game.topBannerVelocity = 0
+            elseif Game.topBannerAnimationState == "normal" and Game.topBannerYOffset >= 330 then
+                -- Banner is at lower position (330px down) - wait for 6 seconds above 25% before rising
+                if Game.topBannerAbove25Timer >= 6.0 then
+                    -- 6 seconds passed, start rising
                     Game.topBannerAnimationState = "rising"
                     Game.topBannerAnimationTimer = 0
                     Game.topBannerVelocity = -150  -- Start rising slowly (negative = upward)
@@ -2256,18 +2472,24 @@ function love.update(dt)
                     Game.topBannerVelocity = 0
                     Game.topBannerAnimationState = "normal"  -- Stay at original position
                     Game.topBannerAnimationTimer = 0
-                    Game.topBannerWaitTimer = 0  -- Start 15 second wait timer
+                    Game.topBannerWaitTimer = 0
+                    Game.topBannerHasDropped = false
+                    Game.topBannerBlinkTimer = 0
+                    Game.topBannerAbove25Timer = 0  -- Reset timer
+                end
+            else
+                -- Engagement is above 25% and banner is at normal position (YOffset = 0) - reset everything
+                Game.topBannerAnimationState = "normal"
+                Game.topBannerAnimationTimer = 0
+                Game.topBannerWaitTimer = 0
+                Game.topBannerYOffset = 0
+                Game.topBannerVelocity = 0
+                Game.topBannerBlinkTimer = 0
+                -- Only reset drop flag if engagement has been above 25% for 6 seconds
+                if Game.topBannerAbove25Timer >= 6.0 then
+                    Game.topBannerHasDropped = false  -- Reset drop flag after 6 seconds above 25%
                 end
             end
-        else
-            -- Reset animation when above 25%
-            Game.topBannerAnimationState = "normal"
-            Game.topBannerAnimationTimer = 0
-            Game.topBannerWaitTimer = 0
-            Game.topBannerYOffset = 0
-            Game.topBannerVelocity = 0
-            Game.topBannerBlinkTimer = 0
-            Game.topBannerHasDropped = false  -- Reset drop flag when above 25%
         end
     end
     
@@ -2985,9 +3207,9 @@ function drawGame()
         WindowFrame.draw(frameX, frameY, frameW, frameH, "A.R.A.C. Control Interface")
     end
     
-    -- Draw grey overlay during game over (behind banner, in front of game)
+    -- Draw black overlay during game over (behind banner, in front of game)
     if Game.gameOverActive and Game.gameOverBannerDrop and Game.gameOverGreyFade > 0 then
-        love.graphics.setColor(0.3, 0.3, 0.3, Game.gameOverGreyFade)
+        love.graphics.setColor(0, 0, 0, Game.gameOverGreyFade)
         love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
     end
     
@@ -3063,6 +3285,17 @@ function drawGame()
             
             love.graphics.setColor(1, 1, 1, blinkAlpha)
             love.graphics.draw(Game.topBannerVigilant, bannerX, bannerY, 0, scale, scale)
+        end
+        
+        -- Draw glitchy terminal text under banner for game over
+        if Game.gameOverActive and Game.gameOverBannerDrop then
+            local textY = bannerY + scaledHeight + 20
+            local textX = Constants.SCREEN_WIDTH / 2
+            local text = "YIELD NOT SATISFACTORY - LIQUIDATING ASSET"
+            if Game.fonts.terminal then
+                local textWidth = Game.fonts.terminal:getWidth(text)
+                drawGlitchyTerminalText(text, textX, textY, 32)
+            end
         end
         
         -- Draw critical effects (glow and lens flares) when at 25% or below
@@ -3232,6 +3465,12 @@ function love.draw()
     -- Draw life lost auditor screen (engagement depleted but lives remain)
     if Game.lifeLostAuditorActive then
         drawWithCRT(drawLifeLostAuditor)
+        return
+    end
+    
+    -- Draw game over screen (same as life lost but with different text)
+    if Game.gameOverActive then
+        drawWithCRT(drawGameOver)
         return
     end
     
@@ -3497,7 +3736,6 @@ function drawHUD()
         local nextLevelWidth = Game.fonts.medium:getWidth(nextLevelMsg)
         love.graphics.print(nextLevelMsg, (Constants.SCREEN_WIDTH - nextLevelWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
     -- Removed old game over screen messages - banner drop replaces them
-        love.graphics.print(livesRemainingMsg, (Constants.SCREEN_WIDTH - livesRemainingWidth) / 2, Constants.SCREEN_HEIGHT / 2 + 20)
     elseif Game.nameEntryActive then
         -- Draw name entry screen (check this before game over screen)
         local Popups = require("src.core.popups")
