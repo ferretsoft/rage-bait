@@ -15,6 +15,13 @@ local Turret = require("src.entities.turret")
 local Projectile = require("src.entities.projectile")
 local PowerUp = require("src.entities.powerup")
 local moonshine = require("libs.moonshine")
+local ChasePaxton = require("src.core.chase_paxton")
+local Auditor = require("src.core.auditor")
+local Popups = require("src.core.popups")
+local TopBanner = require("src.core.top_banner")
+local EntityManager = require("src.core.entity_manager")
+local CRTManager = require("src.core.crt_manager")
+local InputHandler = require("src.core.input_handler")
 -- Set BASE so moonshine can find effects in libs directory
 moonshine.BASE = "libs"
 
@@ -36,26 +43,7 @@ Game = {
     logo = nil,  -- Company logo image
     logoBlink = nil,  -- Company logo blink image
     splash = nil,  -- Splash screen image for attract mode
-    topBanner = nil,  -- Top banner base image for playfield
-    topBannerVigilant = nil,  -- Vigilant state layer (low engagement)
-    topBannerActivated = nil,  -- Activated state layer (half engagement)
-    topBannerDormant = nil,  -- Dormant state layer (high engagement)
-    topBannerCurrentState = nil,  -- Current banner state layer (preserved during game over/win)
-    topBannerVigilantAlpha = 0,  -- Alpha for fading in vigilant state
-    topBannerCriticalEffects = false,  -- Whether critical effects are active (25% or below)
-    topBannerBlinkTimer = 0,  -- Timer for blinking effect
-    topBannerAnimationState = "normal",  -- "normal", "dropping", "rising", "waiting"
-    topBannerAnimationTimer = 0,  -- Timer for banner animation
-    topBannerWaitTimer = 0,  -- Timer for waiting at original position (15 seconds)
-    topBannerHasDropped = false,  -- Track if banner has dropped for current 25% engagement period
-    topBannerYOffset = 0,  -- Y offset for banner animation
-    topBannerVelocity = 0,  -- Velocity for banner drop/rise animation
-    topBannerOriginalY = 0,  -- Store original Y position
-    topBannerAbove25Timer = 0,  -- Timer for how long engagement has been above 25%
-    gameOverBannerDrop = false,  -- Whether banner should drop on game over
-    gameOverGreyFade = 0,  -- Alpha for black overlay fade (0-1)
-    gameOverBannerStartY = 0,  -- Starting Y position for game over drop
-    gameOverBannerTargetY = 0,  -- Target Y position for game over drop (320px down from start)
+    -- Banner state is now managed by TopBanner module (src/core/top_banner.lua)
     showBackgroundForeground = false,  -- Toggle for background/foreground layers
     bootingMode = false,  -- Start with booting screen (disabled)
     bootingTimer = 0,  -- Timer for booting screen
@@ -130,11 +118,67 @@ Game = {
         small = nil,
         medium = nil,
         large = nil,
-        terminal = nil  -- Monospace font for terminal text
+        terminal = nil,  -- Monospace font for terminal text
+        speechBubble = nil,  -- Font for speech bubbles (18px)
+        multiplierGiant = nil  -- Giant font for multiplier/ready text (80px)
     },
     glitchTextTimer = 0,  -- Timer for glitch effects
-    glitchTextWriteProgress = 0  -- Progress of write-on effect (0-1)
+    glitchTextWriteProgress = 0,  -- Progress of write-on effect (0-1)
+    readyActive = false,  -- Whether ready screen is active
+    readyTimer = 0,  -- Timer for ready screen
+    readyPhase = 1,  -- Current phase (1=fade out, 2=get ready, 3=go)
+    readySparks = {}  -- Spark particles for ready screen
 }
+
+-- Helper function to create spark particles in a circle pattern
+local function createSparkParticles(centerX, centerY, count, speedMin, speedMax, sizeMin, sizeMax, lifetime)
+    local sparks = {}
+    for i = 1, count do
+        local angle = (i / count) * math.pi * 2
+        local speed = speedMin + math.random() * (speedMax - speedMin)
+        table.insert(sparks, {
+            x = centerX,
+            y = centerY,
+            vx = math.cos(angle) * speed,
+            vy = math.sin(angle) * speed,
+            life = lifetime,
+            maxLife = lifetime,
+            size = sizeMin + math.random() * (sizeMax - sizeMin)
+        })
+    end
+    return sparks
+end
+
+-- Helper function to update spark particles (with gravity and fade)
+local function updateSparkParticles(sparks, dt, gravity, fadeRate)
+    for i = #sparks, 1, -1 do
+        local spark = sparks[i]
+        spark.x = spark.x + spark.vx * dt
+        spark.y = spark.y + spark.vy * dt
+        if gravity then
+            spark.vy = spark.vy + gravity * dt
+        end
+        spark.life = spark.life - dt * fadeRate
+        if spark.life <= 0 then
+            table.remove(sparks, i)
+        end
+    end
+end
+
+-- Helper function to draw spark particles (gold/yellow with glow)
+local function drawSparkParticles(sparks, offsetY)
+    offsetY = offsetY or 0
+    for _, spark in ipairs(sparks) do
+        local alpha = spark.life / spark.maxLife
+        -- Gold/yellow sparks with fade
+        local sparkColor = 0.3 + (spark.life / spark.maxLife) * 0.7  -- Fade from bright to dim
+        love.graphics.setColor(1, 0.8 + sparkColor * 0.2, 0.2, alpha)
+        love.graphics.circle("fill", spark.x, spark.y + offsetY, spark.size)
+        -- Add glow effect
+        love.graphics.setColor(1, 0.9, 0.3, alpha * 0.3)
+        love.graphics.circle("fill", spark.x, spark.y + offsetY, spark.size * 2)
+    end
+end
 
 -- --- HELPER: ACTIVATE POWERUP ---
 local function collectPowerUp(powerup)
@@ -152,23 +196,17 @@ local function collectPowerUp(powerup)
             Game.shake = math.max(Game.shake, 1.5)  -- Screen shake
             
             -- Create spark particles for the rapid fire effect
-            Game.rapidFireSparks = {}
             local centerX = Constants.SCREEN_WIDTH / 2
             local centerY = Constants.SCREEN_HEIGHT / 2 - 100
-            local numSparks = 30  -- Number of sparks
-            for i = 1, numSparks do
-                local angle = (i / numSparks) * math.pi * 2
-                local speed = 200 + math.random() * 300  -- Random speed between 200-500
-                table.insert(Game.rapidFireSparks, {
-                    x = centerX,
-                    y = centerY,
-                    vx = math.cos(angle) * speed,
-                    vy = math.sin(angle) * speed,
-                    life = 1.0,  -- Full life
-                    maxLife = 1.0,
-                    size = 3 + math.random() * 4  -- Random size between 3-7
-                })
-            end
+            Game.rapidFireSparks = createSparkParticles(
+                centerX, centerY,
+                Constants.UI.SPARK_COUNT_MULTIPLIER,
+                Constants.UI.SPARK_SPEED_MIN,
+                Constants.UI.SPARK_SPEED_MAX,
+                Constants.UI.SPARK_SIZE_MIN,
+                Constants.UI.SPARK_SIZE_MAX,
+                Constants.UI.SPARK_LIFETIME
+            )
             
             -- Visual effect (Gold Explosion)
             table.insert(Game.effects, {
@@ -180,7 +218,6 @@ local function collectPowerUp(powerup)
             
             -- Sound effect
             Sound.powerupCollect("puck")
-            Webcam.showComment("powerup_collected")
             Webcam.showComment("powerup_collected")
         end
     end
@@ -345,16 +382,18 @@ end
 function love.load()
     love.window.setMode(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
     love.window.setTitle("RageBait!")
-    Game.fonts.small = love.graphics.newFont(12)
-    Game.fonts.medium = love.graphics.newFont(14)
-    Game.fonts.large = love.graphics.newFont(24)
+    Game.fonts.small = love.graphics.newFont(Constants.UI.FONT_SMALL)
+    Game.fonts.medium = love.graphics.newFont(Constants.UI.FONT_MEDIUM)
+    Game.fonts.large = love.graphics.newFont(Constants.UI.FONT_LARGE)
+    Game.fonts.speechBubble = love.graphics.newFont(Constants.UI.FONT_SPEECH_BUBBLE)
+    Game.fonts.announcementGiant = love.graphics.newFont(Constants.UI.FONT_ANNOUNCEMENT_GIANT)
     -- Try to load a monospace font, fallback to default if not available
     local success, font = pcall(love.graphics.newFont, "assets/NotoColorEmoji.ttf", 32)
     if success and font then
         Game.fonts.terminal = font
     else
         -- Fallback to default monospace font
-        Game.fonts.terminal = love.graphics.newFont(32)
+        Game.fonts.terminal = love.graphics.newFont(Constants.UI.FONT_TERMINAL)
     end
     
     -- Load high scores
@@ -403,39 +442,8 @@ function love.load()
         print("Warning: Could not load splash: assets/splash.png")
     end
     
-    -- Load top banner images (base + state layers)
-    local success7, img7 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0003_Banner.png")
-    if success7 then
-        Game.topBanner = img7
-    else
-        Game.topBanner = nil
-        print("Warning: Could not load top banner: assets/OverlordTopBanner/overlord_top_banner_0003_Banner.png")
-    end
-    
-    -- Load banner state layers
-    local success8, img8 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0000_Vigilant.png")
-    if success8 then
-        Game.topBannerVigilant = img8
-    else
-        Game.topBannerVigilant = nil
-        print("Warning: Could not load vigilant banner: assets/OverlordTopBanner/overlord_top_banner_0000_Vigilant.png")
-    end
-    
-    local success9, img9 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0001_Activated.png")
-    if success9 then
-        Game.topBannerActivated = img9
-    else
-        Game.topBannerActivated = nil
-        print("Warning: Could not load activated banner: assets/OverlordTopBanner/overlord_top_banner_0001_Activated.png")
-    end
-    
-    local success10, img10 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0002_Dormant.png")
-    if success10 then
-        Game.topBannerDormant = img10
-    else
-        Game.topBannerDormant = nil
-        print("Warning: Could not load dormant banner: assets/OverlordTopBanner/overlord_top_banner_0002_Dormant.png")
-    end
+    -- Load top banner images (using TopBanner module)
+    TopBanner.load()
     
     -- Load intro video
     local success6, vid = pcall(love.graphics.newVideo, "assets/introvideo.ogv")
@@ -647,7 +655,6 @@ function startGameplay()
     Game.introTimer = 0
     Game.introStep = 1
     Webcam.showComment("game_start")
-    Webcam.showComment("game_start")
     
     -- Start background music
     Sound.playMusic()
@@ -706,6 +713,15 @@ function startGameplay()
     
     -- Spawn initial units
     spawnUnitsForLevel()
+    
+    -- Trigger ready sequence
+    Game.readyActive = true
+    Game.readyTimer = 0
+    Game.readyPhase = 1
+    Game.readySparks = {}
+    Game.gameState = "ready"
+    -- Reset banner to original position
+    TopBanner.reset()
 end
 
 -- Spawn units for the current level
@@ -787,25 +803,16 @@ function handleGameOver(condition)
         Game.gameState = "life_lost_auditor"
         Sound.cleanup()  -- Stop all sounds for the auditor sequence
         -- Trigger banner drop animation (drop 120px from current position)
-        Game.gameOverBannerDrop = true
-        Game.gameOverGreyFade = 0
-        Game.gameOverBannerDropped = false  -- Track when banner has finished dropping
-        Game.gameOverBannerStartY = Game.topBannerYOffset  -- Store current position
-        Game.gameOverBannerTargetY = Game.topBannerYOffset + 120  -- Target is 120px down from current
-        -- Set banner to dropping state (don't reset position, drop from current)
-        Game.topBannerAnimationState = "dropping"
-        Game.topBannerAnimationTimer = 0
-        Game.topBannerVelocity = 0
+        TopBanner.triggerDrop(Constants.TIMING.LIFE_LOST_BANNER_DROP)
         return
     end
     
-    -- If all lives are lost, show THE AUDITOR (final game over)
+    -- If all lives are lost, show game over screen (same as life lost, just top bar)
     if not hasLivesRemaining then
-        Game.auditorActive = true
-        Game.auditorTimer = 0
-        Game.auditorPhase = 1  -- Start with system freeze
-        Game.gameState = "auditor"
-        Sound.cleanup()  -- Stop all sounds for THE AUDITOR sequence
+        Game.gameOverActive = true
+        Game.gameOverTimer = 2.0  -- 2 second wait at dropped banner position
+        -- Trigger banner drop (same as life lost)
+        TopBanner.triggerDrop(Constants.TIMING.GAME_OVER_BANNER_DROP)
         return
     end
     
@@ -817,16 +824,8 @@ function handleGameOver(condition)
     -- Store whether we should restart (have lives remaining after this loss)
     Game.shouldRestartLevel = hasLivesRemaining
     -- Trigger banner drop animation (drop 320px from current position)
-    Game.gameOverBannerDrop = true
-    Game.gameOverGreyFade = 0
-    Game.gameOverBannerDropped = false  -- Track when banner has finished dropping
-    Game.gameOverBannerStartY = Game.topBannerYOffset  -- Store current position
-    Game.gameOverBannerTargetY = Game.topBannerYOffset + 320  -- Target is 320px down from current
+    TopBanner.triggerDrop(Constants.TIMING.GAME_OVER_BANNER_DROP)
     Game.glitchTextWriteProgress = 0  -- Reset write-on effect
-    -- Set banner to dropping state (don't reset position, drop from current)
-    Game.topBannerAnimationState = "dropping"
-    Game.topBannerAnimationTimer = 0
-    Game.topBannerVelocity = 0
 end
 
 -- Restart the current level after losing a life
@@ -841,13 +840,15 @@ function restartLevel()
     Game.lifeLostAuditorActive = false  -- Make sure life lost auditor is not active
     Game.lifeLostAuditorTimer = 0
     Game.lifeLostAuditorPhase = 1
-    Game.gameOverBannerDrop = false
-    Game.gameOverGreyFade = 0
     -- Reset banner to original position on restart
-    Game.topBannerYOffset = 0
-    Game.topBannerVelocity = 0
-    Game.topBannerAnimationState = "normal"
-    Game.gameState = "playing"
+    TopBanner.reset()
+    
+    -- Trigger ready sequence
+    Game.readyActive = true
+    Game.readyTimer = 0
+    Game.readyPhase = 1
+    Game.readySparks = {}
+    Game.gameState = "ready"
     Game.winCondition = nil
     Game.hasUnitBeenConverted = false
     
@@ -937,8 +938,8 @@ function returnToAttractMode()
     end
     Game.gameOverActive = false
     Game.gameOverTimer = 0
-    Game.gameOverBannerDrop = false
-    Game.gameOverGreyFade = 0
+    -- Reset banner
+    TopBanner.reset()
     Game.auditorActive = false
     Game.auditorTimer = 0
     Game.auditorPhase = 1
@@ -1018,75 +1019,85 @@ end
 
 -- Draw joystick test / input diagnostics screen
 -- Draw glitchy terminal text with write-on effect
-local function drawGlitchyTerminalText(text, x, y, fontSize)
-    if not Game.fonts.terminal then return end
+-- Helper function to draw frozen game state (used in game over, life lost, ready screens)
+local function drawFrozenGameState()
+    World.draw(function()
+        for _, h in ipairs(Game.hazards) do
+            local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+            love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+            love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+        end
+        
+        for _, u in ipairs(Game.units) do u:draw() end
+        for _, p in ipairs(Game.projectiles) do p:draw() end
+        for _, pup in ipairs(Game.powerups) do pup:draw() end
+        
+        for _, e in ipairs(Game.effects) do
+            if e.type == "explosion" then
+                love.graphics.setLineWidth(3)
+                if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
+                elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
+                else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
+                love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+            end
+        end
+        
+        if Game.turret then Game.turret:draw() end
+    end)
+end
+
+-- Helper function to draw black overlay with fade
+local function drawBlackOverlay(alpha)
+    love.graphics.setColor(0, 0, 0, alpha)
+    love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+end
+
+-- Helper function to draw window content background (transparent black)
+local function drawWindowContentBackground(x, y, width, height, titleBarHeight, borderWidth)
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", x + borderWidth, y + borderWidth + titleBarHeight, 
+        width - (borderWidth * 2), height - (borderWidth * 2) - titleBarHeight)
+end
+
+-- Helper function to calculate pulsing value (0 to 1)
+local function calculatePulse(speed, offset)
+    offset = offset or 0
+    return (math.sin((love.timer.getTime() + offset) * speed) + 1) / 2
+end
+
+-- Helper function to get screen center coordinates
+local function getScreenCenter()
+    return Constants.SCREEN_WIDTH / 2, Constants.SCREEN_HEIGHT / 2
+end
+
+-- Helper function to draw text with outline
+local function drawTextWithOutline(text, x, y, colorR, colorG, colorB, colorA, outlineWidth, outlineAlpha)
+    outlineWidth = outlineWidth or 4
+    outlineAlpha = outlineAlpha or 0.8
     
-    love.graphics.setFont(Game.fonts.terminal)
-    
-    -- Calculate how many characters to show based on write progress
-    local charsToShow = math.floor(Game.glitchTextWriteProgress * #text)
-    local displayText = text:sub(1, charsToShow)
-    
-    -- Subtle glitch: only corrupt 3% of characters (much less glitchy)
-    local glitchChars = {"█", "▓", "▒"}
-    local corruptedText = ""
-    
-    -- Use timer-based seed for consistent corruption per frame
-    math.randomseed(math.floor(Game.glitchTextTimer * 100))
-    
-    for i = 1, #displayText do
-        local char = displayText:sub(i, i)
-        -- Randomly corrupt some characters (much less frequent)
-        if math.random() < 0.03 then  -- 3% chance of corruption
-            corruptedText = corruptedText .. glitchChars[math.random(#glitchChars)]
-        else
-            corruptedText = corruptedText .. char
+    -- Draw outline
+    love.graphics.setLineWidth(outlineWidth)
+    love.graphics.setColor(0, 0, 0, colorA * outlineAlpha)
+    for dx = -2, 2 do
+        for dy = -2, 2 do
+            if dx ~= 0 or dy ~= 0 then
+                love.graphics.print(text, x + dx, y + dy)
+            end
         end
     end
     
-    -- Pulsing effect (alpha pulses smoothly)
-    local pulse = (math.sin(Game.glitchTextTimer * 3) + 1) / 2  -- 0 to 1
-    local alpha = 0.6 + pulse * 0.4  -- Pulse between 0.6 and 1.0
-    
-    -- Scaling effect (starts small, scales up during write-on, then pulses slightly)
-    local baseScale = 1.0
-    if Game.glitchTextWriteProgress < 1.0 then
-        -- Scale up during write-on (from 0.5 to 1.0)
-        baseScale = 0.5 + Game.glitchTextWriteProgress * 0.5
-    else
-        -- Slight pulse after write-on completes
-        baseScale = 1.0 + math.sin(Game.glitchTextTimer * 4) * 0.05  -- Pulse between 0.95 and 1.05
-    end
-    
-    -- Get text width for centering (use full text for width calculation)
-    local fullTextWidth = Game.fonts.terminal:getWidth(text)
-    local textWidth = Game.fonts.terminal:getWidth(corruptedText)
-    local centerX = x - fullTextWidth / 2
-    
-    -- Draw text with scaling and pulsing
-    love.graphics.push()
-    love.graphics.translate(centerX + fullTextWidth / 2, y)
-    love.graphics.scale(baseScale, baseScale)
-    love.graphics.translate(-fullTextWidth / 2, 0)
-    
-    -- Main text with green terminal color, pulsing alpha
-    love.graphics.setColor(0, 1, 0, alpha)  -- Green terminal text with pulsing alpha
-    love.graphics.print(corruptedText, 0, 0)
-    
-    -- Subtle red glitch overlay (much less frequent)
-    if math.random() < 0.1 then
-        love.graphics.setColor(1, 0, 0, alpha * 0.2)
-        love.graphics.print(corruptedText, 1, 1)
-    end
-    
-    love.graphics.pop()
+    -- Draw main text
+    love.graphics.setColor(colorR, colorG, colorB, colorA)
+    love.graphics.print(text, x, y)
 end
+
+-- drawGlitchyTerminalText has been moved to TopBanner module
 
 function drawJoystickTestScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
 
-    local titleBarHeight = 20
-    local border = 3
+    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+    local border = Constants.UI.BORDER_WIDTH
     local boxWidth = 800
     local boxHeight = 500
     local boxX = (Constants.SCREEN_WIDTH - boxWidth) / 2
@@ -1334,7 +1345,6 @@ function drawIntroScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
     -- Intro messages (multiple steps) - Chase Paxton's onboarding
-    local ChasePaxton = require("src.core.chase_paxton")
     local currentStep = math.min(Game.introStep, #ChasePaxton.INTRO_MESSAGES)
     local currentMessage = ChasePaxton.getIntroMessage(currentStep)
     local stepStartTime = 0
@@ -1349,17 +1359,15 @@ function drawIntroScreen()
     end
     
     -- Draw centered webcam window
-    local WEBCAM_WIDTH = 400
-    local WEBCAM_HEIGHT = 300
+    local WEBCAM_WIDTH = Constants.UI.WEBCAM_WIDTH
+    local WEBCAM_HEIGHT = Constants.UI.WEBCAM_HEIGHT
     local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
-    local WEBCAM_Y = (Constants.SCREEN_HEIGHT - WEBCAM_HEIGHT) / 2 - 50
-    local titleBarHeight = 20
-    local borderWidth = 3
+    local WEBCAM_Y = (Constants.SCREEN_HEIGHT - WEBCAM_HEIGHT) / 2 + Constants.UI.WEBCAM_OFFSET_Y
+    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+    local borderWidth = Constants.UI.BORDER_WIDTH
     
     -- Draw transparent black background for content area
-    love.graphics.setColor(0, 0, 0, 0.7)
-    love.graphics.rectangle("fill", WEBCAM_X + borderWidth, WEBCAM_Y + borderWidth + titleBarHeight, 
-        WEBCAM_WIDTH - (borderWidth * 2), WEBCAM_HEIGHT - (borderWidth * 2) - titleBarHeight)
+    drawWindowContentBackground(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, titleBarHeight, borderWidth)
     
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
@@ -1418,7 +1426,6 @@ function drawIntroScreen()
     end
     
     -- Draw progress indicator (dots)
-    local ChasePaxton = require("src.core.chase_paxton")
     love.graphics.setColor(0.5, 0.5, 0.5, 1)
     local dotSize = 8
     local dotSpacing = 15
@@ -1444,76 +1451,20 @@ function drawLifeLostAuditor()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
     -- Draw frozen game elements
-    World.draw(function()
-        for _, h in ipairs(Game.hazards) do
-            local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
-            love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
-            love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
-        end
-        
-        for _, u in ipairs(Game.units) do u:draw() end
-        for _, p in ipairs(Game.projectiles) do p:draw() end
-        for _, pup in ipairs(Game.powerups) do pup:draw() end
-        
-        for _, e in ipairs(Game.effects) do
-            if e.type == "explosion" then
-                love.graphics.setLineWidth(3)
-                if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
-                elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
-                else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
-                love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
-            end
-        end
-        
-        if Game.turret then Game.turret:draw() end
-    end)
+    drawFrozenGameState()
     
         -- Draw black overlay during life lost (behind banner, in front of game)
-        if Game.gameOverBannerDrop and Game.gameOverGreyFade > 0 then
-            love.graphics.setColor(0, 0, 0, Game.gameOverGreyFade)
-            love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        local greyFade = TopBanner.getGameOverGreyFade()
+        if TopBanner.isGameOverDropActive() and greyFade > 0 then
+            drawBlackOverlay(greyFade)
         end
     
-    -- Draw top banner with animation offset
-    if Game.topBanner then
-        local bannerX = 0
-        local bannerWidth = Constants.SCREEN_WIDTH
-        local bannerImgWidth = Game.topBanner:getWidth()
-        local bannerImgHeight = Game.topBanner:getHeight()
-        local scaleX = bannerWidth / bannerImgWidth
-        local scale = scaleX
-        local scaledHeight = bannerImgHeight * scale
-        local titleBarHeight = 20
-        local borderWidth = 3
-        local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
-        local baseBannerY = frameY - scaledHeight + 120
-        local bannerY = baseBannerY + Game.topBannerYOffset
-        
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(Game.topBanner, bannerX, bannerY, 0, scale, scale)
-        
-        -- Draw activated state if present
-        if Game.topBannerActivated then
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.draw(Game.topBannerActivated, bannerX, bannerY, 0, scale, scale)
-        end
-        
-        -- Draw vigilant state if present (preserve alpha from before life lost)
-        if Game.topBannerVigilant and Game.topBannerVigilantAlpha > 0 then
-            love.graphics.setColor(1, 1, 1, Game.topBannerVigilantAlpha)
-            love.graphics.draw(Game.topBannerVigilant, bannerX, bannerY, 0, scale, scale)
-        end
-        
-        -- Draw glitchy terminal text under banner for life lost
-        if Game.lifeLostAuditorActive and Game.gameOverBannerDrop then
-            local textY = bannerY + scaledHeight + 20
-            local textX = Constants.SCREEN_WIDTH / 2
-            local text = "LOW PERFORMANCE DETECTED - INITIALIZE REASSIGNMENT"
-            if Game.fonts.terminal then
-                local textWidth = Game.fonts.terminal:getWidth(text)
-                drawGlitchyTerminalText(text, textX, textY, 32)
-            end
-        end
+    -- Draw top banner (using TopBanner module)
+    TopBanner.draw()
+    
+    -- Draw terminal text for life lost
+    if Game.lifeLostAuditorActive then
+        TopBanner.drawLifeLostText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
     end
 end
 
@@ -1523,73 +1474,20 @@ function drawGameOver()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
     -- Draw frozen game elements
-    World.draw(function()
-        for _, h in ipairs(Game.hazards) do
-            local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
-            love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
-            love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
-        end
-        
-        for _, u in ipairs(Game.units) do u:draw() end
-        for _, p in ipairs(Game.projectiles) do p:draw() end
-        for _, pup in ipairs(Game.powerups) do pup:draw() end
-        
-        for _, e in ipairs(Game.effects) do
-            if e.type == "explosion" then
-                love.graphics.setLineWidth(3)
-                if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
-                elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
-                else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
-                love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
-            end
-        end
-        
-        if Game.turret then Game.turret:draw() end
-    end)
+    drawFrozenGameState()
     
     -- Draw black overlay during game over (behind banner, in front of game)
-    if Game.gameOverBannerDrop and Game.gameOverGreyFade > 0 then
-        love.graphics.setColor(0, 0, 0, Game.gameOverGreyFade)
-        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    local greyFade = TopBanner.getGameOverGreyFade()
+    if TopBanner.isGameOverDropActive() and greyFade > 0 then
+        drawBlackOverlay(greyFade)
     end
     
-    -- Draw top banner with animation offset
-    if Game.topBanner then
-        local bannerX = 0
-        local bannerWidth = Constants.SCREEN_WIDTH
-        local bannerImgWidth = Game.topBanner:getWidth()
-        local bannerImgHeight = Game.topBanner:getHeight()
-        local scaleX = bannerWidth / bannerImgWidth
-        local scale = scaleX
-        local scaledHeight = bannerImgHeight * scale
-        local titleBarHeight = 20
-        local borderWidth = 3
-        local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
-        local baseBannerY = frameY - scaledHeight + 120
-        local bannerY = baseBannerY + Game.topBannerYOffset
-        
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(Game.topBanner, bannerX, bannerY, 0, scale, scale)
-        
-        -- Draw activated state if present
-        if Game.topBannerActivated then
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.draw(Game.topBannerActivated, bannerX, bannerY, 0, scale, scale)
-        end
-        
-        -- Draw vigilant state if present (preserve alpha from before game over)
-        if Game.topBannerVigilant and Game.topBannerVigilantAlpha > 0 then
-            love.graphics.setColor(1, 1, 1, Game.topBannerVigilantAlpha)
-            love.graphics.draw(Game.topBannerVigilant, bannerX, bannerY, 0, scale, scale)
-        end
-        
-        -- Draw glitchy terminal text under banner for game over
-        if Game.gameOverActive and Game.gameOverBannerDrop then
-            local textY = bannerY + scaledHeight + 20
-            local textX = Constants.SCREEN_WIDTH / 2
-            local text = "YIELD NOT SATISFACTORY - LIQUIDATING ASSET"
-            drawGlitchyTerminalText(text, textX, textY, 32)
-        end
+    -- Draw top banner (using TopBanner module)
+    TopBanner.draw()
+    
+    -- Draw terminal text for game over
+    if Game.gameOverActive then
+        TopBanner.drawGameOverText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
     end
 end
 
@@ -1601,32 +1499,9 @@ function drawAuditor()
         love.graphics.clear(Constants.COLORS.BACKGROUND)
         
         -- Draw frozen game elements
-        World.draw(function()
-            for _, h in ipairs(Game.hazards) do
-                local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
-                love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
-                love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
-            end
-            
-            for _, u in ipairs(Game.units) do u:draw() end
-            for _, p in ipairs(Game.projectiles) do p:draw() end
-            for _, pup in ipairs(Game.powerups) do pup:draw() end
-            
-            for _, e in ipairs(Game.effects) do
-                if e.type == "explosion" then
-                    love.graphics.setLineWidth(3)
-                    if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
-                    elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
-                    else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
-                    love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
-                end
-            end
-            
-            if Game.turret then Game.turret:draw() end
-        end)
+        drawFrozenGameState()
         
         -- Show webcam with CRITICAL_ERROR
-        local Auditor = require("src.core.auditor")
         love.graphics.setColor(1, 0, 0, 1)
         love.graphics.setFont(Game.fonts.large)
         local errorMsg = Auditor.CRITICAL_ERROR
@@ -1639,8 +1514,7 @@ function drawAuditor()
         local fadeAlpha = math.min(fadeProgress, 1.0)
         
         -- Fade to black
-        love.graphics.setColor(0, 0, 0, fadeAlpha)
-        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        drawBlackOverlay(fadeAlpha)
         
         -- Show THE AUDITOR (hooded figure with red camera lens)
         if fadeAlpha >= 0.5 then
@@ -1651,14 +1525,12 @@ function drawAuditor()
     -- Phase 3: Show verdict text
     elseif Game.auditorPhase == 3 then
         -- Black background
-        love.graphics.setColor(0, 0, 0, 1)
-        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        drawBlackOverlay(1.0)
         
         -- Draw THE AUDITOR
         drawAuditorFigure(1.0)
         
         -- Show verdict text
-        local Auditor = require("src.core.auditor")
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(1, 0, 0, 1)  -- Red text
         
@@ -1673,8 +1545,7 @@ function drawAuditor()
         
     -- Phase 4: Crash to black
     elseif Game.auditorPhase == 4 then
-        love.graphics.setColor(0, 0, 0, 1)
-        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+        drawBlackOverlay(1.0)
     end
 end
 
@@ -1772,7 +1643,6 @@ function drawWinTextScreen()
     end
     
     -- Draw win text
-    local Popups = require("src.core.popups")
     love.graphics.setFont(Game.fonts.large)
     love.graphics.setColor(0, 1, 0)  -- Green
     local message = Popups.getWinMessage(Game.winCondition)
@@ -1788,13 +1658,11 @@ function drawLevelCompleteScreen()
     local WEBCAM_HEIGHT = 450
     local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
     local WEBCAM_Y = (Constants.SCREEN_HEIGHT - WEBCAM_HEIGHT) / 2 - 100
-    local titleBarHeight = 20
-    local borderWidth = 3
+    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+    local borderWidth = Constants.UI.BORDER_WIDTH
     
     -- Draw transparent black background for content area
-    love.graphics.setColor(0, 0, 0, 0.7)
-    love.graphics.rectangle("fill", WEBCAM_X + borderWidth, WEBCAM_Y + borderWidth + titleBarHeight, 
-        WEBCAM_WIDTH - (borderWidth * 2), WEBCAM_HEIGHT - (borderWidth * 2) - titleBarHeight)
+    drawWindowContentBackground(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, titleBarHeight, borderWidth)
     
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
@@ -1831,7 +1699,6 @@ function drawLevelCompleteScreen()
     end
     
     -- Draw congratulatory messages (from Chase Paxton dialogue)
-    local ChasePaxton = require("src.core.chase_paxton")
     love.graphics.setFont(Game.fonts.large)
     love.graphics.setColor(1, 1, 0, 1)  -- Yellow
     local congratsMsg = ChasePaxton.LEVEL_COMPLETE_MESSAGES[1] or "GREAT JOB!"
@@ -1845,12 +1712,128 @@ function drawLevelCompleteScreen()
     love.graphics.print(readyMsg, WEBCAM_X + (WEBCAM_WIDTH - readyWidth) / 2, WEBCAM_Y + WEBCAM_HEIGHT - 60)
     
     -- Show countdown timer
-    local Popups = require("src.core.popups")
     local timeLeft = math.ceil(Game.levelCompleteScreenTimer)
     local timerText = Popups.getStartingIn(timeLeft)
     love.graphics.setColor(0.7, 0.7, 0.7, 1)
     local timerWidth = Game.fonts.medium:getWidth(timerText)
     love.graphics.print(timerText, WEBCAM_X + (WEBCAM_WIDTH - timerWidth) / 2, WEBCAM_Y + WEBCAM_HEIGHT - 30)
+end
+
+-- Draw ready screen with GET READY and GO! text
+function drawReadyScreen()
+    -- Draw the normal game playfield in background (same as drawGame but without HUD)
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Apply shake transform
+    love.graphics.push()
+        if Game.shake > 0 then
+            local s = Game.shake * Game.shake * 15; love.graphics.translate(love.math.random(-s, s), love.math.random(-s, s))
+        end
+        
+        -- Draw background image if loaded and enabled
+        if Game.showBackgroundForeground and Game.background then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.background, 0, 0, 0, 
+                Constants.SCREEN_WIDTH / Game.background:getWidth(),
+                Constants.SCREEN_HEIGHT / Game.background:getHeight())
+        end
+        
+        -- Draw game elements
+        World.draw(function()
+            for _, h in ipairs(Game.hazards) do
+                local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+                love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+                love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+            end
+            
+            if #Game.explosionZones > 0 then
+                love.graphics.clear(false, true, false) 
+                for _, z in ipairs(Game.explosionZones) do
+                    love.graphics.setStencilTest("equal", 0)
+                    if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3) else love.graphics.setColor(0, 0, 1, 0.3) end
+                    love.graphics.circle("fill", z.x, z.y, z.radius, 64)
+                    love.graphics.setLineWidth(3); love.graphics.setColor(1, 1, 1, 0.5); love.graphics.circle("line", z.x, z.y, z.radius, 64)
+                    love.graphics.setStencilTest(); love.graphics.stencil(function() love.graphics.circle("fill", z.x, z.y, z.radius, 64) end, "replace", 1)
+                end
+                love.graphics.setStencilTest()
+            end
+            
+            for _, u in ipairs(Game.units) do u:draw() end
+            for _, p in ipairs(Game.projectiles) do p:draw() end
+            for _, pup in ipairs(Game.powerups) do pup:draw() end
+            
+            for _, e in ipairs(Game.effects) do
+                if e.type == "explosion" then
+                    love.graphics.setLineWidth(3)
+                    if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
+                    elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
+                    else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
+                    love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+                end
+            end
+            
+            if Game.turret then Game.turret:draw() end
+        end)
+        
+        -- Draw top banner (using TopBanner module)
+        TopBanner.draw()
+        
+    love.graphics.pop()
+    
+    -- Create giant font if not cached
+    if not Game.fonts.multiplierGiant then
+        Game.fonts.multiplierGiant = love.graphics.newFont(Constants.UI.FONT_MULTIPLIER_GIANT)
+    end
+    
+    local centerX, centerY = getScreenCenter()
+    
+    if Game.readyPhase == 1 then
+        -- Phase 1: Fade out black overlay (show frozen game)
+        -- Text not shown yet
+    elseif Game.readyPhase == 2 then
+        -- Phase 2: Show "GET READY" text
+        local elapsed = Game.readyTimer - Constants.TIMING.READY_FADE_OUT_DURATION
+        local textAlpha = math.min(elapsed / 0.3, 1.0)  -- Fade in over 0.3s
+        
+        love.graphics.setFont(Game.fonts.multiplierGiant)
+        
+        -- Pulsing color effect
+        local pulse = calculatePulse(4)
+        local r = 0.2 + pulse * 0.8
+        local g = 0.8 + pulse * 0.2
+        local b = 0.2 + pulse * 0.8
+        
+        local text = "GET READY"
+        local textWidth = Game.fonts.multiplierGiant:getWidth(text)
+        local textHeight = Game.fonts.multiplierGiant:getHeight()
+        
+        drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
+        
+        -- Draw sparks
+        drawSparkParticles(Game.readySparks)
+    elseif Game.readyPhase == 3 then
+        -- Phase 3: Show "GO!" text
+        local elapsed = Game.readyTimer - Constants.TIMING.READY_FADE_OUT_DURATION - Constants.TIMING.READY_GET_READY_DURATION
+        local textAlpha = math.min(elapsed / 0.2, 1.0)  -- Fade in quickly
+        
+        love.graphics.setFont(Game.fonts.multiplierGiant)
+        
+        -- Pulsing color effect (more intense)
+        local pulse = calculatePulse(6)
+        local r = 0.8 + pulse * 0.2
+        local g = 0.2 + pulse * 0.8
+        local b = 0.2 + pulse * 0.8
+        
+        local text = "GO!"
+        local textWidth = Game.fonts.multiplierGiant:getWidth(text)
+        local textHeight = Game.fonts.multiplierGiant:getHeight()
+        local centerX, centerY = getScreenCenter()
+        
+        drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
+        
+        -- Draw sparks
+        drawSparkParticles(Game.readySparks)
+    end
 end
 
 
@@ -1918,6 +1901,66 @@ function love.update(dt)
         return  -- Don't update game logic in attract mode
     end
     
+    -- Handle ready screen (GET READY / GO!)
+    if Game.readyActive then
+        Game.readyTimer = Game.readyTimer + dt
+        
+        -- Phase 1: Fade out black overlay (0.5s)
+        if Game.readyPhase == 1 then
+            if Game.readyTimer >= Constants.TIMING.READY_FADE_OUT_DURATION then
+                Game.readyPhase = 2
+                Game.readyTimer = Constants.TIMING.READY_FADE_OUT_DURATION
+                -- Create sparks for GET READY
+                local centerX = Constants.SCREEN_WIDTH / 2
+                local centerY = Constants.SCREEN_HEIGHT / 2
+                Game.readySparks = createSparkParticles(
+                    centerX, centerY,
+                    Constants.UI.SPARK_COUNT_READY,
+                    Constants.UI.SPARK_SPEED_MIN,
+                    Constants.UI.SPARK_SPEED_MAX,
+                    Constants.UI.SPARK_SIZE_MIN,
+                    Constants.UI.SPARK_SIZE_MAX,
+                    Constants.UI.SPARK_LIFETIME
+                )
+            end
+        -- Phase 2: Show "GET READY" (1.5s)
+        elseif Game.readyPhase == 2 then
+            if Game.readyTimer >= Constants.TIMING.READY_FADE_OUT_DURATION + Constants.TIMING.READY_GET_READY_DURATION then
+                Game.readyPhase = 3
+                -- Create more sparks for GO!
+                local centerX = Constants.SCREEN_WIDTH / 2
+                local centerY = Constants.SCREEN_HEIGHT / 2
+                Game.readySparks = createSparkParticles(
+                    centerX, centerY,
+                    Constants.UI.SPARK_COUNT_LEVEL_COMPLETE,
+                    Constants.UI.SPARK_SPEED_MIN_LEVEL_COMPLETE,
+                    Constants.UI.SPARK_SPEED_MAX_LEVEL_COMPLETE,
+                    Constants.UI.SPARK_SIZE_MIN,
+                    Constants.UI.SPARK_SIZE_MAX,
+                    Constants.UI.SPARK_LIFETIME
+                )
+            end
+        -- Phase 3: Show "GO!" (0.5s), then start playing
+        elseif Game.readyPhase == 3 then
+            if Game.readyTimer >= Constants.TIMING.READY_FADE_OUT_DURATION + Constants.TIMING.READY_GET_READY_DURATION + Constants.TIMING.READY_GO_DURATION then
+                Game.readyActive = false
+                Game.readyTimer = 0
+                Game.readyPhase = 1
+                Game.gameState = "playing"
+            end
+        end
+        
+        -- Update sparks
+        updateSparkParticles(Game.readySparks, dt, nil, Constants.UI.SPARK_FADE_RATE_READY)
+        
+        -- Update turret during ready sequence (to initialize legs)
+        if Game.turret then
+            Game.turret:update(dt)
+        end
+        
+        return  -- Don't update other game logic during ready sequence
+    end
+    
     -- Handle intro video
     if Game.videoMode then
         -- Update music fade
@@ -1979,53 +2022,29 @@ function love.update(dt)
     
     -- Handle life lost auditor screen (engagement depleted but lives remain)
     if Game.lifeLostAuditorActive then
+        -- Update banner animation FIRST (before checking if it's dropped)
+        TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
+        
         -- Update glitch text timer and write-on progress
         Game.glitchTextTimer = Game.glitchTextTimer + dt
         if Game.glitchTextWriteProgress < 1.0 then
             Game.glitchTextWriteProgress = math.min(1.0, Game.glitchTextWriteProgress + dt * 1.5)
         end
         
-        -- Update banner drop animation during life lost
-        if Game.gameOverBannerDrop then
-            if Game.topBannerAnimationState == "dropping" then
-                -- Fall down with gravity (drop 120px from current position)
-                local gravity = 800  -- pixels per second squared
-                Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
-                Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
-                
-                -- Target: 320px down from starting position
-                local targetOffset = Game.gameOverBannerTargetY
-                
-                -- Add shake while dropping
-                local shakeAmount = 3
-                Game.topBannerYOffset = Game.topBannerYOffset + (math.random() - 0.5) * shakeAmount * dt * 10
-                
-                -- Check if we've reached target
-                if Game.topBannerYOffset >= targetOffset then
-                    Game.topBannerYOffset = targetOffset  -- Clamp to target
-                    Game.topBannerAnimationState = "normal"  -- Stay at dropped position
-                    Game.topBannerVelocity = 0
-                    Game.gameOverBannerDropped = true
-                    Game.lifeLostAuditorTimer = 0  -- Start timer when banner finishes dropping
-                end
+        -- Wait at dropped position for 5.5 seconds (banner drop animation is handled by TopBanner.update())
+        if TopBanner.isGameOverBannerDropped() then
+            -- Start counting timer when banner finishes dropping
+            Game.lifeLostAuditorTimer = Game.lifeLostAuditorTimer + dt
+            if Game.lifeLostAuditorTimer >= Constants.TIMING.LIFE_LOST_WAIT_TIME then
+                -- Restart the level, keeping score and level
+                Game.lifeLostAuditorActive = false
+                Game.lifeLostAuditorTimer = 0
+                Game.lifeLostAuditorPhase = 1
+                restartLevel()
             end
-            
-            -- Fade in black overlay (fade over 1 second)
-            if Game.gameOverGreyFade < 1.0 then
-                Game.gameOverGreyFade = math.min(1.0, Game.gameOverGreyFade + dt)
-            end
-            
-            -- Wait at dropped position for 5.5 seconds (same as old phases: 1.0 + 2.0 + 2.0 + 0.5)
-            if Game.gameOverBannerDropped then
-                Game.lifeLostAuditorTimer = Game.lifeLostAuditorTimer + dt
-                if Game.lifeLostAuditorTimer >= 5.5 then
-                    -- Restart the level, keeping score and level
-                    Game.lifeLostAuditorActive = false
-                    Game.lifeLostAuditorTimer = 0
-                    Game.lifeLostAuditorPhase = 1
-                    restartLevel()
-                end
-            end
+        else
+            -- Banner hasn't finished dropping yet, reset timer
+            Game.lifeLostAuditorTimer = 0
         end
         
         -- Allow projectiles to continue updating so they can explode and stop sounds naturally
@@ -2041,9 +2060,9 @@ function love.update(dt)
         return  -- Don't update game logic during life lost auditor sequence
     end
     
-    -- Handle THE AUDITOR sequence (final game over - all lives lost)
-    -- Only process if not in intro mode (safety check)
-    if Game.auditorActive and not Game.introMode then
+    -- Auditor sequence removed - game over now uses same screen as life lost (top bar only)
+    -- This block is disabled
+    if false and Game.auditorActive and not Game.introMode then
         Game.auditorTimer = Game.auditorTimer + dt
         
         -- Phase 1: System freeze (1 second)
@@ -2081,6 +2100,9 @@ function love.update(dt)
     
     -- Handle game over screen
     if Game.gameOverActive then
+        -- Update banner animation FIRST (before checking if it's dropped)
+        TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
+        
         -- Don't stop sounds here - let projectile whistles continue until they explode
         
         -- Update glitch text timer and write-on progress
@@ -2089,61 +2111,30 @@ function love.update(dt)
             Game.glitchTextWriteProgress = math.min(1.0, Game.glitchTextWriteProgress + dt * 1.5)
         end
         
-        -- Update banner drop animation during game over
-        if Game.gameOverBannerDrop then
-            if Game.topBannerAnimationState == "dropping" then
-                -- Fall down with gravity (drop 120px from current position)
-                local gravity = 800  -- pixels per second squared
-                Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
-                Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
-                
-                -- Target: 320px down from starting position
-                local targetOffset = Game.gameOverBannerTargetY
-                
-                -- Add shake while dropping
-                local shakeAmount = 3
-                Game.topBannerYOffset = Game.topBannerYOffset + (math.random() - 0.5) * shakeAmount * dt * 10
-                
-                -- Check if we've reached target
-                if Game.topBannerYOffset >= targetOffset then
-                    Game.topBannerYOffset = targetOffset  -- Clamp to target
-                    Game.topBannerAnimationState = "normal"  -- Stay at dropped position
-                    Game.topBannerVelocity = 0
-                    Game.gameOverBannerDropped = true
-                    Game.gameOverTimer = 2.0  -- Start 2 second timer when banner finishes dropping
-                end
-            end
-            
-            -- Fade in black overlay (fade over 1 second)
-            if Game.gameOverGreyFade < 1.0 then
-                Game.gameOverGreyFade = math.min(1.0, Game.gameOverGreyFade + dt)
-            end
-            
-            -- Wait at dropped position for 2 seconds
-            if Game.gameOverBannerDropped then
-                Game.gameOverTimer = Game.gameOverTimer - dt
-                if Game.gameOverTimer <= 0 then
-                    -- Game over screen complete
-                    if Game.shouldRestartLevel and Game.lives > 0 then
-                        -- Restart the level (we had lives remaining after losing this one)
-                        restartLevel()
-                    elseif Game.lives == 0 then
-                        -- All lives lost - check for high score
-                        if isHighScore(Game.score) then
-                            -- Start name entry (arcade style)
-                            Game.gameOverActive = false  -- Clear game over screen
-                            Game.nameEntryActive = true
-                            Game.nameEntryText = "AAA"  -- Initialize with 'A' in all positions
-                            Game.nameEntryCursor = 1
-                            Game.nameEntryCharIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
-                        else
-                            -- No high score, return to attract mode
-                            returnToAttractMode()
-                        end
+        -- Wait at dropped position for 2 seconds (banner drop animation is handled by TopBanner.update())
+        if TopBanner.isGameOverBannerDropped() then
+            Game.gameOverTimer = Game.gameOverTimer - dt
+            if Game.gameOverTimer <= 0 then
+                -- Game over screen complete
+                if Game.shouldRestartLevel and Game.lives > 0 then
+                    -- Restart the level (we had lives remaining after losing this one)
+                    restartLevel()
+                elseif Game.lives == 0 then
+                    -- All lives lost - check for high score
+                    if isHighScore(Game.score) then
+                        -- Start name entry (arcade style)
+                        Game.gameOverActive = false  -- Clear game over screen
+                        Game.nameEntryActive = true
+                        Game.nameEntryText = "AAA"  -- Initialize with 'A' in all positions
+                        Game.nameEntryCursor = 1
+                        Game.nameEntryCharIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
                     else
-                        -- Safety fallback: if somehow we have lives but shouldn't restart, restart anyway
-                        restartLevel()
+                        -- No high score, return to attract mode
+                        returnToAttractMode()
                     end
+                else
+                    -- Safety fallback: if somehow we have lives but shouldn't restart, restart anyway
+                    restartLevel()
                 end
             end
         end
@@ -2315,6 +2306,15 @@ function love.update(dt)
             -- Now spawn new units for next level
             spawnUnitsForLevel()
             
+            -- Trigger ready sequence for new level
+            Game.readyActive = true
+            Game.readyTimer = 0
+            Game.readyPhase = 1
+            Game.readySparks = {}
+            Game.gameState = "ready"
+            -- Reset banner to original position
+            TopBanner.reset()
+            
             -- Restart music for new level
             Sound.playMusic()
         end
@@ -2368,129 +2368,11 @@ function love.update(dt)
         Engagement.update(gameDt, toxicHazardCount, Game.level)
     end
     
-    -- Update banner animation
-    if Game.gameState == "playing" and Engagement.value then
-        local engagementPct = Engagement.value / Constants.ENGAGEMENT_MAX
-        
-        if engagementPct <= 0.25 then
-            -- Reset above 25% timer when engagement drops to 25% or below
-            Game.topBannerAbove25Timer = 0
-            
-            -- Update blink timer for flashing effect
-            Game.topBannerBlinkTimer = Game.topBannerBlinkTimer + dt * 3  -- Fast blink (3x speed)
-            
-            -- Update banner animation
-            Game.topBannerAnimationTimer = Game.topBannerAnimationTimer + dt
-            
-            -- Animation states
-            if Game.topBannerAnimationState == "normal" then
-                -- Only allow dropping if engagement was above 25% for 6 seconds (reset flag)
-                if not Game.topBannerHasDropped then
-                    -- First time hitting 25% - drop immediately (no wait)
-                    Game.topBannerAnimationState = "dropping"
-                    Game.topBannerAnimationTimer = 0
-                    Game.topBannerWaitTimer = 0
-                    Game.topBannerVelocity = 0
-                    Game.topBannerYOffset = 0
-                    Game.topBannerHasDropped = true
-                else
-                    -- Wait at original position for 15 seconds before checking again
-                    Game.topBannerWaitTimer = Game.topBannerWaitTimer + dt
-                    if Game.topBannerWaitTimer >= 15.0 then
-                        -- 15 seconds passed, check engagement and drop if still at 25% or below
-                        if engagementPct <= 0.25 then
-                            Game.topBannerAnimationState = "dropping"
-                            Game.topBannerAnimationTimer = 0
-                            Game.topBannerWaitTimer = 0
-                            Game.topBannerVelocity = 0
-                            Game.topBannerYOffset = 0
-                        else
-                            -- Engagement went above 25%, reset wait timer
-                            Game.topBannerWaitTimer = 0
-                        end
-                    end
-                end
-            elseif Game.topBannerAnimationState == "dropping" then
-                -- Check if engagement went above 25% - if so, start rising immediately
-                if engagementPct > 0.25 then
-                    Game.topBannerAnimationState = "rising"
-                    Game.topBannerAnimationTimer = 0
-                    Game.topBannerVelocity = -150  -- Start rising slowly (negative = upward)
-                else
-                    -- Fall down to above center screen with gravity
-                    local gravity = 800  -- pixels per second squared
-                    Game.topBannerVelocity = Game.topBannerVelocity + gravity * dt
-                    Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
-                    
-                    -- Target: stop at a reasonable distance down (about 330 pixels from original position)
-                    local targetOffset = 330
-                    
-                    -- Add shake while dropping
-                    local shakeAmount = 3
-                    Game.topBannerYOffset = Game.topBannerYOffset + (math.random() - 0.5) * shakeAmount * dt * 10
-                    
-                    -- Check if we've reached target - stay at lower position
-                    if Game.topBannerYOffset >= targetOffset then
-                        Game.topBannerYOffset = targetOffset  -- Clamp to target
-                        Game.topBannerAnimationState = "normal"  -- Stay at lower position, don't rise yet
-                        Game.topBannerAnimationTimer = 0
-                        Game.topBannerVelocity = 0
-                    end
-                end
-            elseif Game.topBannerAnimationState == "normal" and Game.topBannerYOffset >= 330 then
-                -- Banner is at lower position (330px down) - check if engagement has been above 25% for 6 seconds
-                -- This check happens in the "else" block when engagement > 25%
-            end
-            -- Note: "rising" state is handled when engagement > 25% and timer >= 6 seconds
-        else
-            -- Engagement is above 25%
-            -- Track how long engagement has been above 25%
-            Game.topBannerAbove25Timer = Game.topBannerAbove25Timer + dt
-            
-            if Game.topBannerAnimationState == "dropping" then
-                -- If engagement went above 25% while dropping, stop dropping and stay at current position
-                Game.topBannerAnimationState = "normal"
-                Game.topBannerAnimationTimer = 0
-                Game.topBannerVelocity = 0
-            elseif Game.topBannerAnimationState == "normal" and Game.topBannerYOffset >= 330 then
-                -- Banner is at lower position (330px down) - wait for 6 seconds above 25% before rising
-                if Game.topBannerAbove25Timer >= 6.0 then
-                    -- 6 seconds passed, start rising
-                    Game.topBannerAnimationState = "rising"
-                    Game.topBannerAnimationTimer = 0
-                    Game.topBannerVelocity = -150  -- Start rising slowly (negative = upward)
-                end
-            elseif Game.topBannerAnimationState == "rising" then
-                -- Rise back up slowly with upward force
-                local upwardForce = -400  -- Negative = upward acceleration
-                Game.topBannerVelocity = Game.topBannerVelocity + upwardForce * dt
-                Game.topBannerYOffset = Game.topBannerYOffset + Game.topBannerVelocity * dt
-                
-                -- Check if we've returned to original position
-                if Game.topBannerYOffset <= 0 then
-                    Game.topBannerYOffset = 0
-                    Game.topBannerVelocity = 0
-                    Game.topBannerAnimationState = "normal"  -- Stay at original position
-                    Game.topBannerAnimationTimer = 0
-                    Game.topBannerWaitTimer = 0
-                    Game.topBannerHasDropped = false
-                    Game.topBannerBlinkTimer = 0
-                    Game.topBannerAbove25Timer = 0  -- Reset timer
-                end
-            else
-                -- Engagement is above 25% and banner is at normal position (YOffset = 0) - reset everything
-                Game.topBannerAnimationState = "normal"
-                Game.topBannerAnimationTimer = 0
-                Game.topBannerWaitTimer = 0
-                Game.topBannerYOffset = 0
-                Game.topBannerVelocity = 0
-                Game.topBannerBlinkTimer = 0
-                -- Only reset drop flag if engagement has been above 25% for 6 seconds
-                if Game.topBannerAbove25Timer >= 6.0 then
-                    Game.topBannerHasDropped = false  -- Reset drop flag after 6 seconds above 25%
-                end
-            end
-        end
+    -- Update banner animation (using TopBanner module)
+    -- Note: Banner is already updated above for gameOverActive and lifeLostAuditorActive cases
+    -- Only update here if we're in normal gameplay
+    if not Game.gameOverActive and not Game.lifeLostAuditorActive then
+        TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
     end
     
     World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt)
@@ -2498,7 +2380,7 @@ function love.update(dt)
     -- Check if engagement ran out (game over)
     -- Only check if we're actually playing and not already in a game over state
     if Game.gameState == "playing" and Engagement.value <= 0 then
-        if not Game.gameOverActive and not Game.auditorActive and not Game.lifeLostAuditorActive then
+        if not Game.gameOverActive and not Game.lifeLostAuditorActive then
             handleGameOver("engagement_depleted")
             Webcam.showComment("game_over")
         end
@@ -2522,23 +2404,17 @@ function love.update(dt)
             Game.shake = math.max(Game.shake, 1.5)  -- Screen shake
             
             -- Create spark particles for the multiplier effect
-            Game.pointMultiplierSparks = {}
             local centerX = Constants.SCREEN_WIDTH / 2
             local centerY = Constants.SCREEN_HEIGHT / 2 - 100
-            local numSparks = 30  -- Number of sparks
-            for i = 1, numSparks do
-                local angle = (i / numSparks) * math.pi * 2
-                local speed = 200 + math.random() * 300  -- Random speed between 200-500
-                table.insert(Game.pointMultiplierSparks, {
-                    x = centerX,
-                    y = centerY,
-                    vx = math.cos(angle) * speed,
-                    vy = math.sin(angle) * speed,
-                    life = 1.0,  -- Full life
-                    maxLife = 1.0,
-                    size = 3 + math.random() * 4  -- Random size between 3-7
-                })
-            end
+            Game.pointMultiplierSparks = createSparkParticles(
+                centerX, centerY,
+                Constants.UI.SPARK_COUNT_MULTIPLIER,
+                Constants.UI.SPARK_SPEED_MIN,
+                Constants.UI.SPARK_SPEED_MAX,
+                Constants.UI.SPARK_SIZE_MIN,
+                Constants.UI.SPARK_SIZE_MAX,
+                Constants.UI.SPARK_LIFETIME
+            )
             
             -- Play sound effect
             Sound.playTone(800, 0.3, 0.8, 1.5)  -- High pitch success sound
@@ -2570,17 +2446,8 @@ function love.update(dt)
                     Game.pointMultiplierTextTimer = Game.pointMultiplierTextTimer - dt
                 end
                 
-                -- Update spark particles
-                for i = #Game.pointMultiplierSparks, 1, -1 do
-                    local spark = Game.pointMultiplierSparks[i]
-                    spark.x = spark.x + spark.vx * dt
-                    spark.y = spark.y + spark.vy * dt
-                    spark.vy = spark.vy + 200 * dt  -- Gravity effect
-                    spark.life = spark.life - dt * 0.8  -- Fade out
-                    if spark.life <= 0 then
-                        table.remove(Game.pointMultiplierSparks, i)
-                    end
-                end
+            -- Update spark particles
+            updateSparkParticles(Game.pointMultiplierSparks, dt, Constants.UI.SPARK_GRAVITY, Constants.UI.SPARK_FADE_RATE_MULTIPLIER)
             end
             -- Note: Multiplier stays active for full duration regardless of engagement level
         end
@@ -2590,16 +2457,7 @@ function love.update(dt)
             Game.rapidFireTextTimer = Game.rapidFireTextTimer - dt
             
             -- Update rapid fire spark particles
-            for i = #Game.rapidFireSparks, 1, -1 do
-                local spark = Game.rapidFireSparks[i]
-                spark.x = spark.x + spark.vx * dt
-                spark.y = spark.y + spark.vy * dt
-                spark.vy = spark.vy + 200 * dt  -- Gravity effect
-                spark.life = spark.life - dt * 0.8  -- Fade out
-                if spark.life <= 0 then
-                    table.remove(Game.rapidFireSparks, i)
-                end
-            end
+            updateSparkParticles(Game.rapidFireSparks, dt, Constants.UI.SPARK_GRAVITY, Constants.UI.SPARK_FADE_RATE_MULTIPLIER)
         end
         
         if engagementPct < 0.25 and math.random() < 0.01 then  -- 1% chance per frame when low
@@ -2756,331 +2614,32 @@ function love.update(dt)
 end
 
 function love.keypressed(key)
-    -- Quick start: Press 'q' to skip directly to gameplay from any screen
-    if key == "q" then
-        -- Skip all intro screens and go straight to gameplay
-        Game.bootingMode = false
-        Game.logoMode = false
-        Game.attractMode = false
-        Game.videoMode = false
-        Game.introMode = false
-        Game.joystickTestMode = false
-        Game.demoMode = false
-        
-        -- Stop video if playing
-        if Game.introVideo then
-            pcall(function()
-                if Game.introVideo.pause then
-                    Game.introVideo:pause()
-                end
-            end)
-        end
-        
-        -- Unmute sounds
-        Sound.unmute()
-        
-        -- Start gameplay directly (this will initialize everything)
-        startGameplay()
-        return
-    end
-    
-    -- Handle name entry (arcade style)
-    if Game.nameEntryActive then
-        local charSet = Game.nameEntryCharSet
-        local cursor = Game.nameEntryCursor
-        local charIndex = Game.nameEntryCharIndex[cursor] or 1
-        
-        if key == "left" then
-            -- Move cursor left
-            Game.nameEntryCursor = math.max(1, cursor - 1)
-        elseif key == "right" then
-            -- Move cursor right
-            Game.nameEntryCursor = math.min(Game.nameEntryMaxLength, cursor + 1)
-        elseif key == "up" then
-            -- Change character up
-            charIndex = charIndex + 1
-            if charIndex > #charSet then
-                charIndex = 1  -- Wrap around
-            end
-            Game.nameEntryCharIndex[cursor] = charIndex
-            -- Update the character at cursor position
-            local nameChars = {}
-            for i = 1, Game.nameEntryMaxLength do
-                local idx = Game.nameEntryCharIndex[i] or 1
-                nameChars[i] = charSet:sub(idx, idx)
-            end
-            Game.nameEntryText = table.concat(nameChars)
-        elseif key == "down" then
-            -- Change character down
-            charIndex = charIndex - 1
-            if charIndex < 1 then
-                charIndex = #charSet  -- Wrap around
-            end
-            Game.nameEntryCharIndex[cursor] = charIndex
-            -- Update the character at cursor position
-            local nameChars = {}
-            for i = 1, Game.nameEntryMaxLength do
-                local idx = Game.nameEntryCharIndex[i] or 1
-                nameChars[i] = charSet:sub(idx, idx)
-            end
-            Game.nameEntryText = table.concat(nameChars)
-        elseif key == "return" or key == "enter" then
-            -- Submit name
-            local name = Game.nameEntryText:gsub("^%s+", ""):gsub("%s+$", "")  -- Trim whitespace
-            if name == "" or name == "AAA" then
-                name = "AAA"  -- Default name
-            end
-            addHighScore(name, Game.score)
-            Game.nameEntryActive = false
-            Game.nameEntryText = ""
-            Game.nameEntryCursor = 1
-            Game.nameEntryCharIndex = {}
-            returnToAttractMode()
-        end
-        return
-    end
-    
-    -- Handle joystick test exit
-    if Game.joystickTestMode then
-        if key == "escape" or key == "space" or key == "return" or key == "enter" then
-            Game.joystickTestMode = false
-            Game.attractMode = true
-            Game.attractModeTimer = 0
-        end
-        return
-    end
-
-    -- Handle coin insertion and options in attract mode
-    if Game.attractMode then
-        if key == "space" or key == "return" or key == "enter" then
-            startGame()
-            return
-        elseif key == "j" then
-            -- Open joystick test screen from attract mode
-            Game.attractMode = false
-            Game.joystickTestMode = true
-            return
-        elseif key == "d" then
-            -- Start demo mode
-            DemoMode.start()
-            return
-        end
-    end
-    
-    -- Handle joystick button 4 (start game) in attract mode
-    -- This is also handled in love.joystickpressed, but we check here too for consistency
-    
-    -- Handle video mode input (allow skipping)
-    if Game.videoMode then
-        if key == "space" or key == "return" or key == "enter" or key == "escape" then
-            -- Skip video and go directly to intro screen
-            if Game.introVideo then
-                -- Safely check if video is playing and pause it
-                local success, isPlaying = pcall(function()
-                    return Game.introVideo:isPlaying()
-                end)
-                if success and isPlaying then
-                    pcall(function()
-                        if Game.introVideo.pause then
-                            Game.introVideo:pause()
-                        end
-                    end)
-                end
-            end
-            Game.videoMode = false
-            Game.introMode = true
-            Game.introTimer = 0
-            Game.introStep = 1
-            Game.introMusicFadeActive = false
-            return
-        end
-    end
-    
-    -- Handle demo mode input
-    if Game.demoMode then
-        if DemoMode.keypressed(key) then
-            return
-        end
-    end
-    
-    -- Handle input during intro screen
-    if Game.introMode then
-        if key == "space" or key == "return" or key == "enter" then
-            -- Skip to gameplay
-            startGameplay()
-            return
-        elseif key == "right" or key == "d" then
-            -- Advance to next step
-            local ChasePaxton = require("src.core.chase_paxton")
-            if Game.introStep < #ChasePaxton.INTRO_MESSAGES then
-                Game.introStep = Game.introStep + 1
-                -- Reset timer for new step
-                local stepStartTime = 0
-                for i = 1, Game.introStep - 1 do
-                    stepStartTime = stepStartTime + ChasePaxton.INTRO_MESSAGES[i].duration
-                end
-                Game.introTimer = stepStartTime
-            end
-            return
-        end
-    end
-    
-    -- Toggle CRT shader
-    if key == "c" then
-        if Game.crtChain then
-            Game.crtEnabled = not Game.crtEnabled
-        end
-        return
-    end
-    
-    -- Toggle background/foreground layers
-    if key == "b" then
-        Game.showBackgroundForeground = not Game.showBackgroundForeground
-        return
-    end
-    
-    -- Toggle fullscreen on second monitor (F11)
-    if key == "f11" then
-        local isFullscreen = love.window.getFullscreen()
-        local displayCount = love.window.getDisplayCount()
-        
-        if isFullscreen then
-            -- Exit fullscreen: restore windowed mode on primary display
-            love.window.setFullscreen(false)
-            love.window.setMode(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
-            -- Recreate CRT chain for windowed mode
-            if Game.crtChain then
-                -- Resize the chain (this recreates the buffer canvases)
-                -- The glow effect will now automatically recreate its internal canvas
-                Game.crtChain.resize(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
-                
-                -- Update CRT effect screen size
-                if Game.crtEffect and Game.crtEffect.screenSize then
-                    Game.crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
-                end
-            end
-        else
-            -- Enter fullscreen using the monitor's full native resolution
-            local width, height
-            if displayCount > 1 then
-                -- Get the native resolution of the second monitor
-                width, height = love.window.getDesktopDimensions(2)
-                -- Use exclusive fullscreen mode to ensure native resolution is used
-                love.window.setMode(width, height, {
-                    fullscreen = true,
-                    fullscreentype = "exclusive",  -- Use exclusive fullscreen for native resolution
-                    display = 2  -- Second monitor (1-indexed in LÖVE)
-                })
-            else
-                -- Only one monitor, get its native resolution
-                width, height = love.window.getDesktopDimensions(1)
-                love.window.setMode(width, height, {
-                    fullscreen = true,
-                    fullscreentype = "exclusive"  -- Use exclusive fullscreen for native resolution
-                })
-            end
-            -- Recreate CRT chain for fullscreen resolution
-            if Game.crtChain then
-                -- Resize the chain (this recreates the buffer canvases)
-                -- The glow effect will now automatically recreate its internal canvas
-                Game.crtChain.resize(width, height)
-                
-                -- Update CRT effect screen size - keep at original for proper scanline spacing
-                if Game.crtEffect and Game.crtEffect.screenSize then
-                    Game.crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
-                end
-            end
-        end
-        return
-    end
-    
-    if not Game.turret then return end
-    -- Don't allow charging if game state is not playing (prevents charging during win sequence)
-    if Game.gameState ~= "playing" then return end
-    if key == "z" then Game.turret:startCharge("red")
-    elseif key == "x" then Game.turret:startCharge("blue")
-    elseif key == "2" then
-        -- Debug: Give rapid fire powerup
-        Game.turret:activatePuckMode(Constants.POWERUP_DURATION)
-    end
+    InputHandler.handleKeyPressed(key)
 end
 
 -- Text input disabled for arcade-style name entry (uses arrow keys instead)
 
 function love.keyreleased(key)
-    if not Game.turret then return end
-    -- Don't allow releasing charge if game state is not playing
-    if Game.gameState ~= "playing" then return end
-    if key == "z" or key == "x" then Game.turret:releaseCharge(Game.projectiles) end
+    InputHandler.handleKeyReleased(key)
 end
 
 function love.joystickreleased(joystick, button)
-    if not Game.turret then return end
-    -- Don't allow releasing charge if game state is not playing
-    if Game.gameState ~= "playing" then return end
-    
-    -- Handle button releases for firing
-    if button == 1 then
-        -- Button 1 released = release red charge
-        Game.joystickButton1Pressed = false
-        Game.turret:releaseCharge(Game.projectiles)
-    elseif button == 2 then
-        -- Button 2 released = release blue charge
-        Game.joystickButton2Pressed = false
-        Game.turret:releaseCharge(Game.projectiles)
-    end
+    InputHandler.handleJoystickReleased(joystick, button)
+end
+
+-- Handle joystick axis input (for DPad/analog stick in name entry)
+function love.joystickaxis(joystick, axis, value)
+    InputHandler.handleJoystickAxis(joystick, axis, value)
+end
+
+-- Handle joystick hat input (for DPad in name entry)
+function love.joystickhat(joystick, hat, direction)
+    InputHandler.handleJoystickHat(joystick, hat, direction)
 end
 
 -- Handle joystick button presses
 function love.joystickpressed(joystick, button)
-    -- Handle attract mode navigation
-    if Game.attractMode and not Game.joystickTestMode then
-        if button == 4 then
-            -- Button 4 = start game (equivalent to SPACE/ENTER)
-            startGame()
-        elseif button == 3 then
-            -- Button 3 = insert coin (placeholder for future implementation)
-            -- TODO: Implement coin insertion logic when ready
-        else
-            -- Any other button opens joystick test screen
-            Game.attractMode = false
-            Game.joystickTestMode = true
-        end
-        return
-    end
-    
-    -- Handle joystick test mode exit
-    if Game.joystickTestMode then
-        if button == 4 then
-            -- Button 4 = exit test mode and return to attract mode
-            Game.joystickTestMode = false
-            Game.attractMode = true
-            Game.attractModeTimer = 0
-        end
-        return
-    end
-    
-    -- Handle intro screen (Chase Paxton onboarding)
-    if Game.introMode then
-        if button == 4 then
-            -- Button 4 = skip to gameplay (equivalent to SPACE/ENTER)
-            startGameplay()
-        end
-        return
-    end
-    
-    -- Handle gameplay firing (buttons 1 and 2)
-    if Game.turret and Game.gameState == "playing" then
-        if button == 1 then
-            -- Button 1 = red fire
-            Game.turret:startCharge("red")
-            Game.joystickButton1Pressed = true
-        elseif button == 2 then
-            -- Button 2 = blue fire
-            Game.turret:startCharge("blue")
-            Game.joystickButton2Pressed = true
-        end
-    end
+    InputHandler.handleJoystickPressed(joystick, button)
 end
 
 -- Drawing function that will be wrapped by Moonshine if CRT is enabled
@@ -3137,8 +2696,7 @@ function drawGame()
                     local bubbleX = e.x
                     local bubbleY = e.y - Constants.UNIT_RADIUS - 40
                     local padding = 10
-                    local fontSize = 18  -- Larger font for dialogue
-                    local font = love.graphics.newFont(fontSize)
+                    local font = Game.fonts.speechBubble
                     
                     local textWidth = font:getWidth(e.speechBubble.text)
                     local textHeight = font:getHeight()
@@ -3197,8 +2755,8 @@ function drawGame()
     -- Draw Windows 95 style frame around the playfield (A.R.A.C. Control Interface)
     -- Position the frame so the playfield content begins at Constants.OFFSET_X/Y (no gameplay coordinate changes)
     do
-        local titleBarHeight = 20
-        local borderWidth = 3
+        local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+        local borderWidth = Constants.UI.BORDER_WIDTH
         local frameX = Constants.OFFSET_X - borderWidth
         local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
         local frameW = Constants.PLAYFIELD_WIDTH + (borderWidth * 2)
@@ -3208,118 +2766,18 @@ function drawGame()
     end
     
     -- Draw black overlay during game over (behind banner, in front of game)
-    if Game.gameOverActive and Game.gameOverBannerDrop and Game.gameOverGreyFade > 0 then
-        love.graphics.setColor(0, 0, 0, Game.gameOverGreyFade)
-        love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    local greyFade = TopBanner.getGameOverGreyFade()
+    if TopBanner.isGameOverDropActive() and greyFade > 0 then
+        drawBlackOverlay(greyFade)
     end
     
     -- Draw top banner overlapping ARAC window (full screen width)
     -- Draw after window frame so it appears on top
-    if Game.topBanner then
-        local bannerX = 0  -- Start at left edge of screen
-        local bannerWidth = Constants.SCREEN_WIDTH  -- Full screen width
-        
-        -- Scale banner to fill full screen width, maintaining aspect ratio
-        local bannerImgWidth = Game.topBanner:getWidth()
-        local bannerImgHeight = Game.topBanner:getHeight()
-        local scaleX = bannerWidth / bannerImgWidth
-        local scale = scaleX  -- Use same scale for Y to maintain aspect ratio
-        
-        -- Calculate actual height after scaling
-        local scaledHeight = bannerImgHeight * scale
-        
-        -- Position banner to overlap ARAC window (frame starts at OFFSET_Y - borderWidth - titleBarHeight)
-        -- Move it down so it overlaps the window frame
-        local titleBarHeight = 20
-        local borderWidth = 3
-        local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
-        local baseBannerY = frameY - scaledHeight + 120  -- Overlap by moving down 120px into the window
-        
-        -- Store original Y position on first draw
-        if Game.topBannerOriginalY == 0 then
-            Game.topBannerOriginalY = baseBannerY
-        end
-        
-        -- Apply animation offset (only Y axis)
-        local bannerY = baseBannerY + Game.topBannerYOffset
-        
-        love.graphics.setColor(1, 1, 1, 1)
-        
-        -- Draw base banner
-        love.graphics.draw(Game.topBanner, bannerX, bannerY, 0, scale, scale)
-        
-        -- Draw banner layers: Activated always on, Vigilant composites over with fade
-        -- Activated state stays on forever
-        if Game.topBannerActivated then
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.draw(Game.topBannerActivated, bannerX, bannerY, 0, scale, scale)
-        end
-        
-        -- Vigilant state composites over Activated, fading from 0 alpha at 100% to 1 alpha at 50%
-        if Game.gameState == "playing" and Engagement.value and Game.topBannerVigilant then
-            local engagementPct = Engagement.value / Constants.ENGAGEMENT_MAX
-            
-            -- Calculate alpha: 1.0 at 50% engagement, 0.0 at 100% engagement
-            -- Linear fade from 100% (alpha 0) to 50% (alpha 1)
-            local fadeRange = 0.5  -- Fade over 50% of engagement (from 100% to 50%)
-            local fadeProgress = (1.0 - engagementPct) / fadeRange  -- 0 at 100%, 1 at 50%
-            fadeProgress = math.max(0, math.min(1, fadeProgress))  -- Clamp to 0-1
-            Game.topBannerVigilantAlpha = fadeProgress
-            
-            -- Check for critical state (25% or below) for additional effects
-            Game.topBannerCriticalEffects = engagementPct <= 0.25
-        else
-            -- Preserve critical effects state during game over/win
-        end
-        
-        -- Draw Vigilant layer on top with calculated alpha
-        -- Use regular alpha blending - if white outlines persist, the image may need editing
-        if Game.topBannerVigilant and Game.topBannerVigilantAlpha > 0 then
-            -- Apply blinking effect when at 25% or below
-            local blinkAlpha = Game.topBannerVigilantAlpha
-            if Game.topBannerCriticalEffects then
-                -- Fast blinking: on/off every 0.2 seconds
-                local blinkPhase = math.sin(Game.topBannerBlinkTimer * math.pi) * 0.5 + 0.5
-                blinkAlpha = blinkAlpha * (0.3 + blinkPhase * 0.7)  -- Blink between 30% and 100% of base alpha
-            end
-            
-            love.graphics.setColor(1, 1, 1, blinkAlpha)
-            love.graphics.draw(Game.topBannerVigilant, bannerX, bannerY, 0, scale, scale)
-        end
-        
-        -- Draw glitchy terminal text under banner for game over
-        if Game.gameOverActive and Game.gameOverBannerDrop then
-            local textY = bannerY + scaledHeight + 20
-            local textX = Constants.SCREEN_WIDTH / 2
-            local text = "YIELD NOT SATISFACTORY - LIQUIDATING ASSET"
-            if Game.fonts.terminal then
-                local textWidth = Game.fonts.terminal:getWidth(text)
-                drawGlitchyTerminalText(text, textX, textY, 32)
-            end
-        end
-        
-        -- Draw critical effects (glow and lens flares) when at 25% or below
-        if Game.topBannerCriticalEffects then
-            -- Draw glow effect around banner
-            local glowAlpha = 0.4 * (math.sin(Game.topBannerBlinkTimer * math.pi * 2) + 1) / 2
-            love.graphics.setColor(1, 0.2, 0.2, glowAlpha)  -- Red glow
-            love.graphics.setLineWidth(8)
-            local glowRectX = bannerX - 10
-            local glowRectY = bannerY - 10
-            local glowRectW = Constants.SCREEN_WIDTH + 20
-            local glowRectH = scaledHeight + 20
-            love.graphics.rectangle("line", glowRectX, glowRectY, glowRectW, glowRectH)
-            
-            -- Draw multiple glow layers for intensity
-            love.graphics.setLineWidth(4)
-            love.graphics.setColor(1, 0.4, 0.4, glowAlpha * 0.6)
-            love.graphics.rectangle("line", glowRectX + 5, glowRectY + 5, glowRectW - 10, glowRectH - 10)
-            
-        end
-        
-        -- Reset color and line width
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.setLineWidth(1)
+    TopBanner.draw()
+    
+    -- Draw terminal text for game over
+    if Game.gameOverActive then
+        TopBanner.drawGameOverText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
     end
     
     -- Draw foreground image if loaded and enabled (full screen, on top of game elements) - now affected by shake
@@ -3474,12 +2932,13 @@ function love.draw()
         return
     end
     
-    -- Draw THE AUDITOR sequence (final game over - all lives lost)
-    -- Only show if not in intro mode (safety check)
-    if Game.auditorActive and not Game.introMode then
-        drawWithCRT(drawAuditor)
+    -- Draw ready screen (GET READY / GO!)
+    if Game.readyActive then
+        drawWithCRT(drawReadyScreen)
         return
     end
+    
+    -- Auditor sequence removed - game over now uses same screen as life lost (top bar only)
     
     -- Apply CRT effect if enabled, otherwise draw normally
     drawWithCRT(drawGame)
@@ -3487,17 +2946,15 @@ end
 
 function drawScoreWindow()
     -- Score window dimensions and position (below playfield, centered)
-    local SCORE_WIDTH = 300
-    local SCORE_HEIGHT = 80
+    local SCORE_WIDTH = Constants.UI.SCORE_WINDOW_WIDTH
+    local SCORE_HEIGHT = Constants.UI.SCORE_WINDOW_HEIGHT
     local SCORE_X = (Constants.SCREEN_WIDTH - SCORE_WIDTH) / 2  -- Centered
-    local SCORE_Y = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + 20
-    local titleBarHeight = 20
-    local borderWidth = 3
+    local SCORE_Y = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + Constants.UI.WINDOW_SPACING
+    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+    local borderWidth = Constants.UI.BORDER_WIDTH
     
     -- Draw transparent black background for content area
-    love.graphics.setColor(0, 0, 0, 0.7)
-    love.graphics.rectangle("fill", SCORE_X + borderWidth, SCORE_Y + borderWidth + titleBarHeight, 
-        SCORE_WIDTH - (borderWidth * 2), SCORE_HEIGHT - (borderWidth * 2) - titleBarHeight)
+    drawWindowContentBackground(SCORE_X, SCORE_Y, SCORE_WIDTH, SCORE_HEIGHT, titleBarHeight, borderWidth)
     
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(SCORE_X, SCORE_Y, SCORE_WIDTH, SCORE_HEIGHT, "Score")
@@ -3512,22 +2969,20 @@ end
 
 function drawMultiplierWindow()
     -- Multiplier window dimensions and position (below engagement plot)
-    local PLOT_WIDTH = 300
-    local PLOT_HEIGHT = 200
-    local PLOT_X = Constants.OFFSET_X + 20
-    local PLOT_Y = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + 20
+    local PLOT_WIDTH = Constants.UI.PLOT_WINDOW_WIDTH
+    local PLOT_HEIGHT = Constants.UI.PLOT_WINDOW_HEIGHT
+    local PLOT_X = Constants.OFFSET_X + Constants.UI.WINDOW_OFFSET_X
+    local PLOT_Y = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + Constants.UI.WINDOW_SPACING
     
     local MULTIPLIER_WIDTH = PLOT_WIDTH
-    local MULTIPLIER_HEIGHT = 60
+    local MULTIPLIER_HEIGHT = Constants.UI.MULTIPLIER_WINDOW_HEIGHT
     local MULTIPLIER_X = PLOT_X
-    local MULTIPLIER_Y = PLOT_Y + PLOT_HEIGHT + 10
-    local titleBarHeight = 20
-    local borderWidth = 3
+    local MULTIPLIER_Y = PLOT_Y + PLOT_HEIGHT + Constants.UI.WINDOW_SPACING
+    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+    local borderWidth = Constants.UI.BORDER_WIDTH
     
     -- Draw transparent black background for content area
-    love.graphics.setColor(0, 0, 0, 0.7)
-    love.graphics.rectangle("fill", MULTIPLIER_X + borderWidth, MULTIPLIER_Y + borderWidth + titleBarHeight, 
-        MULTIPLIER_WIDTH - (borderWidth * 2), MULTIPLIER_HEIGHT - (borderWidth * 2) - titleBarHeight)
+    drawWindowContentBackground(MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT, titleBarHeight, borderWidth)
     
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT, "Multiplier")
@@ -3578,20 +3033,11 @@ function drawHUD()
     
     -- Draw point multiplier announcement (giant flashing "2X" with sparks) - skip in demo mode
     if Game.pointMultiplierActive and not Game.demoMode then
-        local centerX = Constants.SCREEN_WIDTH / 2
-        local centerY = Constants.SCREEN_HEIGHT / 2 - 100
+        local centerX, centerY = getScreenCenter()
+        centerY = centerY - 100
         
         -- Draw spark particles
-        for _, spark in ipairs(Game.pointMultiplierSparks) do
-            local alpha = spark.life / spark.maxLife
-            -- Gold/yellow sparks with fade
-            local sparkColor = 0.3 + (spark.life / spark.maxLife) * 0.7  -- Fade from bright to dim
-            love.graphics.setColor(1, 0.8 + sparkColor * 0.2, 0.2, alpha)
-            love.graphics.circle("fill", spark.x, spark.y, spark.size)
-            -- Add glow effect
-            love.graphics.setColor(1, 0.9, 0.3, alpha * 0.3)
-            love.graphics.circle("fill", spark.x, spark.y, spark.size * 2)
-        end
+        drawSparkParticles(Game.pointMultiplierSparks)
         
         -- Calculate flash alpha
         local flashAlpha = 1.0
@@ -3600,15 +3046,13 @@ function drawHUD()
             flashAlpha = 0.6 + 0.4 * (math.sin(Game.pointMultiplierFlashTimer * 12) + 1) / 2
         end
         
-        -- Create giant font for "2X" text (much larger than large font)
-        local giantFontSize = 120
-        local giantFont = love.graphics.newFont(giantFontSize)
-        love.graphics.setFont(giantFont)
+        -- Use cached giant font for "2X" text
+        love.graphics.setFont(Game.fonts.announcementGiant)
         
         local multiplierText = Game.pointMultiplier .. "X"
-        local multiplierWidth = giantFont:getWidth(multiplierText)
+        local multiplierWidth = Game.fonts.announcementGiant:getWidth(multiplierText)
         local multiplierX = centerX - multiplierWidth / 2
-        local multiplierY = centerY - giantFontSize / 2
+        local multiplierY = centerY - Constants.UI.FONT_ANNOUNCEMENT_GIANT / 2
         
         -- Flashy colors (gold/yellow pulsing)
         local flash = (math.sin(love.timer.getTime() * 8) + 1) / 2
@@ -3658,16 +3102,7 @@ function drawHUD()
             -- Adjust spark positions to match the rapid fire text position above multiplier
             sparkOffsetY = -150  -- Move sparks up by 150px to match text position
         end
-        for _, spark in ipairs(Game.rapidFireSparks) do
-            local alpha = spark.life / spark.maxLife
-            -- Gold/yellow sparks with fade
-            local sparkColor = 0.3 + (spark.life / spark.maxLife) * 0.7  -- Fade from bright to dim
-            love.graphics.setColor(1, 0.8 + sparkColor * 0.2, 0.2, alpha)
-            love.graphics.circle("fill", spark.x, spark.y + sparkOffsetY, spark.size)
-            -- Add glow effect
-            love.graphics.setColor(1, 0.9, 0.3, alpha * 0.3)
-            love.graphics.circle("fill", spark.x, spark.y + sparkOffsetY, spark.size * 2)
-        end
+        drawSparkParticles(Game.rapidFireSparks, sparkOffsetY)
         
         -- Calculate flash alpha and fade out after 3 seconds
         local flashAlpha = 1.0
@@ -3682,15 +3117,13 @@ function drawHUD()
             flashAlpha = flashAlpha * (Game.rapidFireTextTimer / 1.0)
         end
         
-        -- Create giant font for "RAPID FIRE" text
-        local giantFontSize = 120
-        local giantFont = love.graphics.newFont(giantFontSize)
-        love.graphics.setFont(giantFont)
+        -- Use cached giant font for "RAPID FIRE" text
+        love.graphics.setFont(Game.fonts.announcementGiant)
         
         local rapidFireText = "RAPID FIRE"
-        local textWidth = giantFont:getWidth(rapidFireText)
+        local textWidth = Game.fonts.announcementGiant:getWidth(rapidFireText)
         local textX = centerX - textWidth / 2
-        local textY = centerY - giantFontSize / 2
+        local textY = centerY - Constants.UI.FONT_ANNOUNCEMENT_GIANT / 2
         
         -- Flashy colors (gold/yellow pulsing)
         local flash = (math.sin(love.timer.getTime() * 8) + 1) / 2
@@ -3723,7 +3156,6 @@ function drawHUD()
     
     -- Display level transition message
     if Game.levelTransitionActive then
-        local Popups = require("src.core.popups")
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(0, 1, 0)
         local message = Popups.getWinMessage(Game.winCondition)
@@ -3738,7 +3170,6 @@ function drawHUD()
     -- Removed old game over screen messages - banner drop replaces them
     elseif Game.nameEntryActive then
         -- Draw name entry screen (check this before game over screen)
-        local Popups = require("src.core.popups")
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(1, 1, 0)
         local titleMsg = Popups.HIGH_SCORE.TITLE
