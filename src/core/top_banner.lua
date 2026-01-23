@@ -5,6 +5,11 @@ local Constants = require("src.constants")
 
 local TopBanner = {}
 
+-- Configuration: Enable/disable head layer cropping at y=160
+-- Set to false to disable cropping
+local ENABLE_HEAD_CROP = true
+local HEAD_CROP_Y = 160  -- Y position where head layers end
+
 -- Internal state
 local state = {
     -- Images
@@ -37,39 +42,39 @@ local state = {
 -- Load banner images
 function TopBanner.load()
     -- Load base banner
-    local success, img = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0003_Banner.png")
+    local success, img = pcall(love.graphics.newImage, "assets/OverlordTopBanner/Banner.png")
     if success then
         state.base = img
     else
         state.base = nil
-        print("Warning: Could not load top banner: assets/OverlordTopBanner/overlord_top_banner_0003_Banner.png")
+        print("Warning: Could not load top banner: assets/OverlordTopBanner/Banner.png")
     end
     
     -- Load vigilant state layer
-    local success2, img2 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0000_Vigilant.png")
+    local success2, img2 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/Vigilant.png")
     if success2 then
         state.vigilant = img2
     else
         state.vigilant = nil
-        print("Warning: Could not load vigilant banner: assets/OverlordTopBanner/overlord_top_banner_0000_Vigilant.png")
+        print("Warning: Could not load vigilant banner: assets/OverlordTopBanner/Vigilant.png")
     end
     
     -- Load activated state layer
-    local success3, img3 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0001_Activated.png")
+    local success3, img3 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/Activated.png")
     if success3 then
         state.activated = img3
     else
         state.activated = nil
-        print("Warning: Could not load activated banner: assets/OverlordTopBanner/overlord_top_banner_0001_Activated.png")
+        print("Warning: Could not load activated banner: assets/OverlordTopBanner/Activated.png")
     end
     
     -- Load dormant state layer
-    local success4, img4 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/overlord_top_banner_0002_Dormant.png")
+    local success4, img4 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/Dormant.png")
     if success4 then
         state.dormant = img4
     else
         state.dormant = nil
-        print("Warning: Could not load dormant banner: assets/OverlordTopBanner/overlord_top_banner_0002_Dormant.png")
+        print("Warning: Could not load dormant banner: assets/OverlordTopBanner/Dormant.png")
     end
 end
 
@@ -314,7 +319,32 @@ function TopBanner.draw()
     
     love.graphics.setColor(1, 1, 1, 1)
     
-    -- Draw base banner
+    -- Optionally crop head layers at specified Y position
+    -- Scissor is applied in screen space, so it crops the final scaled result
+    if ENABLE_HEAD_CROP then
+        local cropY = HEAD_CROP_Y
+        local cropHeight = cropY - bannerY
+        
+        -- Set scissor to crop head layers (applied after scaling transformation)
+        -- Only draw if banner starts above the crop line
+        if bannerY < cropY then
+            -- Calculate how much of the banner to show (from bannerY to cropY)
+            local visibleHeight = math.min(cropHeight, scaledHeight)
+            if visibleHeight > 0 then
+                -- Scissor coordinates are in screen space, so this crops the scaled result
+                love.graphics.setScissor(bannerX, bannerY, bannerWidth, visibleHeight)
+            else
+                love.graphics.setScissor()
+                return
+            end
+        else
+            -- Banner is entirely below crop line, don't draw head
+            return
+        end
+    end
+    
+    -- Draw base banner (scissor crops this if ENABLE_HEAD_CROP is true)
+    -- The scissor is applied after the scale transformation, so it crops the final scaled result
     love.graphics.draw(state.base, bannerX, bannerY, 0, scale, scale)
     
     -- Draw banner layers: Activated always on, Vigilant composites over with fade
@@ -336,6 +366,11 @@ function TopBanner.draw()
         
         love.graphics.setColor(1, 1, 1, blinkAlpha)
         love.graphics.draw(state.vigilant, bannerX, bannerY, 0, scale, scale)
+    end
+    
+    -- Reset scissor after drawing head layers (if it was enabled)
+    if ENABLE_HEAD_CROP then
+        love.graphics.setScissor()
     end
     
     -- Draw critical effects (glow) when at 25% or below

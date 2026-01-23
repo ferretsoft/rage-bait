@@ -4,6 +4,7 @@
 local Webcam = {}
 local Constants = require("src.constants")
 local WindowFrame = require("src.core.window_frame")
+local ChasePortrait = require("src.core.chase_portrait")
 
 -- Webcam window dimensions and position
 local WEBCAM_WIDTH = 300
@@ -65,6 +66,10 @@ function Webcam.update(dt)
         end
     end
     
+    -- Update portrait animation
+    ChasePortrait.setTalking(characterState.isTalking)
+    ChasePortrait.update(dt)
+    
     -- Update comment display
     if currentComment then
         commentTimer = commentTimer - dt
@@ -101,35 +106,17 @@ function Webcam.draw()
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Webcam")
     
-    -- Draw character (simple animated face) - adjust for title bar
+    -- Draw character portrait - adjust for title bar
     local charX = WEBCAM_X + WEBCAM_WIDTH / 2
-    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2 - 20
+    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2
     
-    -- Character head (circle)
-    love.graphics.setColor(0.9, 0.8, 0.7, 1)  -- Skin tone
-    love.graphics.circle("fill", charX, charY, 40)
-    love.graphics.setColor(0.7, 0.6, 0.5, 1)
-    love.graphics.setLineWidth(2)
-    love.graphics.circle("line", charX, charY, 40)
+    -- Calculate available space (accounting for title bar and borders)
+    local availableWidth = WEBCAM_WIDTH - (borderWidth * 2)
+    local availableHeight = WEBCAM_HEIGHT - titleBarHeight - (borderWidth * 2)
     
-    -- Eyes (animate based on frame)
-    local eyeOffset = characterState.isTalking and 3 or 0
-    love.graphics.setColor(0.2, 0.2, 0.2, 1)
-    love.graphics.circle("fill", charX - 12, charY - 5, 5 + eyeOffset)
-    love.graphics.circle("fill", charX + 12, charY - 5, 5 + eyeOffset)
-    
-    -- Mouth (changes when talking)
-    if characterState.isTalking then
-        -- Open mouth (oval)
-        local mouthHeight = 8 + (characterState.frame % 2) * 3  -- Animate open/close
-        love.graphics.setColor(0.3, 0.2, 0.2, 1)
-        love.graphics.ellipse("fill", charX, charY + 10, 10, mouthHeight)
-    else
-        -- Closed mouth (line or small smile)
-        love.graphics.setColor(0.4, 0.3, 0.3, 1)
-        love.graphics.setLineWidth(2)
-        love.graphics.arc("line", "open", charX, charY + 10, 8, 0, math.pi)
-    end
+    -- Calculate scale to fit within webcam window
+    local portraitScale = ChasePortrait.calculateScale(availableWidth, availableHeight, 10)
+    ChasePortrait.draw(charX, charY, portraitScale)
     
     -- Draw comment text if active
     if currentComment then

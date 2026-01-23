@@ -19,9 +19,11 @@ local ChasePaxton = require("src.core.chase_paxton")
 local Auditor = require("src.core.auditor")
 local Popups = require("src.core.popups")
 local TopBanner = require("src.core.top_banner")
+local MonitorFrame = require("src.core.monitor_frame")
 local EntityManager = require("src.core.entity_manager")
 local CRTManager = require("src.core.crt_manager")
 local InputHandler = require("src.core.input_handler")
+local ChasePortrait = require("src.core.chase_portrait")
 -- Set BASE so moonshine can find effects in libs directory
 moonshine.BASE = "libs"
 
@@ -445,6 +447,12 @@ function love.load()
     -- Load top banner images (using TopBanner module)
     TopBanner.load()
     
+    -- Load monitor frame images
+    MonitorFrame.load()
+    
+    -- Load Chase Paxton portrait images
+    ChasePortrait.load()
+    
     -- Load intro video
     local success6, vid = pcall(love.graphics.newVideo, "assets/introvideo.ogv")
     if success6 then
@@ -659,6 +667,10 @@ function startGameplay()
     -- Start background music
     Sound.playMusic()
     
+    -- Reset monitor frame animations for new game
+    MonitorFrame.resetEyelidAnimation()
+    MonitorFrame.resetBottomCenterPanelAnimation()
+    
     -- Reset engagement to starting value (critical - prevents immediate game over)
     Engagement.init()
     
@@ -779,7 +791,7 @@ end
 
 -- Handle game over (lose a life)
 function handleGameOver(condition)
-    -- Stop turret charge sound (but don't stop projectile whistles - let them continue)
+    -- Stop turret charge sound
     if Game.turret and Game.turret.chargeSound then
         pcall(function()
             Game.turret.chargeSound:stop()
@@ -788,8 +800,17 @@ function handleGameOver(condition)
         Game.turret.chargeSound = nil
     end
     
-    -- Don't call Sound.cleanup() here - it stops ALL sounds including whistle sounds
-    -- Let projectiles continue playing their whistle sounds until they explode naturally
+    -- Stop all projectile whistle sounds (they can get stuck if projectiles don't explode)
+    for _, p in ipairs(Game.projectiles) do
+        if p.whistleSound then
+            local success, isPlaying = pcall(function() return p.whistleSound:isPlaying() end)
+            if success and isPlaying then
+                pcall(function() p.whistleSound:stop() end)
+                pcall(function() p.whistleSound:release() end)
+            end
+            p.whistleSound = nil
+        end
+    end
     
     -- Check if we have lives remaining BEFORE decrementing
     local hasLivesRemaining = Game.lives > 1  -- Will have lives after decrement if currently > 1
@@ -955,18 +976,24 @@ function returnToAttractMode()
     
     -- Stop turret charge sound if active
     if Game.turret and Game.turret.chargeSound then
-        if Game.turret.chargeSound:isPlaying() then
-            Game.turret.chargeSound:stop()
-            Game.turret.chargeSound:release()
+        -- Use pcall to safely check if sound is still valid
+        local success, isPlaying = pcall(function() return Game.turret.chargeSound:isPlaying() end)
+        if success and isPlaying then
+            pcall(function() Game.turret.chargeSound:stop() end)
+            pcall(function() Game.turret.chargeSound:release() end)
         end
         Game.turret.chargeSound = nil
     end
     
     -- Stop all projectile whistle sounds
     for _, p in ipairs(Game.projectiles) do
-        if p.whistleSound and p.whistleSound:isPlaying() then
-            p.whistleSound:stop()
-            p.whistleSound:release()
+        if p.whistleSound then
+            -- Use pcall to safely check if sound is still valid
+            local success, isPlaying = pcall(function() return p.whistleSound:isPlaying() end)
+            if success and isPlaying then
+                pcall(function() p.whistleSound:stop() end)
+                pcall(function() p.whistleSound:release() end)
+            end
         end
         p.whistleSound = nil
     end
@@ -1137,6 +1164,9 @@ function drawJoystickTestScreen()
     love.graphics.print(inst2, contentX, contentY + 24)
 
     contentY = contentY + 60
+    
+    -- Draw monitor frame (always visible)
+    MonitorFrame.draw()
 
     -- Joystick information
     local joysticks = love.joystick.getJoysticks()
@@ -1307,37 +1337,12 @@ function drawLogoScreen()
 end
 
 
--- Draw intro video screen
+-- Draw intro video screen (background only - video is drawn separately after CRT)
 function drawIntroVideo()
     love.graphics.clear(0, 0, 0, 1)  -- Black background
     
-    if Game.introVideo then
-        -- Get video dimensions
-        local videoWidth = Game.introVideo:getWidth()
-        local videoHeight = Game.introVideo:getHeight()
-        
-        -- Calculate scaling to fit screen while maintaining aspect ratio
-        local scaleX = Constants.SCREEN_WIDTH / videoWidth
-        local scaleY = Constants.SCREEN_HEIGHT / videoHeight
-        local scale = math.min(scaleX, scaleY)
-        
-        -- Calculate centered position
-        local drawWidth = videoWidth * scale
-        local drawHeight = videoHeight * scale
-        local x = (Constants.SCREEN_WIDTH - drawWidth) / 2
-        local y = (Constants.SCREEN_HEIGHT - drawHeight) / 2
-        
-        -- Draw video centered
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(Game.introVideo, x, y, 0, scale, scale)
-    else
-        -- If video doesn't exist, show a message (shouldn't happen, but fallback)
-        love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.setFont(Game.fonts.large)
-        local msg = "Video not found"
-        local msgWidth = Game.fonts.large:getWidth(msg)
-        love.graphics.print(msg, (Constants.SCREEN_WIDTH - msgWidth) / 2, Constants.SCREEN_HEIGHT / 2)
-    end
+    -- Video is drawn separately after CRT effect in love.draw()
+    -- This function just provides the background
 end
 
 -- Draw intro screen with centered webcam
@@ -1358,9 +1363,9 @@ function drawIntroScreen()
         Game.introStep = currentStep + 1
     end
     
-    -- Draw centered webcam window
-    local WEBCAM_WIDTH = Constants.UI.WEBCAM_WIDTH
-    local WEBCAM_HEIGHT = Constants.UI.WEBCAM_HEIGHT
+    -- Draw centered webcam window (larger for intro screen to accommodate portrait and text)
+    local WEBCAM_WIDTH = 600  -- Larger width for intro screen
+    local WEBCAM_HEIGHT = 500  -- Larger height to fit portrait and text below
     local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
     local WEBCAM_Y = (Constants.SCREEN_HEIGHT - WEBCAM_HEIGHT) / 2 + Constants.UI.WEBCAM_OFFSET_Y
     local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
@@ -1372,44 +1377,38 @@ function drawIntroScreen()
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
     
-    -- Draw character (animated) - adjust for title bar
-    local charX = WEBCAM_X + WEBCAM_WIDTH / 2
-    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2 - 40
+    -- Calculate content area
+    local contentX = WEBCAM_X + borderWidth
+    local contentY = WEBCAM_Y + titleBarHeight + borderWidth
+    local contentWidth = WEBCAM_WIDTH - (borderWidth * 2)
+    local contentHeight = WEBCAM_HEIGHT - titleBarHeight - (borderWidth * 2)
     
-    -- Character head
-    love.graphics.setColor(0.9, 0.8, 0.7, 1)
-    love.graphics.circle("fill", charX, charY, 50)
-    love.graphics.setColor(0.7, 0.6, 0.5, 1)
-    love.graphics.setLineWidth(2)
-    love.graphics.circle("line", charX, charY, 50)
-    
-    -- Eyes (animated - talking)
-    local eyeBlink = math.floor(Game.introTimer * 3) % 2
-    local eyeSize = eyeBlink == 0 and 8 or 2
-    love.graphics.setColor(0.2, 0.2, 0.2, 1)
-    love.graphics.circle("fill", charX - 15, charY - 8, eyeSize)
-    love.graphics.circle("fill", charX + 15, charY - 8, eyeSize)
-    
-    -- Mouth (talking animation)
-    local mouthOpen = math.floor(Game.introTimer * 4) % 2
-    if mouthOpen == 0 then
-        -- Open mouth
-        love.graphics.setColor(0.3, 0.2, 0.2, 1)
-        love.graphics.ellipse("fill", charX, charY + 12, 12, 10)
-    else
-        -- Closed mouth
-        love.graphics.setColor(0.4, 0.3, 0.3, 1)
-        love.graphics.setLineWidth(2)
-        love.graphics.arc("line", "open", charX, charY + 12, 10, 0, math.pi)
-    end
-    
-    -- Draw title
+    -- Draw title at the top
     love.graphics.setFont(Game.fonts.large)
     love.graphics.setColor(1, 1, 0, 1)
     local titleWidth = Game.fonts.large:getWidth(currentMessage.title)
-    love.graphics.print(currentMessage.title, WEBCAM_X + (WEBCAM_WIDTH - titleWidth) / 2, WEBCAM_Y + 20)
+    local titleY = contentY + 10
+    love.graphics.print(currentMessage.title, WEBCAM_X + (WEBCAM_WIDTH - titleWidth) / 2, titleY)
     
-    -- Draw message (positioned below Chase's face so it doesn't overlap)
+    -- Draw character portrait in the upper portion of the window (much larger)
+    local portraitAreaHeight = 320  -- Reserve more space for larger portrait at top
+    local portraitY = contentY + 50  -- Below title
+    local charX = WEBCAM_X + WEBCAM_WIDTH / 2
+    local charY = portraitY + portraitAreaHeight / 2
+    
+    -- Calculate available space for portrait (upper portion) - use most of the width
+    local portraitAvailableWidth = contentWidth - 40  -- Less padding for larger portrait
+    local portraitAvailableHeight = portraitAreaHeight - 20  -- Padding
+    
+    -- Calculate scale to fit portrait in upper portion, but allow it to be larger
+    local portraitScale = ChasePortrait.calculateScale(portraitAvailableWidth, portraitAvailableHeight, 5)
+    -- Make it even larger by multiplying the scale
+    portraitScale = portraitScale * 1.5  -- Make portrait 50% larger than calculated fit
+    -- Set talking state based on whether there's a message being shown
+    ChasePortrait.setTalking(currentMessage ~= nil and stepElapsed < currentMessage.duration)
+    ChasePortrait.draw(charX, charY, portraitScale)
+    
+    -- Draw message below the portrait
     love.graphics.setFont(Game.fonts.medium)
     love.graphics.setColor(1, 1, 1, 1)
     local lines = {}
@@ -1418,11 +1417,11 @@ function drawIntroScreen()
     end
     
     local lineHeight = Game.fonts.medium:getHeight() + 5
-    -- Place the first line well below the character's chin
-    local startY = charY + 60
+    -- Start text below the portrait area
+    local textStartY = portraitY + portraitAreaHeight + 20
     for i, line in ipairs(lines) do
         local lineWidth = Game.fonts.medium:getWidth(line)
-        love.graphics.print(line, WEBCAM_X + (WEBCAM_WIDTH - lineWidth) / 2, startY + (i - 1) * lineHeight)
+        love.graphics.print(line, WEBCAM_X + (WEBCAM_WIDTH - lineWidth) / 2, textStartY + (i - 1) * lineHeight)
     end
     
     -- Draw progress indicator (dots)
@@ -1459,9 +1458,6 @@ function drawLifeLostAuditor()
             drawBlackOverlay(greyFade)
         end
     
-    -- Draw top banner (using TopBanner module)
-    TopBanner.draw()
-    
     -- Draw terminal text for life lost
     if Game.lifeLostAuditorActive then
         TopBanner.drawLifeLostText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
@@ -1481,9 +1477,6 @@ function drawGameOver()
     if TopBanner.isGameOverDropActive() and greyFade > 0 then
         drawBlackOverlay(greyFade)
     end
-    
-    -- Draw top banner (using TopBanner module)
-    TopBanner.draw()
     
     -- Draw terminal text for game over
     if Game.gameOverActive then
@@ -1667,36 +1660,17 @@ function drawLevelCompleteScreen()
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
     
-    -- Draw Chase Paxton character (larger) - adjust for title bar
+    -- Draw Chase Paxton character portrait - adjust for title bar
     local charX = WEBCAM_X + WEBCAM_WIDTH / 2
-    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2 - 40
+    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2
     
-    -- Character head (larger circle)
-    love.graphics.setColor(0.9, 0.8, 0.7, 1)  -- Skin tone
-    love.graphics.circle("fill", charX, charY, 80)
-    love.graphics.setColor(0.7, 0.6, 0.5, 1)
-    love.graphics.setLineWidth(3)
-    love.graphics.circle("line", charX, charY, 80)
+    -- Calculate available space (accounting for title bar and borders)
+    local availableWidth = WEBCAM_WIDTH - (borderWidth * 2)
+    local availableHeight = WEBCAM_HEIGHT - titleBarHeight - (borderWidth * 2)
     
-    -- Eyes (animated - talking)
-    local eyeBlink = math.floor(love.timer.getTime() * 3) % 2
-    local eyeSize = eyeBlink == 0 and 12 or 3
-    love.graphics.setColor(0.2, 0.2, 0.2, 1)
-    love.graphics.circle("fill", charX - 20, charY - 10, eyeSize)
-    love.graphics.circle("fill", charX + 20, charY - 10, eyeSize)
-    
-    -- Mouth (talking animation)
-    local mouthOpen = math.floor(love.timer.getTime() * 4) % 2
-    if mouthOpen == 0 then
-        -- Open mouth
-        love.graphics.setColor(0.3, 0.2, 0.2, 1)
-        love.graphics.ellipse("fill", charX, charY + 20, 18, 15)
-    else
-        -- Closed mouth (smile)
-        love.graphics.setColor(0.4, 0.3, 0.3, 1)
-        love.graphics.setLineWidth(3)
-        love.graphics.arc("line", "open", charX, charY + 20, 15, 0, math.pi)
-    end
+    -- Calculate scale to fit within level complete window
+    local portraitScale = ChasePortrait.calculateScale(availableWidth, availableHeight, 10)
+    ChasePortrait.draw(charX, charY, portraitScale)
     
     -- Draw congratulatory messages (from Chase Paxton dialogue)
     love.graphics.setFont(Game.fonts.large)
@@ -1774,9 +1748,6 @@ function drawReadyScreen()
             
             if Game.turret then Game.turret:draw() end
         end)
-        
-        -- Draw top banner (using TopBanner module)
-        TopBanner.draw()
         
     love.graphics.pop()
     
@@ -1947,11 +1918,16 @@ function love.update(dt)
                 Game.readyTimer = 0
                 Game.readyPhase = 1
                 Game.gameState = "playing"
+                -- Trigger eyelid animation when gameplay starts
+                MonitorFrame.startEyelidAnimation()
             end
         end
         
         -- Update sparks
         updateSparkParticles(Game.readySparks, dt, nil, Constants.UI.SPARK_FADE_RATE_READY)
+        
+        -- Update monitor frame (for eyelid animation that starts at end of ready sequence)
+        MonitorFrame.update(dt)
         
         -- Update turret during ready sequence (to initialize legs)
         if Game.turret then
@@ -2012,6 +1988,8 @@ function love.update(dt)
     -- Handle intro screen
     if Game.introMode then
         Game.introTimer = Game.introTimer + dt
+        -- Update portrait animation
+        ChasePortrait.update(dt)
         return  -- Don't update game logic during intro
     end
     
@@ -2081,6 +2059,18 @@ function love.update(dt)
         elseif Game.auditorPhase == 4 and Game.auditorTimer >= 1.0 then
             -- Check for high score before returning to attract mode
             if isHighScore(Game.score) then
+                -- Stop all projectile whistle sounds before name entry
+                for _, p in ipairs(Game.projectiles) do
+                    if p.whistleSound then
+                        local success, isPlaying = pcall(function() return p.whistleSound:isPlaying() end)
+                        if success and isPlaying then
+                            pcall(function() p.whistleSound:stop() end)
+                            pcall(function() p.whistleSound:release() end)
+                        end
+                        p.whistleSound = nil
+                    end
+                end
+                
                 -- Start name entry (arcade style)
                 Game.auditorActive = false  -- Clear auditor sequence
                 Game.auditorTimer = 0
@@ -2122,6 +2112,18 @@ function love.update(dt)
                 elseif Game.lives == 0 then
                     -- All lives lost - check for high score
                     if isHighScore(Game.score) then
+                        -- Stop all projectile whistle sounds before name entry
+                        for _, p in ipairs(Game.projectiles) do
+                            if p.whistleSound then
+                                local success, isPlaying = pcall(function() return p.whistleSound:isPlaying() end)
+                                if success and isPlaying then
+                                    pcall(function() p.whistleSound:stop() end)
+                                    pcall(function() p.whistleSound:release() end)
+                                end
+                                p.whistleSound = nil
+                            end
+                        end
+                        
                         -- Start name entry (arcade style)
                         Game.gameOverActive = false  -- Clear game over screen
                         Game.nameEntryActive = true
@@ -2212,6 +2214,9 @@ function love.update(dt)
         Game.levelCompleteScreenTimer = Game.levelCompleteScreenTimer - dt
         -- Update sound system during completion screen
         Sound.update(dt)
+        -- Update portrait animation (always talking on level complete)
+        ChasePortrait.setTalking(true)
+        ChasePortrait.update(dt)
         if Game.levelCompleteScreenTimer <= 0 then
             -- Completion screen done, clean up any remaining sounds before transition
             Sound.cleanup()
@@ -2388,6 +2393,17 @@ function love.update(dt)
     
     -- Check engagement level for comments and point multiplier
     if Game.gameState == "playing" then
+        -- Update monitor frame (for eyelid and BottomCenterPanel animations)
+        MonitorFrame.update(dt)
+        
+        -- Update engagement-based panel animations (RightMidPanel, TopPanel, LeftMidPanel)
+        MonitorFrame.updateEngagementAnimations(Engagement.value)
+        
+        -- Trigger BottomCenterPanel animation when engagement hits 65 or below
+        if Engagement.value <= 65 then
+            MonitorFrame.startBottomCenterPanelAnimation()
+        end
+        
         local engagementPct = Engagement.value / Constants.ENGAGEMENT_MAX
         
         -- Check if engagement reached 100% (activate point multiplier)
@@ -2771,10 +2787,6 @@ function drawGame()
         drawBlackOverlay(greyFade)
     end
     
-    -- Draw top banner overlapping ARAC window (full screen width)
-    -- Draw after window frame so it appears on top
-    TopBanner.draw()
-    
     -- Draw terminal text for game over
     if Game.gameOverActive then
         TopBanner.drawGameOverText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
@@ -2870,71 +2882,118 @@ function love.draw()
     -- Draw joystick test screen (from attract mode)
     if Game.joystickTestMode then
         drawWithCRT(drawJoystickTestScreen)
+        MonitorFrame.draw()
         return
     end
 
     -- Draw booting screen (before logo)
     if Game.bootingMode then
         drawWithCRT(drawBootingScreen)
+        MonitorFrame.draw()
         return
     end
     
     -- Draw logo screen (before attract mode)
     if Game.logoMode then
         drawWithCRT(drawLogoScreen)
+        MonitorFrame.draw()
         return
     end
     
     -- Draw attract mode screen
     if Game.attractMode then
         drawWithCRT(AttractMode.draw)
+        MonitorFrame.draw()
         return
     end
     
     -- Draw demo mode screen
     if Game.demoMode then
         drawWithCRT(DemoMode.draw)
+        MonitorFrame.draw()
         return
     end
     
     -- Draw intro video (before intro screen)
     if Game.videoMode then
         drawWithCRT(drawIntroVideo)
+        
+        -- Draw video after CRT effect but before monitor frame
+        if Game.introVideo then
+            -- Get video dimensions
+            local videoWidth = Game.introVideo:getWidth()
+            local videoHeight = Game.introVideo:getHeight()
+            
+            -- Calculate scaling to fit screen while maintaining aspect ratio
+            local scaleX = Constants.SCREEN_WIDTH / videoWidth
+            local scaleY = Constants.SCREEN_HEIGHT / videoHeight
+            local scale = math.min(scaleX, scaleY)
+            
+            -- Calculate centered position
+            local drawWidth = videoWidth * scale
+            local drawHeight = videoHeight * scale
+            local x = (Constants.SCREEN_WIDTH - drawWidth) / 2
+            local y = (Constants.SCREEN_HEIGHT - drawHeight) / 2
+            
+            -- Draw video centered (after CRT, before monitor frame)
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.introVideo, x, y, 0, scale, scale)
+        else
+            -- If video doesn't exist, show a message (shouldn't happen, but fallback)
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setFont(Game.fonts.large)
+            local msg = "Video not found"
+            local msgWidth = Game.fonts.large:getWidth(msg)
+            love.graphics.print(msg, (Constants.SCREEN_WIDTH - msgWidth) / 2, Constants.SCREEN_HEIGHT / 2)
+        end
+        
+        MonitorFrame.draw()
         return
     end
     
     -- Draw intro screen (check before AUDITOR to prevent showing CRITICAL_ERROR on new game)
     if Game.introMode then
         drawWithCRT(drawIntroScreen)
+        MonitorFrame.draw()
         return
     end
     
     -- Draw level completion screen (Chase Paxton)
     if Game.winTextActive then
         drawWithCRT(drawWinTextScreen)
+        MonitorFrame.draw()
         return
     end
     
     if Game.levelCompleteScreenActive then
         drawWithCRT(drawLevelCompleteScreen)
+        MonitorFrame.draw()
         return
     end
     
     -- Draw life lost auditor screen (engagement depleted but lives remain)
     if Game.lifeLostAuditorActive then
         drawWithCRT(drawLifeLostAuditor)
+        TopBanner.draw()
+        TopBanner.drawLifeLostText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
+        MonitorFrame.draw()
         return
     end
     
     -- Draw game over screen (same as life lost but with different text)
     if Game.gameOverActive then
         drawWithCRT(drawGameOver)
+        TopBanner.draw()
+        TopBanner.drawGameOverText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
+        MonitorFrame.draw()
         return
     end
     
     -- Draw ready screen (GET READY / GO!)
     if Game.readyActive then
         drawWithCRT(drawReadyScreen)
+        TopBanner.draw()
+        MonitorFrame.draw()
         return
     end
     
@@ -2942,6 +3001,15 @@ function love.draw()
     
     -- Apply CRT effect if enabled, otherwise draw normally
     drawWithCRT(drawGame)
+    
+    -- Draw top banner and monitor frame after CRT effect (so they appear on top)
+    -- Top banner only in gameplay-related states
+    if Game.gameState == "playing" then
+        TopBanner.draw()
+    end
+    
+    -- Monitor frame always on top of everything
+    MonitorFrame.draw()
 end
 
 function drawScoreWindow()

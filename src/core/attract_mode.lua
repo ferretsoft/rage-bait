@@ -4,6 +4,7 @@
 local AttractMode = {}
 local Constants = require("src.constants")
 local WindowFrame = require("src.core.window_frame")
+local MonitorFrame = require("src.core.monitor_frame")
 
 -- Draw attract mode screen
 function AttractMode.draw()

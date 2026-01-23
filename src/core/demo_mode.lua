@@ -10,6 +10,30 @@ local ChasePaxton = require("src.core.chase_paxton")
 local Unit = require("src.entities.unit")
 local WindowFrame = require("src.core.window_frame")
 local World = require("src.core.world")
+local ChasePortrait = require("src.core.chase_portrait")
+
+-- Controller button images
+local controllerImages = {
+    fingerDown = nil,
+    fingerUp = nil,
+    redButton = nil,
+    blueButton = nil,
+    joystick = nil,
+    arrowLeft = nil,
+    arrowRight = nil
+}
+
+-- Controller state for tracking rotation and button presses
+local controllerState = {
+    wasCharging = false,
+    showFingerUp = false,
+    fingerUpTimer = 0,
+    lastChargeColor = "red",
+    previousTurretAngle = 0,
+    showArrowLeft = false,
+    showArrowRight = false,
+    arrowTimer = 0
+}
 
 -- Scripted demo actions for each step
 local DEMO_SCRIPT = {
@@ -97,8 +121,173 @@ local DEMO_SCRIPT = {
     }
 }
 
+-- Load controller button images
+function DemoMode.loadControllerImages()
+    local success
+    
+    success, controllerImages.fingerDown = pcall(love.graphics.newImage,
+        "assets/ButtonPushDemo/FingerDown.png")
+    if not success then
+        print("Warning: Could not load finger down image")
+    end
+    
+    success, controllerImages.fingerUp = pcall(love.graphics.newImage,
+        "assets/ButtonPushDemo/FingerUp.png")
+    if not success then
+        print("Warning: Could not load finger up image")
+    end
+    
+    success, controllerImages.redButton = pcall(love.graphics.newImage,
+        "assets/ButtonPushDemo/RedButton.png")
+    if not success then
+        print("Warning: Could not load red button image")
+    end
+    
+    success, controllerImages.blueButton = pcall(love.graphics.newImage,
+        "assets/ButtonPushDemo/BlueButton.png")
+    if not success then
+        print("Warning: Could not load blue button image")
+    end
+    
+    -- Load joystick images
+    success, controllerImages.joystick = pcall(love.graphics.newImage,
+        "assets/JoystickDemo/Joystick.png")
+    if not success then
+        print("Warning: Could not load joystick image")
+    end
+    
+    success, controllerImages.arrowLeft = pcall(love.graphics.newImage,
+        "assets/JoystickDemo/ArrowLeft.png")
+    if not success then
+        print("Warning: Could not load arrow left image")
+    end
+    
+    success, controllerImages.arrowRight = pcall(love.graphics.newImage,
+        "assets/JoystickDemo/ArrowRight.png")
+    if not success then
+        print("Warning: Could not load arrow right image")
+    end
+end
+
+-- Draw controller window showing button states
+function DemoMode.drawControllerWindow()
+    if not controllerImages.redButton or not controllerImages.blueButton or not controllerImages.joystick then
+        return  -- Images not loaded
+    end
+    
+    -- Controller window dimensions and position
+    -- Match Chase Paxton demo window size (600x280) and place it directly underneath
+    local CONTROLLER_WIDTH = 600
+    local CONTROLLER_HEIGHT = 280
+    -- Same horizontal centering as Paxton window
+    local CONTROLLER_X = (Constants.SCREEN_WIDTH - CONTROLLER_WIDTH) / 2
+    -- Paxton window Y is 50, height is 280 → place controller just below with a small gap
+    local CONTROLLER_Y = 50 + 280 + 20
+    local titleBarHeight = 20
+    local borderWidth = 3
+    
+    -- Draw transparent black background for content area
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", CONTROLLER_X + borderWidth, CONTROLLER_Y + borderWidth + titleBarHeight, 
+        CONTROLLER_WIDTH - (borderWidth * 2), CONTROLLER_HEIGHT - (borderWidth * 2) - titleBarHeight)
+    
+    -- Draw Windows 95 style frame with title bar
+    WindowFrame.draw(CONTROLLER_X, CONTROLLER_Y, CONTROLLER_WIDTH, CONTROLLER_HEIGHT, "Controller")
+    
+    -- Calculate available content area
+    local contentX = CONTROLLER_X + borderWidth
+    local contentY = CONTROLLER_Y + titleBarHeight + borderWidth
+    local contentWidth = CONTROLLER_WIDTH - (borderWidth * 2)
+    local contentHeight = CONTROLLER_HEIGHT - titleBarHeight - (borderWidth * 2)
+    
+    -- Get all image sizes
+    local joystickWidth = controllerImages.joystick:getWidth()
+    local joystickHeight = controllerImages.joystick:getHeight()
+    local redButtonWidth = controllerImages.redButton:getWidth()
+    local redButtonHeight = controllerImages.redButton:getHeight()
+    local blueButtonWidth = controllerImages.blueButton:getWidth()
+    local blueButtonHeight = controllerImages.blueButton:getHeight()
+    
+    -- Calculate scale to fit joystick + buttons side by side with padding
+    local padding = 10
+    local gap = padding
+    
+    -- Total original width: joystick + red button + blue button + gaps
+    local totalOriginalWidth = joystickWidth + redButtonWidth + blueButtonWidth
+    
+    -- Scale so everything fits inside content width, and height fits as well
+    local scaleX = (contentWidth - gap * 2) / totalOriginalWidth  -- 2 gaps: between joystick-red and red-blue
+    local scaleY = (contentHeight - padding * 2) / math.max(joystickHeight, redButtonHeight, blueButtonHeight)
+    local itemScale = math.min(scaleX, scaleY, 1.0)  -- Don't scale up, only down
+    
+    -- Calculate positions (joystick left, red middle, blue right)
+    local itemY = contentY + (contentHeight / 2)
+    
+    local scaledTotalWidth = (totalOriginalWidth * itemScale) + gap * 2
+    local leftEdge = contentX + (contentWidth - scaledTotalWidth) / 2
+    
+    local joystickX = leftEdge + (joystickWidth * itemScale) / 2
+    local redButtonX = joystickX + (joystickWidth * itemScale) / 2 + gap + (redButtonWidth * itemScale) / 2
+    local blueButtonX = redButtonX + (redButtonWidth * itemScale) / 2 + gap + (blueButtonWidth * itemScale) / 2
+    
+    -- Draw joystick
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(controllerImages.joystick, joystickX, itemY, 0, itemScale, itemScale, joystickWidth / 2, joystickHeight / 2)
+    
+    -- Draw arrow overlay on joystick only while the turret is turning
+    if controllerState.showArrowLeft and controllerImages.arrowLeft then
+        local arrowWidth = controllerImages.arrowLeft:getWidth()
+        local arrowHeight = controllerImages.arrowLeft:getHeight()
+        love.graphics.draw(controllerImages.arrowLeft, joystickX, itemY, 0, itemScale, itemScale, arrowWidth / 2, arrowHeight / 2)
+    elseif controllerState.showArrowRight and controllerImages.arrowRight then
+        local arrowWidth = controllerImages.arrowRight:getWidth()
+        local arrowHeight = controllerImages.arrowRight:getHeight()
+        love.graphics.draw(controllerImages.arrowRight, joystickX, itemY, 0, itemScale, itemScale, arrowWidth / 2, arrowHeight / 2)
+    end
+    
+    -- Draw red button
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(controllerImages.redButton, redButtonX, itemY, 0, itemScale, itemScale, redButtonWidth / 2, redButtonHeight / 2)
+    
+    -- Draw blue button
+    love.graphics.draw(controllerImages.blueButton, blueButtonX, itemY, 0, itemScale, itemScale, blueButtonWidth / 2, blueButtonHeight / 2)
+    
+    -- Determine which button is being pressed and draw finger
+    if Game.turret and Game.turret.isCharging then
+        -- Finger down on the currently charged color
+        local chargeColor = Game.turret.chargeColor or "red"
+        local buttonX = (chargeColor == "red") and redButtonX or blueButtonX
+        
+        if controllerImages.fingerDown then
+            local fingerWidth = controllerImages.fingerDown:getWidth()
+            local fingerHeight = controllerImages.fingerDown:getHeight()
+            love.graphics.draw(controllerImages.fingerDown, buttonX, itemY, 0, itemScale, itemScale, fingerWidth / 2, fingerHeight / 2)
+        end
+    elseif controllerState.showFingerUp and controllerImages.fingerUp then
+        -- After release: show finger up over the last pressed button for a short time
+        local buttonX = (controllerState.lastChargeColor == "red") and redButtonX or blueButtonX
+        local fingerWidth = controllerImages.fingerUp:getWidth()
+        local fingerHeight = controllerImages.fingerUp:getHeight()
+        love.graphics.draw(controllerImages.fingerUp, buttonX, itemY, 0, itemScale, itemScale, fingerWidth / 2, fingerHeight / 2)
+    end
+end
+
 -- Start demo mode (scripted gameplay with tutorial)
 function DemoMode.start()
+    -- Load controller images if not already loaded
+    if not controllerImages.redButton then
+        DemoMode.loadControllerImages()
+    end
+    
+    -- Reset controller state
+    controllerState.wasCharging = false
+    controllerState.showFingerUp = false
+    controllerState.fingerUpTimer = 0
+    controllerState.lastChargeColor = "red"
+    controllerState.showArrowLeft = false
+    controllerState.showArrowRight = false
+    controllerState.arrowTimer = 0
+    
     Game.attractMode = false
     Game.attractModeTimer = 0
     Game.demoMode = true
@@ -117,6 +306,11 @@ function DemoMode.start()
     
     -- Initialize game entities
     Game.turret = Turret.new()
+    
+    -- Initialize previous turret angle for rotation tracking
+    if Game.turret then
+        controllerState.previousTurretAngle = Game.turret.angle or 0
+    end
     Game.score = 0
     Game.powerupSpawnTimer = 5.0
     
@@ -477,6 +671,81 @@ end
 function DemoMode.update(dt)
     Game.demoTimer = Game.demoTimer + dt
     Game.demoAITimer = Game.demoAITimer + dt
+
+    -- Update controller finger state and joystick arrows (for button press/rotation animation)
+    if Game.turret then
+        -- --- Button / finger state ---
+        if Game.turret.isCharging then
+            -- While charging: finger is down on the current color, no finger-up timer
+            controllerState.wasCharging = true
+            controllerState.showFingerUp = false
+            controllerState.fingerUpTimer = 0
+            controllerState.lastChargeColor = Game.turret.chargeColor or controllerState.lastChargeColor or "red"
+        else
+            -- Just released this frame: start finger-up timer
+            if controllerState.wasCharging then
+                controllerState.wasCharging = false
+                controllerState.showFingerUp = true
+                controllerState.fingerUpTimer = 2.0  -- Show finger-up for 2 seconds
+            end
+
+            -- Count down finger-up visibility
+            if controllerState.showFingerUp then
+                controllerState.fingerUpTimer = controllerState.fingerUpTimer - dt
+                if controllerState.fingerUpTimer <= 0 then
+                    controllerState.showFingerUp = false
+                    controllerState.fingerUpTimer = 0
+                end
+            end
+        end
+
+        -- --- Joystick arrows: show only while turret is turning ---
+        if Game.turret.angle then
+            local currentAngle = Game.turret.angle
+            local previousAngle = controllerState.previousTurretAngle or currentAngle
+            local angleDiff = currentAngle - previousAngle
+
+            -- Normalize angle difference to [-pi, pi]
+            while angleDiff > math.pi do angleDiff = angleDiff - 2 * math.pi end
+            while angleDiff < -math.pi do angleDiff = angleDiff + 2 * math.pi end
+
+            local turnThreshold = 0.005  -- Small threshold to ignore jitter
+
+            if math.abs(angleDiff) > turnThreshold then
+                -- Turret is turning this frame
+                if angleDiff > 0 then
+                    controllerState.showArrowRight = true
+                    controllerState.showArrowLeft = false
+                else
+                    controllerState.showArrowLeft = true
+                    controllerState.showArrowRight = false
+                end
+                controllerState.arrowTimer = 0.1  -- Show arrow briefly while turning
+            else
+                -- Not turning this frame; fade out arrow timer
+                if controllerState.arrowTimer > 0 then
+                    controllerState.arrowTimer = controllerState.arrowTimer - dt
+                    if controllerState.arrowTimer <= 0 then
+                        controllerState.showArrowLeft = false
+                        controllerState.showArrowRight = false
+                    end
+                end
+            end
+
+            controllerState.previousTurretAngle = currentAngle
+        end
+    else
+        -- No turret: clear controller state
+        controllerState.wasCharging = false
+        controllerState.showFingerUp = false
+        controllerState.fingerUpTimer = 0
+        controllerState.showArrowLeft = false
+        controllerState.showArrowRight = false
+        controllerState.arrowTimer = 0
+    end
+    -- Update portrait animation (always talking during demo messages)
+    ChasePortrait.setTalking(true)
+    ChasePortrait.update(dt)
     
     if Game.demoStep <= #ChasePaxton.DEMO_MESSAGES then
         local currentMessage = ChasePaxton.DEMO_MESSAGES[Game.demoStep]
@@ -731,6 +1000,9 @@ function DemoMode.draw()
         drawGame()
     end
     
+    -- Draw controller window showing button states
+    DemoMode.drawControllerWindow()
+    
     -- Draw tutorial message overlay (always visible, only text changes)
     if Game.demoStep <= #ChasePaxton.DEMO_MESSAGES then
         local currentMessage = ChasePaxton.DEMO_MESSAGES[Game.demoStep]
@@ -752,30 +1024,18 @@ function DemoMode.draw()
             -- Draw Windows 95 style frame with title bar
             WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
             
-            -- Draw Chase Paxton character (smaller, on left side) - adjust for title bar
+            -- Draw Chase Paxton character portrait (on left side) - adjust for title bar
             local charX = WEBCAM_X + 80
             local charY = WEBCAM_Y + titleBarHeight + borderWidth + 60
             
-            -- Character head
-            love.graphics.setColor(0.9, 0.8, 0.7, 1)
-            love.graphics.circle("fill", charX, charY, 50)
-            love.graphics.setColor(0.7, 0.6, 0.5, 1)
-            love.graphics.setLineWidth(3)
-            love.graphics.circle("line", charX, charY, 50)
+            -- Calculate available space for portrait (left side of window, accounting for text on right)
+            -- Reserve space for text on the right side (approximately 350px width for portrait area)
+            local portraitAreaWidth = 150  -- Width reserved for portrait on left side
+            local portraitAreaHeight = WEBCAM_HEIGHT - titleBarHeight - (borderWidth * 2) - 20  -- Height minus title bar and borders, with padding
             
-            -- Eyes (animated)
-            local eyeOffset = math.sin(Game.demoTimer * 3) * 2
-            love.graphics.setColor(0, 0, 0, 1)
-            love.graphics.circle("fill", charX - 12 + eyeOffset, charY - 8, 4)
-            love.graphics.circle("fill", charX + 12 + eyeOffset, charY - 8, 4)
-            
-            -- Mouth (talking animation)
-            local mouthOpen = math.sin(Game.demoTimer * 8) > 0
-            if mouthOpen then
-                love.graphics.ellipse("fill", charX, charY + 12, 7, 4)
-            else
-                love.graphics.arc("line", charX, charY + 12, 7, 0, math.pi)
-            end
+            -- Calculate scale to fit within demo mode window (left side)
+            local portraitScale = ChasePortrait.calculateScale(portraitAreaWidth, portraitAreaHeight, 10)
+            ChasePortrait.draw(charX, charY, portraitScale)
             
             -- Tutorial message (large font, on right side, with word wrapping)
             love.graphics.setFont(Game.fonts.large)  -- Use large font for better visibility

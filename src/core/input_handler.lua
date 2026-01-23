@@ -5,6 +5,7 @@ local Constants = require("src.constants")
 local DemoMode = require("src.core.demo_mode")
 local ChasePaxton = require("src.core.chase_paxton")
 local Sound = require("src.core.sound")
+local Screenshot = require("src.core.screenshot")
 
 local InputHandler = {}
 
@@ -244,6 +245,12 @@ function InputHandler.handleKeyPressed(key)
                 end
             end
         end
+        return true
+    end
+    
+    -- Take screenshot (F12 or PrintScreen)
+    if key == "f12" or key == "printscreen" then
+        Screenshot.capture()
         return true
     end
     

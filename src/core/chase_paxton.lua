@@ -82,12 +82,12 @@ ChasePaxton.INTRO_MESSAGES = {
     },
     {
         title = "OBJECTIVE",
-        message = "Keep engagement metrics in the green!\nConvert units by firing content on them, \nand hit them with the opposite to enrage them!\nWatch out for toxic sludge - it kills performance!",
+        message = "Convert units by firing content on them, \nand hit them with the opposite to enrage them!\nMake sure they fight each other!",
         duration = 4.0
     },
     {
         title = "READY?",
-        message = "Press SPACE or ENTER to start your shift!\nRemember: The Auditor is watching!",
+        message = "Press SPACE or ENTER to start your shift!\nRemember: The Boss is watching!",
         duration = 999.0  -- Wait for input
     }
 }
