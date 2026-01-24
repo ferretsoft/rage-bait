@@ -6,6 +6,7 @@ local DemoMode = require("src.core.demo_mode")
 local ChasePaxton = require("src.core.chase_paxton")
 local Sound = require("src.core.sound")
 local Screenshot = require("src.core.screenshot")
+local Engagement = require("src.core.engagement")
 
 local InputHandler = {}
 
@@ -271,6 +272,10 @@ function InputHandler.handleKeyPressed(key)
         if Game.turret then
             Game.turret:activatePuckMode(Constants.POWERUP_DURATION)
         end
+        return true
+    elseif key == "0" then
+        -- Debug: Set engagement to 50
+        Engagement.value = 50
         return true
     end
     

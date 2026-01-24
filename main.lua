@@ -24,6 +24,9 @@ local EntityManager = require("src.core.entity_manager")
 local CRTManager = require("src.core.crt_manager")
 local InputHandler = require("src.core.input_handler")
 local ChasePortrait = require("src.core.chase_portrait")
+local DrawLayers = require("src.core.draw_layers")
+local Godray = require("src.core.godray")
+local TextTrace = require("src.core.text_trace")
 -- Set BASE so moonshine can find effects in libs directory
 moonshine.BASE = "libs"
 
@@ -449,6 +452,12 @@ function love.load()
     
     -- Load monitor frame images
     MonitorFrame.load()
+    
+    -- Load godray effect
+    Godray.load()
+    
+    -- Load text trace effect
+    TextTrace.load()
     
     -- Load Chase Paxton portrait images
     ChasePortrait.load()
@@ -882,6 +891,9 @@ function restartLevel()
     -- Reset engagement to 100% (same as new level/game start)
     -- Score and level are NOT reset - they are preserved
     Engagement.value = Constants.ENGAGEMENT_MAX
+    
+    -- Reset monitor frame animations
+    MonitorFrame.resetAnimations()
     
     -- Clear all game entities
     for i = #Game.units, 1, -1 do
@@ -1449,8 +1461,50 @@ function drawLifeLostAuditor()
     -- Draw frozen game state (no updates, but visible)
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
-    -- Draw frozen game elements
-    drawFrozenGameState()
+    -- Apply shake transform to everything (background, game, windows)
+    love.graphics.push()
+        if Game.shake > 0 then
+            local s = Game.shake * Game.shake * 15; love.graphics.translate(love.math.random(-s, s), love.math.random(-s, s))
+        end
+        
+        -- Draw background image if loaded and enabled (full screen) - now affected by shake
+        if Game.showBackgroundForeground and Game.background then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.background, 0, 0, 0, 
+                Constants.SCREEN_WIDTH / Game.background:getWidth(),
+                Constants.SCREEN_HEIGHT / Game.background:getHeight())
+        end
+        
+        -- Draw frozen game elements
+        drawFrozenGameState()
+        
+        -- Draw Windows 95 style frame around the playfield (A.R.A.C. Control Interface)
+        do
+            local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+            local borderWidth = Constants.UI.BORDER_WIDTH
+            local frameX = Constants.OFFSET_X - borderWidth
+            local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+            local frameW = Constants.PLAYFIELD_WIDTH + (borderWidth * 2)
+            local frameH = Constants.PLAYFIELD_HEIGHT + titleBarHeight + (borderWidth * 2)
+
+            WindowFrame.draw(frameX, frameY, frameW, frameH, "A.R.A.C. Control Interface")
+        end
+        
+        -- Draw webcam window (below playfield, affected by shake)
+        Webcam.draw()
+        
+        -- Draw engagement plot (next to webcam, affected by shake)
+        EngagementPlot.draw()
+        
+        -- Draw score window (below playfield, centered)
+        drawScoreWindow()
+        
+        -- Draw multiplier window (below engagement plot) - skip in demo mode
+        if not Game.demoMode then
+            drawMultiplierWindow()
+        end
+        
+    love.graphics.pop()
     
         -- Draw black overlay during life lost (behind banner, in front of game)
         local greyFade = TopBanner.getGameOverGreyFade()
@@ -1469,8 +1523,50 @@ function drawGameOver()
     -- Draw frozen game state (no updates, but visible)
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
-    -- Draw frozen game elements
-    drawFrozenGameState()
+    -- Apply shake transform to everything (background, game, windows)
+    love.graphics.push()
+        if Game.shake > 0 then
+            local s = Game.shake * Game.shake * 15; love.graphics.translate(love.math.random(-s, s), love.math.random(-s, s))
+        end
+        
+        -- Draw background image if loaded and enabled (full screen) - now affected by shake
+        if Game.showBackgroundForeground and Game.background then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.background, 0, 0, 0, 
+                Constants.SCREEN_WIDTH / Game.background:getWidth(),
+                Constants.SCREEN_HEIGHT / Game.background:getHeight())
+        end
+        
+        -- Draw frozen game elements
+        drawFrozenGameState()
+        
+        -- Draw Windows 95 style frame around the playfield (A.R.A.C. Control Interface)
+        do
+            local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+            local borderWidth = Constants.UI.BORDER_WIDTH
+            local frameX = Constants.OFFSET_X - borderWidth
+            local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+            local frameW = Constants.PLAYFIELD_WIDTH + (borderWidth * 2)
+            local frameH = Constants.PLAYFIELD_HEIGHT + titleBarHeight + (borderWidth * 2)
+
+            WindowFrame.draw(frameX, frameY, frameW, frameH, "A.R.A.C. Control Interface")
+        end
+        
+        -- Draw webcam window (below playfield, affected by shake)
+        Webcam.draw()
+        
+        -- Draw engagement plot (next to webcam, affected by shake)
+        EngagementPlot.draw()
+        
+        -- Draw score window (below playfield, centered)
+        drawScoreWindow()
+        
+        -- Draw multiplier window (below engagement plot) - skip in demo mode
+        if not Game.demoMode then
+            drawMultiplierWindow()
+        end
+        
+    love.graphics.pop()
     
     -- Draw black overlay during game over (behind banner, in front of game)
     local greyFade = TopBanner.getGameOverGreyFade()
@@ -1749,6 +1845,32 @@ function drawReadyScreen()
             if Game.turret then Game.turret:draw() end
         end)
         
+        -- Draw Windows 95 style frame around the playfield (A.R.A.C. Control Interface)
+        do
+            local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+            local borderWidth = Constants.UI.BORDER_WIDTH
+            local frameX = Constants.OFFSET_X - borderWidth
+            local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+            local frameW = Constants.PLAYFIELD_WIDTH + (borderWidth * 2)
+            local frameH = Constants.PLAYFIELD_HEIGHT + titleBarHeight + (borderWidth * 2)
+
+            WindowFrame.draw(frameX, frameY, frameW, frameH, "A.R.A.C. Control Interface")
+        end
+        
+        -- Draw webcam window (below playfield, affected by shake)
+        Webcam.draw()
+        
+        -- Draw engagement plot (next to webcam, affected by shake)
+        EngagementPlot.draw()
+        
+        -- Draw score window (below playfield, centered)
+        drawScoreWindow()
+        
+        -- Draw multiplier window (below engagement plot) - skip in demo mode
+        if not Game.demoMode then
+            drawMultiplierWindow()
+        end
+        
     love.graphics.pop()
     
     -- Create giant font if not cached
@@ -2003,6 +2125,12 @@ function love.update(dt)
         -- Update banner animation FIRST (before checking if it's dropped)
         TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
         
+        -- Update monitor frame animations (eyelid, BottomCenterPanel, etc.)
+        MonitorFrame.update(dt)
+        
+        -- Update engagement-based panel animations (also handles reverse animation if active)
+        MonitorFrame.updateEngagementAnimations(Engagement.value, dt)
+        
         -- Update glitch text timer and write-on progress
         Game.glitchTextTimer = Game.glitchTextTimer + dt
         if Game.glitchTextWriteProgress < 1.0 then
@@ -2010,19 +2138,53 @@ function love.update(dt)
         end
         
         -- Wait at dropped position for 5.5 seconds (banner drop animation is handled by TopBanner.update())
+        -- Check if banner has finished dropping
         if TopBanner.isGameOverBannerDropped() then
+            -- When banner hits down position, instantly move animated frame layers to top
+            MonitorFrame.setEngagementPanelsToMaximum()
+            
             -- Start counting timer when banner finishes dropping
             Game.lifeLostAuditorTimer = Game.lifeLostAuditorTimer + dt
-            if Game.lifeLostAuditorTimer >= Constants.TIMING.LIFE_LOST_WAIT_TIME then
-                -- Restart the level, keeping score and level
+            
+            -- Check if we should start reverse animation
+            if not Game.reverseAnimationActive and Game.lifeLostAuditorTimer >= Constants.TIMING.LIFE_LOST_WAIT_TIME then
+                -- Start reverse animations
+                Game.reverseAnimationActive = true
+                Game.reverseEngagementActive = true
+                Game.reverseEngagementTimer = 0
+                Game.reverseEngagementStartValue = Engagement.value
+                TopBanner.startReverseAnimation()
+                MonitorFrame.startReverseAnimation()
+            end
+        else
+            -- Banner hasn't finished dropping yet, reset timer
+            Game.lifeLostAuditorTimer = 0
+        end
+        
+        -- Update reverse animations if active (check this outside the banner dropped check)
+        if Game.reverseAnimationActive then
+            -- Animate engagement back to 100 over 1.5 seconds
+            if Game.reverseEngagementActive then
+                Game.reverseEngagementTimer = Game.reverseEngagementTimer + dt
+                local progress = math.min(1.0, Game.reverseEngagementTimer / 1.5)
+                Engagement.value = Game.reverseEngagementStartValue + 
+                    (Constants.ENGAGEMENT_MAX - Game.reverseEngagementStartValue) * progress
+                
+                if progress >= 1.0 then
+                    Engagement.value = Constants.ENGAGEMENT_MAX
+                    Game.reverseEngagementActive = false
+                end
+            end
+            
+            -- Check if reverse animations are complete
+            if TopBanner.isReverseAnimationComplete() and MonitorFrame.isReverseAnimationComplete() and not Game.reverseEngagementActive then
+                -- Reverse animations complete, restart the level
+                Game.reverseAnimationActive = false
                 Game.lifeLostAuditorActive = false
                 Game.lifeLostAuditorTimer = 0
                 Game.lifeLostAuditorPhase = 1
                 restartLevel()
             end
-        else
-            -- Banner hasn't finished dropping yet, reset timer
-            Game.lifeLostAuditorTimer = 0
         end
         
         -- Allow projectiles to continue updating so they can explode and stop sounds naturally
@@ -2103,11 +2265,48 @@ function love.update(dt)
         
         -- Wait at dropped position for 2 seconds (banner drop animation is handled by TopBanner.update())
         if TopBanner.isGameOverBannerDropped() then
+            -- When banner hits down position, instantly move animated frame layers to top
+            MonitorFrame.setEngagementPanelsToMaximum()
+            
             Game.gameOverTimer = Game.gameOverTimer - dt
-            if Game.gameOverTimer <= 0 then
-                -- Game over screen complete
+            
+            -- Check if we should start reverse animation
+            if not Game.reverseAnimationActive and Game.gameOverTimer <= 0 and Game.shouldRestartLevel and Game.lives > 0 then
+                -- Start reverse animations
+                Game.reverseAnimationActive = true
+                Game.reverseEngagementActive = true
+                Game.reverseEngagementTimer = 0
+                Game.reverseEngagementStartValue = Engagement.value
+                TopBanner.startReverseAnimation()
+                MonitorFrame.startReverseAnimation()
+            end
+            
+            -- Update reverse animations if active
+            if Game.reverseAnimationActive then
+                -- Animate engagement back to 100 over 1.5 seconds
+                if Game.reverseEngagementActive then
+                    Game.reverseEngagementTimer = Game.reverseEngagementTimer + dt
+                    local progress = math.min(1.0, Game.reverseEngagementTimer / 1.5)
+                    Engagement.value = Game.reverseEngagementStartValue + 
+                        (Constants.ENGAGEMENT_MAX - Game.reverseEngagementStartValue) * progress
+                    
+                    if progress >= 1.0 then
+                        Engagement.value = Constants.ENGAGEMENT_MAX
+                        Game.reverseEngagementActive = false
+                    end
+                end
+                
+                -- Check if reverse animations are complete
+                if TopBanner.isReverseAnimationComplete() and MonitorFrame.isReverseAnimationComplete() and not Game.reverseEngagementActive then
+                    -- Reverse animations complete, restart the level
+                    Game.reverseAnimationActive = false
+                    restartLevel()
+                    return
+                end
+            elseif Game.gameOverTimer <= 0 then
+                -- Game over screen complete (no reverse needed - going to name entry or attract)
                 if Game.shouldRestartLevel and Game.lives > 0 then
-                    -- Restart the level (we had lives remaining after losing this one)
+                    -- This shouldn't happen if reverse is working, but keep as fallback
                     restartLevel()
                 elseif Game.lives == 0 then
                     -- All lives lost - check for high score
@@ -2380,7 +2579,7 @@ function love.update(dt)
         TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
     end
     
-    World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt)
+    World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt); Godray.update(dt)
     
     -- Check if engagement ran out (game over)
     -- Only check if we're actually playing and not already in a game over state
@@ -2397,7 +2596,8 @@ function love.update(dt)
         MonitorFrame.update(dt)
         
         -- Update engagement-based panel animations (RightMidPanel, TopPanel, LeftMidPanel)
-        MonitorFrame.updateEngagementAnimations(Engagement.value)
+        -- Also handles reverse animation if active
+        MonitorFrame.updateEngagementAnimations(Engagement.value, dt)
         
         -- Trigger BottomCenterPanel animation when engagement hits 65 or below
         if Engagement.value <= 65 then
@@ -2911,6 +3111,7 @@ function love.draw()
     if Game.demoMode then
         drawWithCRT(DemoMode.draw)
         MonitorFrame.draw()
+        Godray.draw()
         return
     end
     
@@ -2948,6 +3149,7 @@ function love.draw()
         end
         
         MonitorFrame.draw()
+        Godray.draw()
         return
     end
     
@@ -2955,6 +3157,7 @@ function love.draw()
     if Game.introMode then
         drawWithCRT(drawIntroScreen)
         MonitorFrame.draw()
+        Godray.draw()
         return
     end
     
@@ -2962,30 +3165,52 @@ function love.draw()
     if Game.winTextActive then
         drawWithCRT(drawWinTextScreen)
         MonitorFrame.draw()
+        Godray.draw()
         return
     end
     
     if Game.levelCompleteScreenActive then
         drawWithCRT(drawLevelCompleteScreen)
         MonitorFrame.draw()
+        Godray.draw()
         return
     end
     
     -- Draw life lost auditor screen (engagement depleted but lives remain)
     if Game.lifeLostAuditorActive then
         drawWithCRT(drawLifeLostAuditor)
-        TopBanner.draw()
+        -- Respect shouldDrawOnTop() check - only draw on top when banner has moved out of frame
+        if TopBanner.shouldDrawOnTop() then
+            MonitorFrame.draw()
+            TopBanner.draw()
+            -- Draw animated panels on top of banner when it's at down position
+            MonitorFrame.drawAnimatedPanelsOnTop()
+        else
+            TopBanner.draw()
+            MonitorFrame.draw()
+        end
         TopBanner.drawLifeLostText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
-        MonitorFrame.draw()
+        Godray.draw()
+        TextTrace.draw()
         return
     end
     
     -- Draw game over screen (same as life lost but with different text)
     if Game.gameOverActive then
         drawWithCRT(drawGameOver)
-        TopBanner.draw()
+        -- Respect shouldDrawOnTop() check - only draw on top when banner has moved out of frame
+        if TopBanner.shouldDrawOnTop() then
+            MonitorFrame.draw()
+            TopBanner.draw()
+            -- Draw animated panels on top of banner when it's at down position
+            MonitorFrame.drawAnimatedPanelsOnTop()
+        else
+            TopBanner.draw()
+            MonitorFrame.draw()
+        end
         TopBanner.drawGameOverText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
-        MonitorFrame.draw()
+        Godray.draw()
+        TextTrace.draw()
         return
     end
     
@@ -2994,6 +3219,7 @@ function love.draw()
         drawWithCRT(drawReadyScreen)
         TopBanner.draw()
         MonitorFrame.draw()
+        Godray.draw()
         return
     end
     
@@ -3003,13 +3229,19 @@ function love.draw()
     drawWithCRT(drawGame)
     
     -- Draw top banner and monitor frame after CRT effect (so they appear on top)
-    -- Top banner only in gameplay-related states
-    if Game.gameState == "playing" then
+    -- Top banner always drawn (at all times)
+    -- If banner should draw on top (during game over/life lost), draw it after MonitorFrame
+    if TopBanner.shouldDrawOnTop() then
+        MonitorFrame.draw()
         TopBanner.draw()
+    else
+        TopBanner.draw()
+        -- Monitor frame always on top of everything
+        MonitorFrame.draw()
     end
     
-    -- Monitor frame always on top of everything
-    MonitorFrame.draw()
+    -- Draw godray effect on top of everything
+    Godray.draw()
 end
 
 function drawScoreWindow()

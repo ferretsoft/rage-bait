@@ -290,4 +290,36 @@ Constants.EFFECTS = {
     GLOW_STRENGTH_VIDEO_RATIO = 0.75,  -- 75% of normal during video
 }
 
+-- === Z-DEPTH (draw order) ===
+-- Higher numbers draw on top. All layers use these constants for consistent draw order.
+Constants.Z_DEPTH = {
+    -- Monitor frame layers (back to front)
+    MOUTHPIECE = 100,
+    EYELID_NORMAL = 200,  -- Normal position (before MainFrame)
+    EYELID_REVERSE = 750,  -- During reverse (just under MainFrame)
+    RIGHT_MID_UNDER_PANEL = 300,
+    RIGHT_MID_UNDER_PANEL_HIGHLIGHTS = 400,
+    LEFT_MID_UNDER_PANEL = 500,
+    LEFT_MID_UNDER_PANEL_HIGHLIGHTS = 600,
+    MAIN_FRAME = 700,
+    BOTTOM_CENTER_PANEL_NORMAL = 800,  -- Normal position (after MainFrame)
+    BOTTOM_CENTER_PANEL_REVERSE = 750,  -- During reverse (just under MainFrame)
+    LEFT_MID_PANEL = 900,
+    RIGHT_MID_PANEL = 1000,
+    TOP_PANEL = 1100,
+    
+    -- Top banner
+    TOP_BANNER_NORMAL = 1200,  -- Normal position (before monitor frame)
+    TOP_BANNER_ON_TOP = 2000,  -- When banner is on top of everything
+    
+    -- Animated panels on top (when banner is at down position)
+    ANIMATED_PANELS_ON_TOP = 2100,  -- MainFrame, LeftMidPanel, RightMidPanel, TopPanel on top of banner
+    
+    -- Text overlays
+    TEXT_OVERLAYS = 3000,  -- Life lost text, game over text, etc.
+    
+    -- Godray effect (on top of everything)
+    GODRAY = 4000,  -- Godray effect following vigilant layer
+}
+
 return Constants

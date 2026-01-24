@@ -2,6 +2,7 @@
 -- Top banner system with engagement-based animations and game over/life lost drops
 
 local Constants = require("src.constants")
+local DrawLayers = require("src.core.draw_layers")
 
 local TopBanner = {}
 
@@ -37,6 +38,12 @@ local state = {
     gameOverBannerDropped = false,
     gameOverBannerStartY = 0,
     gameOverBannerTargetY = 0,
+    gameOverRisingPhase = false,  -- True when moving up 600px first
+    gameOverRisingTargetY = -600,  -- Target Y offset for rising phase (-600 = up 600px)
+    gameOverCropDisabled = false,  -- Track if crop should be disabled
+    gameOverDrawOnTop = false,  -- Track if banner should draw on top of everything
+    reverseAnimationActive = false,  -- True when reversing animation before reset
+    reverseAnimationSpeed = 2.0,  -- Double speed for reverse
 }
 
 -- Load banner images
@@ -80,14 +87,47 @@ end
 
 -- Trigger banner drop animation (used for both game over and life lost)
 function TopBanner.triggerDrop(dropDistance)
+    -- Reset any previous animation state
+    state.reverseAnimationActive = false
     state.gameOverDrop = true
     state.gameOverGreyFade = 0
     state.gameOverBannerDropped = false
     state.gameOverBannerStartY = state.yOffset
-    state.gameOverBannerTargetY = state.yOffset + dropDistance
-    state.animationState = "dropping"
+    -- Increase drop distance by 300px
+    state.gameOverBannerTargetY = state.yOffset + dropDistance + 300
+    state.gameOverRisingPhase = true  -- Start with rising phase
+    state.gameOverRisingTargetY = state.yOffset - 600  -- Move up 600px from current position
+    state.gameOverCropDisabled = false  -- Don't disable crop yet (will change after rising)
+    state.gameOverDrawOnTop = false  -- Don't draw on top yet (will change after rising)
+    state.animationState = "rising"  -- Start with rising animation
     state.animationTimer = 0
     state.velocity = 0
+    -- Ensure we're not stuck in reverse animation
+    if state.yOffset < 0 then
+        state.yOffset = 0  -- Reset to 0 if somehow negative
+    end
+end
+
+-- Start reverse animation (runs drop animation in reverse at double speed)
+function TopBanner.startReverseAnimation()
+    state.reverseAnimationActive = true
+    state.animationState = "reversing"
+    state.velocity = 0
+    -- Switch back to original draw order (draw before monitor frame)
+    state.gameOverDrawOnTop = false
+    state.gameOverCropDisabled = false
+    -- Will reverse from current dropped position back to original
+end
+
+-- Check if reverse animation is complete
+function TopBanner.isReverseAnimationComplete()
+    -- If reverse animation was never started, consider it complete
+    if not state.reverseAnimationActive then
+        return true
+    end
+    
+    -- Reverse is complete when banner has returned to original position (yOffset <= 0) and animation state is normal
+    return state.yOffset <= 0 and state.animationState == "normal"
 end
 
 -- Reset banner to original position
@@ -98,6 +138,10 @@ function TopBanner.reset()
     state.gameOverDrop = false
     state.gameOverGreyFade = 0
     state.gameOverBannerDropped = false
+    state.gameOverRisingPhase = false
+    state.gameOverCropDisabled = false
+    state.gameOverDrawOnTop = false
+    state.reverseAnimationActive = false
 end
 
 -- Get game over grey fade value (for black overlay)
@@ -115,16 +159,93 @@ function TopBanner.isGameOverDropActive()
     return state.gameOverDrop
 end
 
+-- Check if banner should draw on top of everything (during game over/life lost)
+function TopBanner.shouldDrawOnTop()
+    return state.gameOverDrawOnTop
+end
+
+-- Get current z-depth for top banner
+function TopBanner.getZDepth()
+    if state.gameOverDrawOnTop then
+        return Constants.Z_DEPTH.TOP_BANNER_ON_TOP
+    else
+        return Constants.Z_DEPTH.TOP_BANNER_NORMAL
+    end
+end
+
+-- Register top banner with z-depth system
+function TopBanner.registerLayer()
+    local zDepth = TopBanner.getZDepth()
+    DrawLayers.register(zDepth, function()
+        TopBanner.draw()
+    end, "TopBanner")
+end
+
 -- Update banner animation and state
 function TopBanner.update(dt, gameState, engagementValue, gameOverActive, lifeLostAuditorActive)
+    -- Update reverse animation (runs before reset)
+    if state.reverseAnimationActive then
+        -- Reverse the drop animation at double speed
+        -- Move upward (negative velocity) to return to original position
+        local upwardForce = -800 * state.reverseAnimationSpeed  -- Double speed upward force
+        state.velocity = state.velocity + upwardForce * dt
+        state.yOffset = state.yOffset + state.velocity * dt
+        
+        -- Also reverse the grey fade
+        if state.gameOverGreyFade > 0 then
+            state.gameOverGreyFade = math.max(0, state.gameOverGreyFade - dt * state.reverseAnimationSpeed)
+        end
+        
+        -- Check if we've returned to original position
+        if state.yOffset <= 0 then
+            state.yOffset = 0
+            state.velocity = 0
+            state.animationState = "normal"
+            -- Re-enable crop and normal drawing order
+            state.gameOverCropDisabled = false
+            state.gameOverDrawOnTop = false
+            -- Mark reverse animation as complete (set to false so completion check works)
+            state.reverseAnimationActive = false
+        end
+        return  -- Don't update other animations during reverse
+    end
+    
     -- Update game over/life lost drop animation
     if gameOverActive or lifeLostAuditorActive then
         if state.gameOverDrop then
-            if state.animationState == "dropping" then
-                -- Fall down with gravity
+            if state.gameOverRisingPhase then
+                -- Phase 1: Move up 600px first (using same gravity/timing as drop)
+                -- Use upward force (negative gravity) to move up
+                local upwardForce = -800  -- pixels per second squared (negative = upward)
+                state.velocity = state.velocity + upwardForce * dt  -- Negative velocity = upward
+                state.yOffset = state.yOffset + state.velocity * dt
+                
+                -- Target: move up 600px from original position (negative offset)
+                local targetOffset = state.gameOverRisingTargetY
+                
+                -- Check if we've reached target (moving up, so yOffset should be <= targetOffset)
+                if state.yOffset <= targetOffset then
+                    state.yOffset = targetOffset  -- Clamp to target
+                    state.gameOverRisingPhase = false  -- Finished rising, now drop
+                    state.animationState = "dropping"
+                    state.velocity = 0  -- Reset velocity for drop phase
+                end
+            elseif state.animationState == "dropping" then
+                -- Phase 2: Fall down with gravity (same as original drop animation)
                 local gravity = 800  -- pixels per second squared
                 state.velocity = state.velocity + gravity * dt
                 state.yOffset = state.yOffset + state.velocity * dt
+                
+                -- Change drawing order when banner has moved down from top position
+                -- Wait until banner has moved down at least 200px from the top (-600) to ensure it's fully out of frame
+                if not state.gameOverDrawOnTop then
+                    local topPosition = state.gameOverRisingTargetY  -- -600
+                    local distanceFromTop = state.yOffset - topPosition  -- How far down from top
+                    if distanceFromTop >= 200 then  -- Wait until banner has moved 200px down from top
+                        state.gameOverCropDisabled = true  -- Disable crop
+                        state.gameOverDrawOnTop = true  -- Draw on top of everything
+                    end
+                end
                 
                 -- Target: drop distance from starting position
                 local targetOffset = state.gameOverBannerTargetY
@@ -147,10 +268,26 @@ function TopBanner.update(dt, gameState, engagementValue, gameOverActive, lifeLo
                 state.gameOverGreyFade = math.min(1.0, state.gameOverGreyFade + dt)
             end
         end
+                -- Still update vigilant alpha based on engagement during game over/life lost
+        if gameState == "playing" or gameOverActive or lifeLostAuditorActive then
+            if engagementValue and state.vigilant then
+                local engagementPct = engagementValue / Constants.ENGAGEMENT_MAX
+                -- Calculate alpha: 1.0 at 0% engagement, 0.0 at 100% engagement (inverted)
+                -- Linear fade from 100% (alpha 0) to 0% (alpha 1)
+                -- Inverted: lower engagement = higher opacity
+                state.vigilantAlpha = 1.0 - engagementPct  -- 0 at 100%, 1 at 0%
+                state.vigilantAlpha = math.max(0, math.min(1, state.vigilantAlpha))  -- Clamp to 0-1
+                
+                -- Check for critical state (at or below threshold) for additional effects
+                state.criticalEffects = engagementPct <= Constants.TIMING.ENGAGEMENT_CRITICAL_THRESHOLD
+            end
+        end
         return  -- Don't update engagement-based animation during game over/life lost
     end
     
     -- Update engagement-based banner animation
+    -- DISABLED: Top banner stays at original position until life lost or game over
+    --[[
     if gameState == "playing" and engagementValue then
         local engagementPct = engagementValue / Constants.ENGAGEMENT_MAX
         
@@ -273,17 +410,17 @@ function TopBanner.update(dt, gameState, engagementValue, gameOverActive, lifeLo
         
         -- Update vigilant alpha based on engagement (only when playing)
         if state.vigilant then
-            -- Calculate alpha: 1.0 at vigilant threshold engagement, 0.0 at 100% engagement
-            -- Linear fade from 100% (alpha 0) to vigilant threshold (alpha 1)
-            local fadeRange = Constants.TIMING.ENGAGEMENT_VIGILANT_THRESHOLD  -- Fade over this range (from 100% to threshold)
-            local fadeProgress = (1.0 - engagementPct) / fadeRange  -- 0 at 100%, 1 at 50%
-            fadeProgress = math.max(0, math.min(1, fadeProgress))  -- Clamp to 0-1
-            state.vigilantAlpha = fadeProgress
+            -- Calculate alpha: 1.0 at 0% engagement, 0.0 at 100% engagement (inverted)
+            -- Linear fade from 100% (alpha 0) to 0% (alpha 1)
+            -- Inverted: lower engagement = higher opacity
+            state.vigilantAlpha = 1.0 - engagementPct  -- 0 at 100%, 1 at 0%
+            state.vigilantAlpha = math.max(0, math.min(1, state.vigilantAlpha))  -- Clamp to 0-1
             
             -- Check for critical state (at or below threshold) for additional effects
             state.criticalEffects = engagementPct <= Constants.TIMING.ENGAGEMENT_CRITICAL_THRESHOLD
         end
     end
+    --]]  -- Disabled engagement-based animation
 end
 
 -- Draw the banner
@@ -321,7 +458,8 @@ function TopBanner.draw()
     
     -- Optionally crop head layers at specified Y position
     -- Scissor is applied in screen space, so it crops the final scaled result
-    if ENABLE_HEAD_CROP then
+    -- Disable crop during game over/life lost
+    if ENABLE_HEAD_CROP and not state.gameOverCropDisabled then
         local cropY = HEAD_CROP_Y
         local cropHeight = cropY - bannerY
         
@@ -347,14 +485,16 @@ function TopBanner.draw()
     -- The scissor is applied after the scale transformation, so it crops the final scaled result
     love.graphics.draw(state.base, bannerX, bannerY, 0, scale, scale)
     
-    -- Draw banner layers: Activated always on, Vigilant composites over with fade
+    -- Draw banner layers: Activated always on
     -- Activated state stays on forever
     if state.activated then
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.draw(state.activated, bannerX, bannerY, 0, scale, scale)
     end
     
-    -- Draw Vigilant layer on top with calculated alpha
+    -- Dormant layer disabled
+    
+    -- Draw Vigilant layer on top of all banner layers with calculated alpha
     if state.vigilant and state.vigilantAlpha > 0 then
         -- Apply blinking effect when at 25% or below
         local blinkAlpha = state.vigilantAlpha
@@ -369,31 +509,47 @@ function TopBanner.draw()
     end
     
     -- Reset scissor after drawing head layers (if it was enabled)
-    if ENABLE_HEAD_CROP then
+    if ENABLE_HEAD_CROP and not state.gameOverCropDisabled then
         love.graphics.setScissor()
     end
     
-    -- Draw critical effects (glow) when at 25% or below
-    if state.criticalEffects then
-        -- Draw glow effect around banner
-        local glowAlpha = 0.4 * (math.sin(state.blinkTimer * math.pi * 2) + 1) / 2
-        love.graphics.setColor(1, 0.2, 0.2, glowAlpha)  -- Red glow
-        love.graphics.setLineWidth(8)
-        local glowRectX = bannerX - 10
-        local glowRectY = bannerY - 10
-        local glowRectW = Constants.SCREEN_WIDTH + 20
-        local glowRectH = scaledHeight + 20
-        love.graphics.rectangle("line", glowRectX, glowRectY, glowRectW, glowRectH)
-        
-        -- Draw multiple glow layers for intensity
-        love.graphics.setLineWidth(4)
-        love.graphics.setColor(1, 0.4, 0.4, glowAlpha * 0.6)
-        love.graphics.rectangle("line", glowRectX + 5, glowRectY + 5, glowRectW - 10, glowRectH - 10)
-    end
+    -- Glow effect removed
+    -- (Previously drew red glow around banner when at 25% or below)
     
     -- Reset color and line width
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.setLineWidth(1)
+end
+
+-- Get the center position of the vigilant layer (for godray effect)
+function TopBanner.getVigilantCenter()
+    if not state.vigilant or not state.base then
+        return nil, nil
+    end
+    
+    local bannerX = 0
+    local bannerWidth = Constants.SCREEN_WIDTH
+    local bannerImgWidth = state.base:getWidth()
+    local bannerImgHeight = state.base:getHeight()
+    local scaleX = bannerWidth / bannerImgWidth
+    local scale = scaleX
+    local scaledHeight = bannerImgHeight * scale
+    
+    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+    local borderWidth = Constants.UI.BORDER_WIDTH
+    local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+    local baseBannerY = frameY - scaledHeight + Constants.UI.BANNER_OVERLAP_OFFSET
+    local bannerY = baseBannerY + state.yOffset
+    
+    -- Center X is always screen center
+    local centerX = Constants.SCREEN_WIDTH / 2
+    
+    -- Center Y is the center of the vigilant layer (which is drawn at the same position as base)
+    -- The vigilant image center is at bannerY + (vigilantImageHeight * scale / 2)
+    local vigilantImgHeight = state.vigilant:getHeight()
+    local centerY = bannerY + (vigilantImgHeight * scale / 2)
+    
+    return centerX, centerY
 end
 
 -- Helper function to calculate banner position (used by both text drawing functions)
@@ -413,6 +569,7 @@ local function getBannerTextPosition()
     local bannerY = baseBannerY + state.yOffset
     
     local textY = bannerY + scaledHeight + 20
+    local textX = Constants.SCREEN_WIDTH / 2  -- Center of screen
     local textX = Constants.SCREEN_WIDTH / 2
     return textX, textY
 end
@@ -494,10 +651,17 @@ end
 -- Draw terminal text for life lost
 function TopBanner.drawLifeLostText(glitchTextTimer, glitchTextWriteProgress, terminalFont)
     if not state.gameOverDrop then return end
+    -- Don't draw text during reverse animation
+    if state.reverseAnimationActive then return end
     local textX, textY = getBannerTextPosition()
     if not textX then return end
     local text = "LOW PERFORMANCE DETECTED - INITIALIZE REASSIGNMENT"
     drawGlitchyTerminalText(text, textX, textY, 32, glitchTextTimer, glitchTextWriteProgress, terminalFont)
+end
+
+-- Get text position for text trace (export the internal function)
+function TopBanner.getTextPosition()
+    return getBannerTextPosition()
 end
 
 return TopBanner

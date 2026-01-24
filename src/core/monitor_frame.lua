@@ -2,6 +2,7 @@
 -- Monitor frame that goes around the entire screen
 
 local Constants = require("src.constants")
+local DrawLayers = require("src.core.draw_layers")
 
 local MonitorFrame = {}
 
@@ -53,7 +54,10 @@ local state = {
         rightMidPanelOffsetX = 0,  -- RightMidPanel moves right (positive X)
         topPanelOffsetY = 0,       -- TopPanel moves up (negative Y)
         leftMidPanelOffsetX = 0,   -- LeftMidPanel moves right (positive X)
-    }
+    },
+    reverseAnimationActive = false,  -- True when reversing engagement animations before reset
+    panelsSetToMaximum = false,  -- Track if panels have been set to maximum (for game over)
+    bottomCenterPanelReverseStarted = false,  -- Track if BottomCenterPanel reverse was explicitly started
 }
 
 -- Load all frame images
@@ -182,9 +186,132 @@ function MonitorFrame.resetBottomCenterPanelAnimation()
     state.bottomCenterPanelAnimation.hasTriggered = false
 end
 
+-- Instantly set engagement panel animations to maximum (called when banner hits down position)
+function MonitorFrame.setEngagementPanelsToMaximum()
+    if not state.panelsSetToMaximum then
+        state.engagementPanelAnimations.rightMidPanelOffsetX = 100  -- RightMidPanel moves right (max)
+        state.engagementPanelAnimations.topPanelOffsetY = -100      -- TopPanel moves up (max)
+        state.engagementPanelAnimations.leftMidPanelOffsetX = -100  -- LeftMidPanel moves left (max)
+        state.panelsSetToMaximum = true
+    end
+end
+
+-- Start reverse animation (engagement-driven panels, BottomCenterPanel, and Eyelid reverse)
+function MonitorFrame.startReverseAnimation()
+    state.reverseAnimationActive = true
+    -- Start reversing BottomCenterPanel animation
+    if state.bottomCenterPanelAnimation.hasTriggered then
+        state.bottomCenterPanelAnimation.active = true
+        state.bottomCenterPanelAnimation.timer = 0
+        state.bottomCenterPanelReverseStarted = true  -- Mark that reverse was explicitly started
+        -- Reverse: animate from current position back to startY (0)
+    end
+    -- Start reversing Eyelid animation (if it has moved up)
+    if state.eyelidAnimation.currentY < 0 then
+        state.eyelidAnimation.active = true
+        state.eyelidAnimation.timer = 0
+        -- Reverse: animate from current position (targetY = -50) back to startY (0)
+    end
+end
+
+-- Check if reverse animation is complete
+function MonitorFrame.isReverseAnimationComplete()
+    -- If reverse animation was never started, consider it complete
+    if not state.reverseAnimationActive then
+        return true
+    end
+    
+    -- Reverse is complete when all engagement-driven offsets are back to 0
+    -- BottomCenterPanel is back to startY (0)
+    -- and Eyelid is back to startY (0)
+    local engagementComplete = 
+           math.abs(state.engagementPanelAnimations.rightMidPanelOffsetX) < 0.1 and
+           math.abs(state.engagementPanelAnimations.topPanelOffsetY) < 0.1 and
+           math.abs(state.engagementPanelAnimations.leftMidPanelOffsetX) < 0.1
+    
+    local bottomCenterPanelComplete = true
+    if state.bottomCenterPanelAnimation.hasTriggered and state.bottomCenterPanelReverseStarted then
+        bottomCenterPanelComplete = math.abs(state.bottomCenterPanelAnimation.currentY) < 0.1
+    end
+    
+    local eyelidComplete = true
+    if state.eyelidAnimation.currentY < 0 then
+        eyelidComplete = math.abs(state.eyelidAnimation.currentY) < 0.1
+    end
+    
+    return engagementComplete and bottomCenterPanelComplete and eyelidComplete
+end
+
+-- Reset all animations (for new game)
+function MonitorFrame.resetAnimations()
+    state.eyelidAnimation.active = false
+    state.eyelidAnimation.timer = 0
+    state.eyelidAnimation.currentY = 0
+
+    state.bottomCenterPanelAnimation.active = false
+    state.bottomCenterPanelAnimation.timer = 0
+    state.bottomCenterPanelAnimation.currentY = 0
+    state.bottomCenterPanelAnimation.hasTriggered = false
+    
+    state.engagementPanelAnimations.rightMidPanelOffsetX = 0
+    state.engagementPanelAnimations.topPanelOffsetY = 0
+    state.engagementPanelAnimations.leftMidPanelOffsetX = 0
+    state.reverseAnimationActive = false
+    state.panelsSetToMaximum = false
+    state.bottomCenterPanelReverseStarted = false
+end
+
 -- Update engagement-based panel animations
--- Called with current engagement value
-function MonitorFrame.updateEngagementAnimations(engagementValue)
+-- Called with current engagement value and dt for reverse animation
+function MonitorFrame.updateEngagementAnimations(engagementValue, dt)
+    dt = dt or 0
+    
+    -- If panels are set to maximum (during game over), don't update based on engagement
+    if state.panelsSetToMaximum and not state.reverseAnimationActive then
+        return
+    end
+    
+    -- If reverse animation is active, animate back to 0 at double speed
+    if state.reverseAnimationActive then
+        local reverseSpeed = 2.0  -- Double speed
+        local maxOffset = 100  -- Maximum offset value
+        local targetOffset = 0
+        
+        -- Animate rightMidPanel back to 0 (was positive, move left)
+        if state.engagementPanelAnimations.rightMidPanelOffsetX > targetOffset then
+            state.engagementPanelAnimations.rightMidPanelOffsetX = math.max(targetOffset, 
+                state.engagementPanelAnimations.rightMidPanelOffsetX - maxOffset * reverseSpeed * dt)
+        else
+            state.engagementPanelAnimations.rightMidPanelOffsetX = targetOffset
+        end
+        
+        -- Animate topPanel back to 0 (was negative, move down)
+        if state.engagementPanelAnimations.topPanelOffsetY < targetOffset then
+            state.engagementPanelAnimations.topPanelOffsetY = math.min(targetOffset,
+                state.engagementPanelAnimations.topPanelOffsetY + maxOffset * reverseSpeed * dt)
+        else
+            state.engagementPanelAnimations.topPanelOffsetY = targetOffset
+        end
+        
+        -- Animate leftMidPanel back to 0 (was negative, move right)
+        if state.engagementPanelAnimations.leftMidPanelOffsetX < targetOffset then
+            state.engagementPanelAnimations.leftMidPanelOffsetX = math.min(targetOffset,
+                state.engagementPanelAnimations.leftMidPanelOffsetX + maxOffset * reverseSpeed * dt)
+        else
+            state.engagementPanelAnimations.leftMidPanelOffsetX = targetOffset
+        end
+        
+        -- Check if all panels have reached 0 (reverse complete)
+        if math.abs(state.engagementPanelAnimations.rightMidPanelOffsetX) < 0.1 and
+           math.abs(state.engagementPanelAnimations.topPanelOffsetY) < 0.1 and
+           math.abs(state.engagementPanelAnimations.leftMidPanelOffsetX) < 0.1 then
+            -- All engagement panels have reversed, mark as complete
+            state.reverseAnimationActive = false
+        end
+        return
+    end
+    
+    -- Normal engagement-based animation
     -- Engagement threshold: 50 is original position, 0 is maximum offset (100px)
     -- Formula: offset = (50 - engagement) / 50 * 100
     -- Clamp engagement to 0-50 range for calculation
@@ -201,8 +328,34 @@ end
 
 -- Update animations
 function MonitorFrame.update(dt)
-    -- Update eyelid animation
-    if state.eyelidAnimation.active then
+    -- Update eyelid animation (check reverse first, even if not active)
+    if state.reverseAnimationActive and state.eyelidAnimation.currentY < 0 then
+        -- Reverse animation: animate back to startY (0) at double speed
+        if not state.eyelidAnimation.active then
+            -- Reactivate if needed
+            state.eyelidAnimation.active = true
+            state.eyelidAnimation.timer = 0
+        end
+        
+        local reverseSpeed = 2.0  -- Double speed
+        local reverseDuration = state.eyelidAnimation.duration / reverseSpeed
+        state.eyelidAnimation.timer = state.eyelidAnimation.timer + dt
+        
+        if state.eyelidAnimation.timer >= reverseDuration then
+            -- Reverse animation complete
+            state.eyelidAnimation.timer = reverseDuration
+            state.eyelidAnimation.currentY = state.eyelidAnimation.startY
+            state.eyelidAnimation.active = false
+        else
+            -- Interpolate from targetY back to startY
+            local progress = state.eyelidAnimation.timer / reverseDuration
+            -- Use ease-out for smooth animation
+            progress = 1 - math.pow(1 - progress, 3)
+            state.eyelidAnimation.currentY = state.eyelidAnimation.targetY - 
+                (state.eyelidAnimation.targetY - state.eyelidAnimation.startY) * progress
+        end
+    elseif state.eyelidAnimation.active then
+        -- Normal forward animation
         state.eyelidAnimation.timer = state.eyelidAnimation.timer + dt
         
         if state.eyelidAnimation.timer >= state.eyelidAnimation.duration then
@@ -220,8 +373,36 @@ function MonitorFrame.update(dt)
         end
     end
     
-    -- Update BottomCenterPanel animation
-    if state.bottomCenterPanelAnimation.active then
+    -- Update BottomCenterPanel animation (check reverse first, even if not active)
+    if state.reverseAnimationActive and state.bottomCenterPanelReverseStarted and state.bottomCenterPanelAnimation.hasTriggered then
+        -- Reverse animation: animate back to startY (0) at double speed
+        if not state.bottomCenterPanelAnimation.active then
+            -- Reactivate if needed
+            state.bottomCenterPanelAnimation.active = true
+            state.bottomCenterPanelAnimation.timer = 0
+        end
+        
+        local reverseSpeed = 2.0  -- Double speed
+        local reverseDuration = state.bottomCenterPanelAnimation.duration / reverseSpeed
+        state.bottomCenterPanelAnimation.timer = state.bottomCenterPanelAnimation.timer + dt
+        
+        if state.bottomCenterPanelAnimation.timer >= reverseDuration then
+            -- Reverse animation complete
+            state.bottomCenterPanelAnimation.timer = reverseDuration
+            state.bottomCenterPanelAnimation.currentY = state.bottomCenterPanelAnimation.startY
+            state.bottomCenterPanelAnimation.active = false
+            -- Mark reverse as complete for BottomCenterPanel
+            state.bottomCenterPanelReverseStarted = false
+        else
+            -- Interpolate from targetY back to startY
+            local progress = state.bottomCenterPanelAnimation.timer / reverseDuration
+            -- Use ease-out for smooth animation
+            progress = 1 - math.pow(1 - progress, 3)
+            state.bottomCenterPanelAnimation.currentY = state.bottomCenterPanelAnimation.targetY - 
+                (state.bottomCenterPanelAnimation.targetY - state.bottomCenterPanelAnimation.startY) * progress
+        end
+    elseif state.bottomCenterPanelAnimation.active then
+        -- Normal forward animation
         state.bottomCenterPanelAnimation.timer = state.bottomCenterPanelAnimation.timer + dt
         
         if state.bottomCenterPanelAnimation.timer >= state.bottomCenterPanelAnimation.duration then
@@ -240,8 +421,231 @@ function MonitorFrame.update(dt)
     end
 end
 
--- Draw the monitor frame (covers entire screen)
+-- Internal helper: Draw a single layer
+local function drawLayer(layerName)
+    local frameX = 0
+    local frameY = 0
+    love.graphics.setColor(1, 1, 1, 1)
+    
+    if layerName == "mouthpiece" and state.images.mouthpiece then
+        love.graphics.draw(state.images.mouthpiece, frameX, frameY)
+    elseif layerName == "eyelid" and state.images.eyeLid then
+        local eyelidY = frameY + state.eyelidAnimation.currentY
+        love.graphics.draw(state.images.eyeLid, frameX, eyelidY)
+    elseif layerName == "rightMidUnderPanel" and state.images.rightMidUnderPanel then
+        love.graphics.draw(state.images.rightMidUnderPanel, frameX, frameY)
+    elseif layerName == "rightMidUnderPanelHighlights" and state.images.rightMidUnderPanelHighlights then
+        love.graphics.draw(state.images.rightMidUnderPanelHighlights, frameX, frameY)
+    elseif layerName == "leftMidUnderPanel" and state.images.leftMidUnderPanel then
+        love.graphics.draw(state.images.leftMidUnderPanel, frameX, frameY)
+    elseif layerName == "leftMidUnderPanelHighlights" and state.images.leftMidUnderPanelHighlights then
+        love.graphics.draw(state.images.leftMidUnderPanelHighlights, frameX, frameY)
+    elseif layerName == "mainFrame" and state.images.mainFrame then
+        love.graphics.draw(state.images.mainFrame, frameX, frameY)
+    elseif layerName == "bottomCenterPanel" and state.images.bottomCenterPanel then
+        local bottomCenterPanelY = frameY + state.bottomCenterPanelAnimation.currentY
+        
+        -- Apply crop if enabled
+        if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
+            local cropY = BOTTOM_CENTER_PANEL_CROP_Y
+            if bottomCenterPanelY < cropY then
+                local cropHeight = cropY - bottomCenterPanelY
+                if cropHeight > 0 then
+                    love.graphics.setScissor(frameX, bottomCenterPanelY, Constants.SCREEN_WIDTH, cropHeight)
+                else
+                    love.graphics.setScissor()
+                    return
+                end
+            else
+                love.graphics.setScissor()
+                return
+            end
+        end
+        
+        love.graphics.draw(state.images.bottomCenterPanel, frameX, bottomCenterPanelY)
+        
+        if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
+            love.graphics.setScissor()
+        end
+    elseif layerName == "leftMidPanel" and state.images.leftMidPanel then
+        local leftMidPanelX = frameX + state.engagementPanelAnimations.leftMidPanelOffsetX
+        love.graphics.draw(state.images.leftMidPanel, leftMidPanelX, frameY)
+    elseif layerName == "rightMidPanel" and state.images.rightMidPanel then
+        local rightMidPanelX = frameX + state.engagementPanelAnimations.rightMidPanelOffsetX
+        love.graphics.draw(state.images.rightMidPanel, rightMidPanelX, frameY)
+    elseif layerName == "topPanel" and state.images.topPanel then
+        local topPanelY = frameY + state.engagementPanelAnimations.topPanelOffsetY
+        love.graphics.draw(state.images.topPanel, frameX, topPanelY)
+    end
+end
+
+-- Register all monitor frame layers with z-depths
+function MonitorFrame.registerLayers()
+    local frameX = 0
+    local frameY = 0
+    
+    -- 1. Mouthpiece (backmost)
+    if state.images.mouthpiece then
+        DrawLayers.register(Constants.Z_DEPTH.MOUTHPIECE, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(state.images.mouthpiece, frameX, frameY)
+        end, "Mouthpiece")
+    end
+    
+    -- 2. EyeLid - position depends on reverse animation
+    if state.images.eyeLid then
+        if state.reverseAnimationActive then
+            -- During reverse: draw just under MainFrame
+            DrawLayers.register(Constants.Z_DEPTH.EYELID_REVERSE, function()
+                love.graphics.setColor(1, 1, 1, 1)
+                local eyelidY = frameY + state.eyelidAnimation.currentY
+                love.graphics.draw(state.images.eyeLid, frameX, eyelidY)
+            end, "EyeLid (reverse)")
+        else
+            -- Normal: draw in original position
+            DrawLayers.register(Constants.Z_DEPTH.EYELID_NORMAL, function()
+                love.graphics.setColor(1, 1, 1, 1)
+                local eyelidY = frameY + state.eyelidAnimation.currentY
+                love.graphics.draw(state.images.eyeLid, frameX, eyelidY)
+            end, "EyeLid (normal)")
+        end
+    end
+    
+    -- 3. RightMidUnderPanel
+    if state.images.rightMidUnderPanel then
+        DrawLayers.register(Constants.Z_DEPTH.RIGHT_MID_UNDER_PANEL, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(state.images.rightMidUnderPanel, frameX, frameY)
+        end, "RightMidUnderPanel")
+    end
+    
+    -- 4. RightMidUnderPanel_Highlights
+    if state.images.rightMidUnderPanelHighlights then
+        DrawLayers.register(Constants.Z_DEPTH.RIGHT_MID_UNDER_PANEL_HIGHLIGHTS, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(state.images.rightMidUnderPanelHighlights, frameX, frameY)
+        end, "RightMidUnderPanel_Highlights")
+    end
+    
+    -- 5. LeftMidUnderPanel
+    if state.images.leftMidUnderPanel then
+        DrawLayers.register(Constants.Z_DEPTH.LEFT_MID_UNDER_PANEL, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(state.images.leftMidUnderPanel, frameX, frameY)
+        end, "LeftMidUnderPanel")
+    end
+    
+    -- 6. LeftMidUnderPanel_highlights
+    if state.images.leftMidUnderPanelHighlights then
+        DrawLayers.register(Constants.Z_DEPTH.LEFT_MID_UNDER_PANEL_HIGHLIGHTS, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(state.images.leftMidUnderPanelHighlights, frameX, frameY)
+        end, "LeftMidUnderPanel_highlights")
+    end
+    
+    -- 7. MainFrame
+    if state.images.mainFrame then
+        DrawLayers.register(Constants.Z_DEPTH.MAIN_FRAME, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(state.images.mainFrame, frameX, frameY)
+        end, "MainFrame")
+    end
+    
+    -- 8. BottomCenterPanel - position depends on reverse animation
+    if state.images.bottomCenterPanel then
+        if state.reverseAnimationActive then
+            -- During reverse: draw just under MainFrame
+            DrawLayers.register(Constants.Z_DEPTH.BOTTOM_CENTER_PANEL_REVERSE, function()
+                love.graphics.setColor(1, 1, 1, 1)
+                local bottomCenterPanelY = frameY + state.bottomCenterPanelAnimation.currentY
+                
+                -- Apply crop if enabled
+                if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
+                    local cropY = BOTTOM_CENTER_PANEL_CROP_Y
+                    if bottomCenterPanelY < cropY then
+                        local cropHeight = cropY - bottomCenterPanelY
+                        if cropHeight > 0 then
+                            love.graphics.setScissor(frameX, bottomCenterPanelY, Constants.SCREEN_WIDTH, cropHeight)
+                        else
+                            love.graphics.setScissor()
+                            return
+                        end
+                    else
+                        love.graphics.setScissor()
+                        return
+                    end
+                end
+                
+                love.graphics.draw(state.images.bottomCenterPanel, frameX, bottomCenterPanelY)
+                
+                if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
+                    love.graphics.setScissor()
+                end
+            end, "BottomCenterPanel (reverse)")
+        else
+            -- Normal: draw in original position
+            DrawLayers.register(Constants.Z_DEPTH.BOTTOM_CENTER_PANEL_NORMAL, function()
+                love.graphics.setColor(1, 1, 1, 1)
+                local bottomCenterPanelY = frameY + state.bottomCenterPanelAnimation.currentY
+                
+                -- Apply crop if enabled
+                if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
+                    local cropY = BOTTOM_CENTER_PANEL_CROP_Y
+                    if bottomCenterPanelY < cropY then
+                        local cropHeight = cropY - bottomCenterPanelY
+                        if cropHeight > 0 then
+                            love.graphics.setScissor(frameX, bottomCenterPanelY, Constants.SCREEN_WIDTH, cropHeight)
+                        else
+                            love.graphics.setScissor()
+                            return
+                        end
+                    else
+                        love.graphics.setScissor()
+                        return
+                    end
+                end
+                
+                love.graphics.draw(state.images.bottomCenterPanel, frameX, bottomCenterPanelY)
+                
+                if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
+                    love.graphics.setScissor()
+                end
+            end, "BottomCenterPanel (normal)")
+        end
+    end
+    
+    -- 9. LeftMidPanel
+    if state.images.leftMidPanel then
+        DrawLayers.register(Constants.Z_DEPTH.LEFT_MID_PANEL, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            local leftMidPanelX = frameX + state.engagementPanelAnimations.leftMidPanelOffsetX
+            love.graphics.draw(state.images.leftMidPanel, leftMidPanelX, frameY)
+        end, "LeftMidPanel")
+    end
+    
+    -- 10. RightMidPanel
+    if state.images.rightMidPanel then
+        DrawLayers.register(Constants.Z_DEPTH.RIGHT_MID_PANEL, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            local rightMidPanelX = frameX + state.engagementPanelAnimations.rightMidPanelOffsetX
+            love.graphics.draw(state.images.rightMidPanel, rightMidPanelX, frameY)
+        end, "RightMidPanel")
+    end
+    
+    -- 11. TopPanel
+    if state.images.topPanel then
+        DrawLayers.register(Constants.Z_DEPTH.TOP_PANEL, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            local topPanelY = frameY + state.engagementPanelAnimations.topPanelOffsetY
+            love.graphics.draw(state.images.topPanel, frameX, topPanelY)
+        end, "TopPanel")
+    end
+end
+
+-- Draw the monitor frame (covers entire screen) - kept for backward compatibility
 function MonitorFrame.draw()
+    -- This function is now a wrapper that registers layers and draws them
+    -- But for now, keep the old implementation for compatibility
     love.graphics.setColor(1, 1, 1, 1)
     
     -- Draw all layers in back-to-front order
@@ -254,10 +658,12 @@ function MonitorFrame.draw()
         love.graphics.draw(state.images.mouthpiece, frameX, frameY)
     end
     
-    -- 2. EyeLid (with animation offset)
-    if state.images.eyeLid then
-        local eyelidY = frameY + state.eyelidAnimation.currentY
-        love.graphics.draw(state.images.eyeLid, frameX, eyelidY)
+    -- 2. EyeLid (with animation offset) - only draw here if NOT in reverse animation
+    if not state.reverseAnimationActive then
+        if state.images.eyeLid then
+            local eyelidY = frameY + state.eyelidAnimation.currentY
+            love.graphics.draw(state.images.eyeLid, frameX, eyelidY)
+        end
     end
     
     -- 3. RightMidUnderPanel
@@ -285,40 +691,164 @@ function MonitorFrame.draw()
         love.graphics.draw(state.images.mainFrame, frameX, frameY)
     end
     
-    -- 8. BottomCenterPanel (with animation and crop)
-    if state.images.bottomCenterPanel then
-        local bottomCenterPanelY = frameY + state.bottomCenterPanelAnimation.currentY
-        
-        -- Apply crop if enabled (after animation has been triggered)
-        -- Crop at y=174 means show only from bottomCenterPanelY to y=174
-        -- Crop is applied during and after animation
-        if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
-            local cropY = BOTTOM_CENTER_PANEL_CROP_Y
+    -- During reverse animation: draw BottomCenterPanel and EyeLid just under MainFrame
+    if state.reverseAnimationActive then
+        -- 7a. BottomCenterPanel (with animation and crop) - moved here during reverse
+        if state.images.bottomCenterPanel then
+            local bottomCenterPanelY = frameY + state.bottomCenterPanelAnimation.currentY
             
-            -- Only crop if BottomCenterPanel is above or at crop line
-            if bottomCenterPanelY < cropY then
-                local cropHeight = cropY - bottomCenterPanelY
-                if cropHeight > 0 then
-                    -- Scissor coordinates are in screen space, so this crops the final result
-                    love.graphics.setScissor(frameX, bottomCenterPanelY, Constants.SCREEN_WIDTH, cropHeight)
+            -- Apply crop if enabled (after animation has been triggered)
+            -- Crop at y=174 means show only from bottomCenterPanelY to y=174
+            -- Crop is applied during and after animation
+            if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
+                local cropY = BOTTOM_CENTER_PANEL_CROP_Y
+                
+                -- Only crop if BottomCenterPanel is above or at crop line
+                if bottomCenterPanelY < cropY then
+                    local cropHeight = cropY - bottomCenterPanelY
+                    if cropHeight > 0 then
+                        -- Scissor coordinates are in screen space, so this crops the final result
+                        love.graphics.setScissor(frameX, bottomCenterPanelY, Constants.SCREEN_WIDTH, cropHeight)
+                    else
+                        love.graphics.setScissor()
+                        return  -- BottomCenterPanel is at or below crop line, don't draw
+                    end
                 else
                     love.graphics.setScissor()
-                    return  -- BottomCenterPanel is at or below crop line, don't draw
+                    return  -- BottomCenterPanel is entirely below crop line, don't draw
                 end
-            else
+            end
+            
+            love.graphics.draw(state.images.bottomCenterPanel, frameX, bottomCenterPanelY)
+            
+            -- Reset scissor after drawing BottomCenterPanel (if it was enabled)
+            if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
                 love.graphics.setScissor()
-                return  -- BottomCenterPanel is entirely below crop line, don't draw
             end
         end
         
-        love.graphics.draw(state.images.bottomCenterPanel, frameX, bottomCenterPanelY)
-        
-        -- Reset scissor after drawing BottomCenterPanel (if it was enabled)
-        if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
-            love.graphics.setScissor()
+        -- 7b. EyeLid (with animation offset) - moved here during reverse
+        if state.images.eyeLid then
+            local eyelidY = frameY + state.eyelidAnimation.currentY
+            love.graphics.draw(state.images.eyeLid, frameX, eyelidY)
         end
     end
     
+    -- 8. BottomCenterPanel (with animation and crop) - only draw here if NOT in reverse animation
+    if not state.reverseAnimationActive then
+        if state.images.bottomCenterPanel then
+            local bottomCenterPanelY = frameY + state.bottomCenterPanelAnimation.currentY
+            
+            -- Apply crop if enabled (after animation has been triggered)
+            -- Crop at y=174 means show only from bottomCenterPanelY to y=174
+            -- Crop is applied during and after animation
+            if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
+                local cropY = BOTTOM_CENTER_PANEL_CROP_Y
+                
+                -- Only crop if BottomCenterPanel is above or at crop line
+                if bottomCenterPanelY < cropY then
+                    local cropHeight = cropY - bottomCenterPanelY
+                    if cropHeight > 0 then
+                        -- Scissor coordinates are in screen space, so this crops the final result
+                        love.graphics.setScissor(frameX, bottomCenterPanelY, Constants.SCREEN_WIDTH, cropHeight)
+                    else
+                        love.graphics.setScissor()
+                        return  -- BottomCenterPanel is at or below crop line, don't draw
+                    end
+                else
+                    love.graphics.setScissor()
+                    return  -- BottomCenterPanel is entirely below crop line, don't draw
+                end
+            end
+            
+            love.graphics.draw(state.images.bottomCenterPanel, frameX, bottomCenterPanelY)
+            
+            -- Reset scissor after drawing BottomCenterPanel (if it was enabled)
+            if ENABLE_BOTTOM_CENTER_PANEL_CROP and state.bottomCenterPanelAnimation.hasTriggered then
+                love.graphics.setScissor()
+            end
+        end
+    end
+    
+    -- 9. LeftMidPanel (with engagement-based animation)
+    if state.images.leftMidPanel then
+        local leftMidPanelX = frameX + state.engagementPanelAnimations.leftMidPanelOffsetX
+        love.graphics.draw(state.images.leftMidPanel, leftMidPanelX, frameY)
+    end
+    
+    -- 10. RightMidPanel (with engagement-based animation)
+    if state.images.rightMidPanel then
+        local rightMidPanelX = frameX + state.engagementPanelAnimations.rightMidPanelOffsetX
+        love.graphics.draw(state.images.rightMidPanel, rightMidPanelX, frameY)
+    end
+    
+    -- 11. TopPanel (frontmost, with engagement-based animation)
+    if state.images.topPanel then
+        local topPanelY = frameY + state.engagementPanelAnimations.topPanelOffsetY
+        love.graphics.draw(state.images.topPanel, frameX, topPanelY)
+    end
+end
+
+-- Register animated panels on top of top banner (when banner is at down position)
+function MonitorFrame.registerAnimatedPanelsOnTop()
+    if not state.panelsSetToMaximum then
+        return  -- Only register if panels are set to maximum
+    end
+    
+    local frameX = 0
+    local frameY = 0
+    
+    -- Draw MainFrame first (before animated panels)
+    if state.images.mainFrame then
+        DrawLayers.register(Constants.Z_DEPTH.ANIMATED_PANELS_ON_TOP, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(state.images.mainFrame, frameX, frameY)
+        end, "MainFrame (on top)")
+    end
+    
+    -- Draw animated panels on top of banner
+    if state.images.leftMidPanel then
+        DrawLayers.register(Constants.Z_DEPTH.ANIMATED_PANELS_ON_TOP + 1, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            local leftMidPanelX = frameX + state.engagementPanelAnimations.leftMidPanelOffsetX
+            love.graphics.draw(state.images.leftMidPanel, leftMidPanelX, frameY)
+        end, "LeftMidPanel (on top)")
+    end
+    
+    if state.images.rightMidPanel then
+        DrawLayers.register(Constants.Z_DEPTH.ANIMATED_PANELS_ON_TOP + 2, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            local rightMidPanelX = frameX + state.engagementPanelAnimations.rightMidPanelOffsetX
+            love.graphics.draw(state.images.rightMidPanel, rightMidPanelX, frameY)
+        end, "RightMidPanel (on top)")
+    end
+    
+    if state.images.topPanel then
+        DrawLayers.register(Constants.Z_DEPTH.ANIMATED_PANELS_ON_TOP + 3, function()
+            love.graphics.setColor(1, 1, 1, 1)
+            local topPanelY = frameY + state.engagementPanelAnimations.topPanelOffsetY
+            love.graphics.draw(state.images.topPanel, frameX, topPanelY)
+        end, "TopPanel (on top)")
+    end
+end
+
+-- Draw animated panels on top of top banner (called when banner is at down position)
+function MonitorFrame.drawAnimatedPanelsOnTop()
+    if not state.panelsSetToMaximum then
+        return  -- Only draw if panels are set to maximum
+    end
+    
+    love.graphics.setColor(1, 1, 1, 1)
+    local frameX = 0
+    local frameY = 0
+    
+    -- Draw MainFrame first (before animated panels)
+    -- 7. MainFrame
+    if state.images.mainFrame then
+        love.graphics.draw(state.images.mainFrame, frameX, frameY)
+    end
+    
+    -- Draw animated panels on top of banner (same order as in draw())
     -- 9. LeftMidPanel (with engagement-based animation)
     if state.images.leftMidPanel then
         local leftMidPanelX = frameX + state.engagementPanelAnimations.leftMidPanelOffsetX
