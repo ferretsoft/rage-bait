@@ -9,11 +9,11 @@ local MonitorFrame = require("src.core.monitor_frame")
 -- Draw attract mode screen
 function AttractMode.draw()
     -- Draw splash screen as background
-    if Game.splash then
+    if Game.assets.splash then
         love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(Game.splash, 0, 0, 0, 
-            Constants.SCREEN_WIDTH / Game.splash:getWidth(),
-            Constants.SCREEN_HEIGHT / Game.splash:getHeight())
+        love.graphics.draw(Game.assets.splash, 0, 0, 0, 
+            Constants.SCREEN_WIDTH / Game.assets.splash:getWidth(),
+            Constants.SCREEN_HEIGHT / Game.assets.splash:getHeight())
     else
         -- Fallback to background color if splash image not loaded
         love.graphics.clear(Constants.COLORS.BACKGROUND)
@@ -88,7 +88,7 @@ function AttractMode.draw()
     
     -- Insert coin message (blinking) with transparent black background
     local blinkSpeed = 2.0
-    local alpha = (math.sin(Game.attractModeTimer * blinkSpeed) + 1) / 2
+    local alpha = (math.sin(Game.timers.attract * blinkSpeed) + 1) / 2
     alpha = 0.3 + alpha * 0.7  -- Keep between 0.3 and 1.0
     
     love.graphics.setFont(Game.fonts.large)  -- Increased from medium
@@ -135,7 +135,7 @@ end
 
 -- Update attract mode
 function AttractMode.update(dt)
-    Game.attractModeTimer = Game.attractModeTimer + dt
+    Game.timers.attract = Game.timers.attract + dt
 end
 
 return AttractMode

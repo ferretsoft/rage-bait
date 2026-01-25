@@ -253,11 +253,23 @@ Constants.UI = {
     WEBCAM_HEIGHT = 300,
     WEBCAM_OFFSET_Y = -50,  -- Offset from center
     
+    -- Webcam window (gameplay - Chase Paxton)
+    WEBCAM_GAMEPLAY_WIDTH = 300,
+    WEBCAM_GAMEPLAY_HEIGHT = 200,
+    WEBCAM_GAMEPLAY_OFFSET_X = 20,  -- Offset from playfield edge
+    WEBCAM_GAMEPLAY_OFFSET_Y = 20,  -- Offset from playfield bottom
+    WEBCAM_ANIMATION_SCALE = 2.0,  -- Scale factor when animating to center
+    
     -- Banner positioning
     BANNER_OVERLAP_OFFSET = 120,  -- Pixels banner overlaps into window
     
     -- Window dimensions
     WINDOW_BACKGROUND_ALPHA = 0.7,  -- Alpha for window content background
+    
+    -- Plexi overlay
+    PLEXI_SCALE_FACTOR = 1.15,  -- Scale factor for plexi overlay (15% larger)
+    PLEXI_OPACITY = 0.12,  -- Opacity of first plexi layer (12%)
+    
     SCORE_WINDOW_WIDTH = 300,
     SCORE_WINDOW_HEIGHT = 80,
     PLOT_WINDOW_WIDTH = 300,

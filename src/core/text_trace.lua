@@ -171,20 +171,20 @@ function TextTrace.draw()
         return
     end
     
-    if not Game.lifeLostAuditorActive and not Game.gameOverActive then
+    if not Game.modes.lifeLostAuditor and not Game.modes.gameOver then
         return
     end
     
     -- For life lost, only draw when text is visible (same flicker logic as text)
-    if Game.lifeLostAuditorActive then
-        if not TopBanner.isLifeLostTextVisible(Game.glitchTextTimer) then
+    if Game.modes.lifeLostAuditor then
+        if not TopBanner.isLifeLostTextVisible(Game.timers.glitchText) then
             return
         end
     end
     
     -- For game over, only draw when text is visible (same flicker logic as text)
-    if Game.gameOverActive then
-        if not TopBanner.isGameOverTextVisible(Game.glitchTextTimer) then
+    if Game.modes.gameOver then
+        if not TopBanner.isGameOverTextVisible(Game.timers.glitchText) then
             return
         end
     end
@@ -208,9 +208,9 @@ function TextTrace.draw()
     
     -- Get the text and font from Game
     local text = ""
-    if Game.lifeLostAuditorActive then
+    if Game.modes.lifeLostAuditor then
         text = "LOW PERFORMANCE DETECTED - INITIALIZE REASSIGNMENT"
-    elseif Game.gameOverActive then
+    elseif Game.modes.gameOver then
         text = "YIELD NOT SATISFACTORY - LIQUIDATING ASSET"
     end
     
@@ -224,8 +224,8 @@ function TextTrace.draw()
         textX, 
         textY, 
         Game.fonts.terminal, 
-        Game.glitchTextTimer, 
-        Game.glitchTextWriteProgress
+        Game.timers.glitchText, 
+        Game.visualEffects.glitchTextWriteProgress
     )
     
     if not imageData then
@@ -254,10 +254,10 @@ function TextTrace.draw()
     local terminalFont = Game.fonts.terminal
     local fullTextWidth = terminalFont:getWidth(text)
     local baseScale = 1.0
-    if Game.glitchTextWriteProgress < 1.0 then
-        baseScale = 0.5 + Game.glitchTextWriteProgress * 0.5
+    if Game.visualEffects.glitchTextWriteProgress < 1.0 then
+        baseScale = 0.5 + Game.visualEffects.glitchTextWriteProgress * 0.5
     else
-        baseScale = 1.0 + math.sin(Game.glitchTextTimer * 4) * 0.05
+        baseScale = 1.0 + math.sin(Game.timers.glitchText * 4) * 0.05
     end
     
     -- Calculate text bounds in screen space

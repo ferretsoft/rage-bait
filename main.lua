@@ -29,10 +29,16 @@ local Godray = require("src.core.godray")
 local TextTrace = require("src.core.text_trace")
 local DynamicMusic = require("src.core.dynamic_music")
 local MatrixEffect = require("src.core.matrix_effect")
+local HighScores = require("src.core.high_scores")
+local ParticleSystem = require("src.core.particle_system")
+local BootingScreen = require("src.screens.booting_screen")
+local LogoScreen = require("src.screens.logo_screen")
+local IntroVideoScreen = require("src.screens.intro_video_screen")
 -- Set BASE so moonshine can find effects in libs directory
 moonshine.BASE = "libs"
 
 Game = {
+    -- Entity lists
     units = {},
     projectiles = {},
     powerups = {},
@@ -40,100 +46,180 @@ Game = {
     hazards = {},
     explosionZones = {}, 
     turret = nil,
+    
+    -- Core gameplay state
     score = 0,
+    lives = 3,
+    level = 1,
     shake = 0,
     logicTimer = 0,
     isUpgraded = false,
     powerupSpawnTimer = 0,
-    background = nil,
-    foreground = nil,
-    logo = nil,  -- Company logo image
-    logoBlink = nil,  -- Company logo blink image
-    splash = nil,  -- Splash screen image for attract mode
-    -- Banner state is now managed by TopBanner module (src/core/top_banner.lua)
-    showBackgroundForeground = false,  -- Toggle for background/foreground layers
-    bootingMode = false,  -- Start with booting screen (disabled)
-    bootingTimer = 0,  -- Timer for booting screen
-    matrixMode = false,  -- Matrix effect screen (before logo)
-    matrixTimer = 0,  -- Timer for matrix screen
-    logoMode = false,  -- Logo screen (after matrix)
-    logoTimer = 0,  -- Timer for logo animation
-    logoFanfarePlayed = false,  -- Track if fanfare has been played
-    previousLogoTimer = 0,  -- Track previous timer value to detect threshold crossings
-    attractMode = false,  -- Attract mode (after logo)
-    attractModeTimer = 0,  -- Timer for attract mode animations
-    joystickTestMode = false,  -- Joystick test screen (accessible from attract mode)
-    demoMode = false,  -- Demo mode (AI-controlled gameplay with tutorial)
-    demoTimer = 0,  -- Timer for demo mode
-    demoStep = 1,  -- Current tutorial step
-    demoAITimer = 0,  -- Timer for AI actions
-    demoTargetUnit = nil,  -- Current target unit for AI
-    demoCharging = false,  -- Whether AI is currently charging
-    demoActionComplete = false,  -- Whether current step's action is complete
-    demoWaitingForMessage = true,  -- Whether waiting for message to be shown
-    demoUnitConverted = false,  -- Track if a unit was converted (for verification)
-    demoUnitEnraged = false,  -- Track if a unit was enraged (for verification)
-    demoUnitsFighting = false,  -- Track if units are fighting (for verification)
-    videoMode = false,  -- Intro video mode (plays before intro screen)
-    introVideo = nil,  -- Intro video object
-    introMusicFadeActive = false,  -- Whether intro music fade is active
-    introMusicFadeTimer = 0,  -- Timer for intro music fade
-    introMusicFadeStartVolume = 0.6,  -- Starting volume for fade (from SOUND_CONFIG.MUSIC_VOLUME)
-    introMusicFadeTargetVolume = 0.3,  -- Target volume (50% of start)
-    introMode = false,  -- Intro screen mode
-    introTimer = 0,  -- Timer for intro screen
-    introStep = 1,  -- Current intro step/page
-    auditorActive = false,  -- Whether THE AUDITOR sequence is active (final game over only)
-    auditorTimer = 0,  -- Timer for THE AUDITOR sequence
-    auditorPhase = 1,  -- Current phase of THE AUDITOR sequence (1=freeze, 2=fade, 3=verdict, 4=crash)
-    lifeLostAuditorActive = false,  -- Whether life lost auditor screen is active (engagement depleted but lives remain)
-    lifeLostAuditorTimer = 0,  -- Timer for life lost auditor screen
-    lifeLostAuditorPhase = 1,  -- Current phase of life lost auditor (1=freeze, 2=fade, 3=life lost, 4=restart)
-    level = 1,  -- Current level
-    levelTransitionTimer = 0,  -- Timer for level transition
-    levelTransitionActive = false,  -- Whether level transition is active
-    matrixTransitionActive = false,  -- Whether matrix wipe transition is active
-    webcamWindowAnimating = false,  -- Whether webcam window is animating
-    webcamWindowAnimTimer = 0,  -- Timer for webcam window animation
-    webcamWindowAnimDuration = 1.0,  -- Duration of webcam window animation (one way)
-    webcamWindowAnimReversing = false,  -- Whether animation is reversing back
-    webcamWindowDialogueActive = false,  -- Whether dialogue is showing (window centered)
-    webcamWindowDialogueTimer = 0,  -- Timer for dialogue display
-    webcamWindowDialogueDuration = 5.0,  -- How long to show dialogue
-    webcamWindowDialogueSentences = {},  -- Array of sentences to display
-    webcamWindowDialogueCurrentSentence = 1,  -- Current sentence index (1-based)
-    webcamWindowDialogueSentenceTimer = 0,  -- Timer for current sentence
-    webcamWindowDialogueSentenceDuration = 2.0,  -- How long to show each sentence
-    levelCompleteScreenActive = false,  -- Whether level completion screen is active
-    levelCompleteScreenTimer = 0,  -- Timer for level completion screen (5 seconds)
-    winTextActive = false,  -- Whether win text is showing (before webcam)
-    winTextTimer = 0,  -- Timer for win text display (5 seconds)
-    slowMoActive = false,  -- Whether slow-motion ramp is active
-    slowMoTimer = 0,  -- Timer for slow-motion ramp
-    slowMoDuration = 1.5,  -- Duration of slow-motion ramp (1.5 seconds)
     timeScale = 1.0,  -- Current time scale (1.0 = normal, 0.0 = frozen)
-    lives = 3,  -- Player lives
-    gameOverTimer = 0,  -- Timer for game over screen
-    gameOverActive = false,  -- Whether game over screen is active
-    pointMultiplier = 1,  -- Current point multiplier (incremental)
-    pointMultiplierTimer = 0,  -- Timer for point multiplier (10 seconds)
-    pointMultiplierActive = false,  -- Whether point multiplier is active
-    pointMultiplierFlashTimer = 0,  -- Timer for flashy text animation
-    pointMultiplierTextTimer = 0,  -- Timer for text display (fades out after 3s)
-    pointMultiplierSparks = {},  -- Spark particles for multiplier effect
-    rapidFireTextTimer = 0,  -- Timer for rapid fire text display (fades out after 3s)
-    rapidFireSparks = {},  -- Spark particles for rapid fire effect
     previousEngagementAtMax = false,  -- Track if engagement was at max last frame (prevents retriggering)
+    
+    -- Assets
+    assets = {
+        background = nil,
+        foreground = nil,
+        logo = nil,  -- Company logo image
+        logoBlink = nil,  -- Company logo blink image
+        splash = nil,  -- Splash screen image for attract mode
+        introVideo = nil,  -- Intro video object
+    },
+    showBackgroundForeground = false,  -- Toggle for background/foreground layers
+    
+    -- Screen modes
+    modes = {
+        booting = false,  -- Start with booting screen (disabled)
+        matrix = false,  -- Matrix effect screen (before logo)
+        logo = false,  -- Logo screen (after matrix)
+        attract = false,  -- Attract mode (after logo)
+        joystickTest = false,  -- Joystick test screen (accessible from attract mode)
+        demo = false,  -- Demo mode (AI-controlled gameplay with tutorial)
+        video = false,  -- Intro video mode (plays before intro screen)
+        intro = false,  -- Intro screen mode
+        auditor = false,  -- Whether THE AUDITOR sequence is active (final game over only)
+        lifeLostAuditor = false,  -- Whether life lost auditor screen is active (engagement depleted but lives remain)
+        gameOver = false,  -- Whether game over screen is active
+        nameEntry = false,  -- Whether name entry screen is active
+        ready = false,  -- Whether ready screen is active
+        winText = false,  -- Whether win text is showing (before webcam)
+    },
+    
+    -- Timers
+    timers = {
+        booting = 0,
+        matrix = 0,
+        logo = 0,
+        previousLogo = 0,  -- Track previous timer value to detect threshold crossings
+        attract = 0,
+        demo = 0,
+        demoAI = 0,
+        intro = 0,
+        introMusicFade = 0,
+        auditor = 0,
+        lifeLostAuditor = 0,
+        levelTransition = 0,
+        webcamWindowAnim = 0,
+        webcamWindowDialogue = 0,
+        webcamWindowDialogueSentence = 0,
+        levelCompleteScreen = 0,
+        winText = 0,
+        slowMo = 0,
+        gameOver = 0,
+        pointMultiplier = 0,
+        pointMultiplierFlash = 0,
+        pointMultiplierText = 0,
+        rapidFireText = 0,
+        glitchText = 0,
+        ready = 0,
+    },
+    
+    -- Logo screen state
+    logo = {
+        fanfarePlayed = false,  -- Track if fanfare has been played
+    },
+    
+    -- Demo mode state
+    demo = {
+        step = 1,  -- Current tutorial step
+        targetUnit = nil,  -- Current target unit for AI
+        charging = false,  -- Whether AI is currently charging
+        actionComplete = false,  -- Whether current step's action is complete
+        waitingForMessage = true,  -- Whether waiting for message to be shown
+        unitConverted = false,  -- Track if a unit was converted (for verification)
+        unitEnraged = false,  -- Track if a unit was enraged (for verification)
+        unitsFighting = false,  -- Track if units are fighting (for verification)
+    },
+    
+    -- Intro video/music fade state
+    intro = {
+        musicFadeActive = false,  -- Whether intro music fade is active
+        musicFadeStartVolume = 0.6,  -- Starting volume for fade (from SOUND_CONFIG.MUSIC_VOLUME)
+        musicFadeTargetVolume = 0.3,  -- Target volume (50% of start)
+        step = 1,  -- Current intro step/page
+    },
+    
+    -- Auditor sequences
+    auditor = {
+        phase = 1,  -- Current phase of THE AUDITOR sequence (1=freeze, 2=fade, 3=verdict, 4=crash)
+    },
+    lifeLostAuditor = {
+        phase = 1,  -- Current phase of life lost auditor (1=freeze, 2=fade, 3=life lost, 4=restart)
+    },
+    
+    -- Level transitions
+    levelTransition = {
+        active = false,  -- Whether level transition is active
+        matrixActive = false,  -- Whether matrix wipe transition is active
+    },
+    
+    -- Webcam window animation and dialogue
+    webcamWindow = {
+        animating = false,  -- Whether webcam window is animating
+        animDuration = 1.0,  -- Duration of webcam window animation (one way)
+        reversing = false,  -- Whether animation is reversing back
+        dialogueActive = false,  -- Whether dialogue is showing (window centered)
+        dialogueDuration = 5.0,  -- How long to show dialogue
+        dialogueSentences = {},  -- Array of sentences to display
+        dialogueCurrentSentence = 1,  -- Current sentence index (1-based)
+        dialogueSentenceDuration = 2.0,  -- How long to show each sentence
+    },
+    
+    -- Level completion
+    levelComplete = {
+        screenActive = false,  -- Whether level completion screen is active
+    },
+    
+    -- Slow motion
+    slowMo = {
+        active = false,  -- Whether slow-motion ramp is active
+        duration = 1.5,  -- Duration of slow-motion ramp (1.5 seconds)
+    },
+    
+    -- Point multiplier
+    pointMultiplier = {
+        value = 1,  -- Current point multiplier (incremental)
+        active = false,  -- Whether point multiplier is active
+        sparks = {},  -- Spark particles for multiplier effect
+    },
+    
+    -- Rapid fire effect
+    rapidFire = {
+        sparks = {},  -- Spark particles for rapid fire effect
+    },
+    
+    -- Name entry
+    nameEntry = {
+        text = "",  -- Current name being entered (array of characters)
+        cursor = 1,  -- Current cursor position (1-based)
+        maxLength = 3,  -- Maximum name length (arcade style, usually 3)
+        charSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",  -- Available characters
+        charIndex = {},  -- Current character index for each position
+    },
+    
+    -- Joystick input
+    joystick = {
+        button1Pressed = false,  -- Track if joystick button 1 is currently pressed (for charge/release)
+        button2Pressed = false,  -- Track if joystick button 2 is currently pressed (for charge/release)
+    },
+    
+    -- Visual effects
+    visualEffects = {
+        glitchTextWriteProgress = 0,  -- Progress of write-on effect (0-1)
+    },
+    
+    -- Ready screen
+    ready = {
+        phase = 1,  -- Current phase (1=fade out, 2=get ready, 3=go)
+        sparks = {},  -- Spark particles for ready screen
+    },
+    
+    -- High scores
     highScores = {},  -- List of high scores {name, score}
-    nameEntryActive = false,  -- Whether name entry screen is active
-    nameEntryText = "",  -- Current name being entered (array of characters)
-    nameEntryCursor = 1,  -- Current cursor position (1-based)
-    nameEntryMaxLength = 3,  -- Maximum name length (arcade style, usually 3)
-    nameEntryCharSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",  -- Available characters
-    nameEntryCharIndex = {},  -- Current character index for each position
-    joystickTestMode = false,  -- Whether joystick test/diagnostics screen is active
-    joystickButton1Pressed = false,  -- Track if joystick button 1 is currently pressed (for charge/release)
-    joystickButton2Pressed = false,  -- Track if joystick button 2 is currently pressed (for charge/release)
+    
+    -- Rendering
     crtOutputCanvas = nil,  -- Canvas to capture CRT output for fullscreen scaling
     fonts = {
         small = nil,
@@ -143,64 +229,15 @@ Game = {
         speechBubble = nil,  -- Font for speech bubbles (18px)
         multiplierGiant = nil  -- Giant font for multiplier/ready text (80px)
     },
-    glitchTextTimer = 0,  -- Timer for glitch effects
-    glitchTextWriteProgress = 0,  -- Progress of write-on effect (0-1)
-    readyActive = false,  -- Whether ready screen is active
-    readyTimer = 0,  -- Timer for ready screen
-    readyPhase = 1,  -- Current phase (1=fade out, 2=get ready, 3=go)
-    readySparks = {},  -- Spark particles for ready screen
-    debugMode = false  -- Debug mode (enables instant win/lose)
+    
+    -- Debug
+    debugMode = false,  -- Debug mode (enables instant win/lose)
+    
+    -- Win condition (set during gameplay)
+    winCondition = nil,
 }
 
--- Helper function to create spark particles in a circle pattern
-local function createSparkParticles(centerX, centerY, count, speedMin, speedMax, sizeMin, sizeMax, lifetime)
-    local sparks = {}
-    for i = 1, count do
-        local angle = (i / count) * math.pi * 2
-        local speed = speedMin + math.random() * (speedMax - speedMin)
-        table.insert(sparks, {
-            x = centerX,
-            y = centerY,
-            vx = math.cos(angle) * speed,
-            vy = math.sin(angle) * speed,
-            life = lifetime,
-            maxLife = lifetime,
-            size = sizeMin + math.random() * (sizeMax - sizeMin)
-        })
-    end
-    return sparks
-end
-
--- Helper function to update spark particles (with gravity and fade)
-local function updateSparkParticles(sparks, dt, gravity, fadeRate)
-    for i = #sparks, 1, -1 do
-        local spark = sparks[i]
-        spark.x = spark.x + spark.vx * dt
-        spark.y = spark.y + spark.vy * dt
-        if gravity then
-            spark.vy = spark.vy + gravity * dt
-        end
-        spark.life = spark.life - dt * fadeRate
-        if spark.life <= 0 then
-            table.remove(sparks, i)
-        end
-    end
-end
-
--- Helper function to draw spark particles (gold/yellow with glow)
-local function drawSparkParticles(sparks, offsetY)
-    offsetY = offsetY or 0
-    for _, spark in ipairs(sparks) do
-        local alpha = spark.life / spark.maxLife
-        -- Gold/yellow sparks with fade
-        local sparkColor = 0.3 + (spark.life / spark.maxLife) * 0.7  -- Fade from bright to dim
-        love.graphics.setColor(1, 0.8 + sparkColor * 0.2, 0.2, alpha)
-        love.graphics.circle("fill", spark.x, spark.y + offsetY, spark.size)
-        -- Add glow effect
-        love.graphics.setColor(1, 0.9, 0.3, alpha * 0.3)
-        love.graphics.circle("fill", spark.x, spark.y + offsetY, spark.size * 2)
-    end
-end
+-- Spark particle functions now use ParticleSystem module
 
 -- --- HELPER: ACTIVATE POWERUP ---
 local function collectPowerUp(powerup)
@@ -214,13 +251,13 @@ local function collectPowerUp(powerup)
             Game.turret:activatePuckMode(Constants.POWERUP_DURATION)
             
             -- Activate rapid fire text effect
-            Game.rapidFireTextTimer = 3.0  -- Text display duration (3 seconds before fade)
+            Game.timers.rapidFireText = 3.0  -- Text display duration (3 seconds before fade)
             Game.shake = math.max(Game.shake, 1.5)  -- Screen shake
             
             -- Create spark particles for the rapid fire effect
             local centerX = Constants.SCREEN_WIDTH / 2
             local centerY = Constants.SCREEN_HEIGHT / 2 - 100
-            Game.rapidFireSparks = createSparkParticles(
+            Game.rapidFire.sparks = ParticleSystem.createSparks(
                 centerX, centerY,
                 Constants.UI.SPARK_COUNT_MULTIPLIER,
                 Constants.UI.SPARK_SPEED_MIN,
@@ -258,7 +295,7 @@ local function beginContact(a, b, coll)
         if objA.alignment == objB.alignment then return end
         
         objA:takeDamage(1, objB); objB:takeDamage(1, objA)
-        Game.score = Game.score + (Constants.SCORE_HIT * 2 * Game.pointMultiplier)
+        Game.score = Game.score + (Constants.SCORE_HIT * 2 * Game.pointMultiplier.value)
         Engagement.add(Constants.ENGAGEMENT_REFILL_HIT * 2)
         Sound.unitHit()
         
@@ -355,58 +392,7 @@ end
 
 
 -- Load high scores from file
-function loadHighScores()
-    local success, data = pcall(love.filesystem.read, "highscores.txt")
-    if success and data then
-        local scores = {}
-        for line in data:gmatch("[^\r\n]+") do
-            local name, score = line:match("([^,]+),([%d]+)")
-            if name and score then
-                table.insert(scores, {name = name, score = tonumber(score)})
-            end
-        end
-        -- Sort by score descending
-        table.sort(scores, function(a, b) return a.score > b.score end)
-        Game.highScores = scores
-    else
-        Game.highScores = {}
-    end
-end
-
--- Save high scores to file
-function saveHighScores()
-    local data = ""
-    for i, entry in ipairs(Game.highScores) do
-        data = data .. entry.name .. "," .. entry.score .. "\n"
-    end
-    love.filesystem.write("highscores.txt", data)
-end
-
--- Check if score qualifies as a high score
-function isHighScore(score)
-    if #Game.highScores < 10 then
-        return true  -- Always qualify if less than 10 scores
-    end
-    return score > Game.highScores[#Game.highScores].score
-end
-
--- Add a high score entry
-function addHighScore(name, score)
-    table.insert(Game.highScores, {name = name, score = score})
-    table.sort(Game.highScores, function(a, b) return a.score > b.score end)
-    -- Keep only top 10
-    if #Game.highScores > 10 then
-        table.remove(Game.highScores, 11)
-    end
-    saveHighScores()
-end
-
--- Reset high scores (clear list and save)
-function resetHighScores()
-    Game.highScores = {}
-    saveHighScores()
-    print("High scores reset")
-end
+-- High score functions now use HighScores module
 
 function love.load()
     love.window.setMode(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
@@ -426,51 +412,51 @@ function love.load()
     end
     
     -- Load high scores
-    loadHighScores()
+    HighScores.load()
     
     -- Reset high scores
-    resetHighScores()
+    HighScores.reset()
     
     -- Load background image
     local success, img = pcall(love.graphics.newImage, "assets/background.png")
     if success then
-        Game.background = img
+        Game.assets.background = img
     else
-        Game.background = nil
+        Game.assets.background = nil
     end
     
     -- Load foreground image
     local success2, img2 = pcall(love.graphics.newImage, "assets/foreground.png")
     if success2 then
-        Game.foreground = img2
+        Game.assets.foreground = img2
     else
-        Game.foreground = nil
+        Game.assets.foreground = nil
     end
     
     -- Load company logo
     local success3, img3 = pcall(love.graphics.newImage, "assets/ferretlogo.png")
     if success3 then
-        Game.logo = img3
+        Game.assets.logo = img3
     else
-        Game.logo = nil
+        Game.assets.logo = nil
         print("Warning: Could not load logo: assets/ferretlogo.png")
     end
     
     -- Load company logo blink version
     local success5, img5 = pcall(love.graphics.newImage, "assets/ferretlogo_blink.png")
     if success5 then
-        Game.logoBlink = img5
+        Game.assets.logoBlink = img5
     else
-        Game.logoBlink = nil
+        Game.assets.logoBlink = nil
         print("Warning: Could not load logo blink: assets/ferretlogo_blink.png")
     end
     
     -- Load splash screen image
     local success4, img4 = pcall(love.graphics.newImage, "assets/splash.png")
     if success4 then
-        Game.splash = img4
+        Game.assets.splash = img4
     else
-        Game.splash = nil
+        Game.assets.splash = nil
         print("Warning: Could not load splash: assets/splash.png")
     end
     
@@ -547,10 +533,10 @@ function love.load()
     -- Load intro video
     local success6, vid = pcall(love.graphics.newVideo, "assets/introvideo.ogv")
     if success6 then
-        Game.introVideo = vid
+        Game.assets.introVideo = vid
         -- Videos don't loop by default in LÖVE, so no need to set looping
     else
-        Game.introVideo = nil
+        Game.assets.introVideo = nil
         print("Warning: Could not load intro video: assets/introvideo.ogv")
     end
     
@@ -558,16 +544,16 @@ function love.load()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
     -- Start with matrix screen (booting screen disabled)
-    Game.bootingMode = false
-    Game.bootingTimer = 0
-    Game.matrixMode = true
-    Game.matrixTimer = 0
-    Game.logoMode = false
-    Game.logoTimer = 0
-    Game.previousLogoTimer = 0
-    Game.logoFanfarePlayed = false
-    Game.attractMode = false
-    Game.attractModeTimer = 0
+    Game.modes.booting = false
+    Game.timers.booting = 0
+    Game.modes.matrix = true
+    Game.timers.matrix = 0
+    Game.modes.logo = false
+    Game.timers.logo = 0
+    Game.timers.previousLogo = 0
+    Game.assets.logoFanfarePlayed = false
+    Game.modes.attract = false
+    Game.modes.attractTimer = 0
     
     -- Don't initialize game entities until coin is inserted
     Game.turret = nil
@@ -669,7 +655,7 @@ function love.load()
         table.insert(Game.explosionZones, {x = data.x, y = data.y, radius = data.radius, color = data.color, timer = Constants.EXPLOSION_DURATION, body = body})
     end)
     Event.on("unit_killed", function(data)
-        Game.score = Game.score + (Constants.SCORE_KILL * Game.pointMultiplier); Engagement.add(Constants.ENGAGEMENT_REFILL_KILL); Game.shake = math.max(Game.shake, 0.2)
+        Game.score = Game.score + (Constants.SCORE_KILL * Game.pointMultiplier.value); Engagement.add(Constants.ENGAGEMENT_REFILL_KILL); Game.shake = math.max(Game.shake, 0.2)
         -- Use position from event data (captured before body destruction)
         local x, y = data.x, data.y
         if not x or not y then
@@ -711,29 +697,29 @@ end
 function startGame()
     -- Unmute sounds for new game
     Sound.unmute()
-    Game.attractMode = false
-    Game.attractModeTimer = 0
+    Game.modes.attract = false
+    Game.modes.attractTimer = 0
     
     -- Reset all game over states
-    Game.gameOverActive = false
-    Game.gameOverTimer = 0
-    Game.auditorActive = false
-    Game.auditorTimer = 0
-    Game.auditorPhase = 1
-    Game.nameEntryActive = false
-    Game.nameEntryText = ""
-    Game.nameEntryCursor = 1
-    Game.nameEntryCharIndex = {}
+    Game.modes.gameOver = false
+    Game.timers.gameOver = 0
+    Game.modes.auditor = false
+    Game.timers.auditor = 0
+    Game.auditor.phase = 1
+    Game.modes.nameEntry = false
+    Game.nameEntry.text = ""
+    Game.nameEntry.cursor = 1
+    Game.nameEntry.charIndex = {}
     
     -- Reset joystick button states
-    Game.joystickButton1Pressed = false
-    Game.joystickButton2Pressed = false
+    Game.joystick.button1Pressed = false
+    Game.joystick.button2Pressed = false
     
     -- Start intro video first, then intro screen
-    if Game.introVideo then
-        Game.videoMode = true
-        Game.introVideo:play()
-        Game.introMode = false
+    if Game.assets.introVideo then
+        Game.modes.video = true
+        Game.assets.introVideo:play()
+        Game.modes.intro = false
         
         -- Reduce glow strength when video starts
         if Game.glowEffect and Game.glowStrengthVideo then
@@ -741,26 +727,26 @@ function startGame()
         end
         
         -- Start music fade: fade from current volume to 50% over 3 seconds
-        Game.introMusicFadeActive = true
-        Game.introMusicFadeTimer = 0
-        Game.introMusicFadeStartVolume = Sound.getMusicVolume() or 0.6
-        Game.introMusicFadeTargetVolume = Game.introMusicFadeStartVolume * 0.5  -- 50% of start volume
+        Game.intro.musicFadeActive = true
+        Game.timers.introMusicFade = 0
+        Game.intro.musicFadeStartVolume = Sound.getMusicVolume() or 0.6
+        Game.intro.musicFadeTargetVolume = Game.intro.musicFadeStartVolume * 0.5  -- 50% of start volume
     else
         -- If video doesn't exist, skip directly to intro screen
-        Game.videoMode = false
-        Game.introMode = true
-        Game.introTimer = 0
-        Game.introStep = 1
-        Game.introMusicFadeActive = false
+        Game.modes.video = false
+        Game.modes.intro = true
+        Game.timers.intro = 0
+        Game.intro.step = 1
+        Game.intro.musicFadeActive = false
     end
 end
 
 
 -- Actually start gameplay (called after intro screen)
 function startGameplay()
-    Game.introMode = false
-    Game.introTimer = 0
-    Game.introStep = 1
+    Game.modes.intro = false
+    Game.timers.intro = 0
+    Game.intro.step = 1
     Webcam.showComment("game_start")
     
     -- Stop intro/attract mode music
@@ -786,44 +772,44 @@ function startGameplay()
     Game.gameState = "playing"
     Game.winCondition = nil
     Game.level = 1
-    Game.levelTransitionTimer = 0
-    Game.levelTransitionActive = false
-    Game.levelCompleteScreenActive = false
-    Game.levelCompleteScreenTimer = 0
-    Game.winTextActive = false
-    Game.webcamWindowAnimating = false
-    Game.webcamWindowAnimTimer = 0
-    Game.webcamWindowAnimReversing = false
-    Game.webcamWindowDialogueActive = false
-    Game.webcamWindowDialogueTimer = 0
-    Game.winTextTimer = 0
-    Game.webcamWindowAnimating = false
-    Game.webcamWindowAnimTimer = 0
-    Game.slowMoActive = false
-    Game.slowMoTimer = 0
+    Game.timers.levelTransition = 0
+    Game.levelTransition.active = false
+    Game.levelComplete.screenActive = false
+    Game.timers.levelCompleteScreen = 0
+    Game.modes.winText = false
+    Game.webcamWindow.animating = false
+    Game.timers.webcamWindowAnim = 0
+    Game.webcamWindow.reversing = false
+    Game.webcamWindow.dialogueActive = false
+    Game.timers.webcamWindowDialogue = 0
+    Game.timers.winText = 0
+    Game.webcamWindow.animating = false
+    Game.timers.webcamWindowAnim = 0
+    Game.slowMo.active = false
+    Game.timers.slowMo = 0
     Game.timeScale = 1.0
     Game.lives = 3
-    Game.gameOverTimer = 0
-    Game.gameOverActive = false
+    Game.timers.gameOver = 0
+    Game.modes.gameOver = false
     Game.shouldRestartLevel = false
-    Game.auditorActive = false
-    Game.auditorTimer = 0
-    Game.auditorPhase = 1
-    Game.lifeLostAuditorActive = false
-    Game.lifeLostAuditorTimer = 0
-    Game.lifeLostAuditorPhase = 1
-    Game.nameEntryActive = false
-    Game.nameEntryText = ""
-    Game.nameEntryCursor = 1
-    Game.nameEntryCharIndex = {}
-    Game.pointMultiplier = 1
-    Game.pointMultiplierTimer = 0
-    Game.pointMultiplierActive = false
-    Game.pointMultiplierFlashTimer = 0
-    Game.pointMultiplierTextTimer = 0
-    Game.pointMultiplierSparks = {}
-    Game.rapidFireTextTimer = 0
-    Game.rapidFireSparks = {}
+    Game.modes.auditor = false
+    Game.timers.auditor = 0
+    Game.auditor.phase = 1
+    Game.modes.lifeLostAuditor = false
+    Game.timers.lifeLostAuditor = 0
+    Game.lifeLostAuditor.phase = 1
+    Game.modes.nameEntry = false
+    Game.nameEntry.text = ""
+    Game.nameEntry.cursor = 1
+    Game.nameEntry.charIndex = {}
+    Game.pointMultiplier.value = 1
+    Game.timers.pointMultiplier = 0
+    Game.pointMultiplier.valueActive = false
+    Game.timers.pointMultiplierFlash = 0
+    Game.timers.pointMultiplierText = 0
+    Game.pointMultiplier.valueSparks = {}
+    Game.timers.rapidFireText = 0
+    Game.rapidFire.sparks = {}
     Game.previousEngagementAtMax = false
     Game.hazards = {}
     Game.explosionZones = {}
@@ -836,10 +822,10 @@ function startGameplay()
     spawnUnitsForLevel()
     
     -- Trigger ready sequence
-    Game.readyActive = true
-    Game.readyTimer = 0
-    Game.readyPhase = 1
-    Game.readySparks = {}
+    Game.modes.ready = true
+    Game.timers.ready = 0
+    Game.ready.phase = 1
+    Game.ready.sparks = {}
     Game.gameState = "ready"
     -- Reset banner to original position
     TopBanner.reset()
@@ -885,12 +871,12 @@ function advanceToNextLevel(winCondition)
     end
     
     -- Clear all multipliers on win
-    Game.pointMultiplier = 1
-    Game.pointMultiplierTimer = 0
-    Game.pointMultiplierActive = false
-    Game.pointMultiplierFlashTimer = 0
-    Game.pointMultiplierTextTimer = 0
-    Game.pointMultiplierSparks = {}
+    Game.pointMultiplier.value = 1
+    Game.timers.pointMultiplier = 0
+    Game.pointMultiplier.valueActive = false
+    Game.timers.pointMultiplierFlash = 0
+    Game.timers.pointMultiplierText = 0
+    Game.pointMultiplier.valueSparks = {}
     
     -- Clean up all game sounds first (stops all active sounds)
     Sound.cleanup()
@@ -902,8 +888,8 @@ function advanceToNextLevel(winCondition)
     Sound.playFanfare()
     
     -- Start slow-motion ramp to freeze
-    Game.slowMoActive = true
-    Game.slowMoTimer = 0
+    Game.slowMo.active = true
+    Game.timers.slowMo = 0
     Game.timeScale = 1.0
     Game.winCondition = winCondition
     Game.gameState = "level_complete"
@@ -914,8 +900,8 @@ function advanceToNextLevel(winCondition)
         DynamicMusic.startPart(2)  -- Start part 2 immediately for win music
     end
     -- Don't show level complete screen yet - wait for freeze
-    Game.levelCompleteScreenActive = false
-    Game.levelCompleteScreenTimer = 0
+    Game.levelComplete.screenActive = false
+    Game.timers.levelCompleteScreen = 0
 end
 
 -- Handle game over (lose a life)
@@ -950,9 +936,9 @@ function handleGameOver(condition)
     
     -- If engagement was depleted and we have lives remaining, show life lost auditor screen
     if condition == "engagement_depleted" and hasLivesRemaining then
-        Game.lifeLostAuditorActive = true
-        Game.lifeLostAuditorTimer = 0
-        Game.lifeLostAuditorPhase = 1  -- Start with system freeze
+        Game.modes.lifeLostAuditor = true
+        Game.timers.lifeLostAuditor = 0
+        Game.lifeLostAuditor.phase = 1  -- Start with system freeze
         Game.gameState = "life_lost_auditor"
         Sound.cleanup()  -- Stop all sounds for the auditor sequence
         DynamicMusic.stopAutomatic()  -- Stop automatic music
@@ -963,8 +949,8 @@ function handleGameOver(condition)
     
     -- If all lives are lost, show game over screen (same as life lost, just top bar)
     if not hasLivesRemaining then
-        Game.gameOverActive = true
-        Game.gameOverTimer = 2.0  -- 2 second wait at dropped banner position
+        Game.modes.gameOver = true
+        Game.timers.gameOver = 2.0  -- 2 second wait at dropped banner position
         -- Trigger banner drop (same as life lost)
         TopBanner.triggerDrop(Constants.TIMING.GAME_OVER_BANNER_DROP)
         DynamicMusic.stopAutomatic()  -- Stop automatic music
@@ -973,43 +959,49 @@ function handleGameOver(condition)
     end
     
     -- Normal game over (lose a life, but not engagement depletion)
-    Game.gameOverActive = true
-    Game.gameOverTimer = 2.0  -- 2 second wait at dropped banner position
+    Game.modes.gameOver = true
+    Game.timers.gameOver = 2.0  -- 2 second wait at dropped banner position
     Game.gameState = "lost"
     Game.winCondition = condition
     -- Store whether we should restart (have lives remaining after this loss)
     Game.shouldRestartLevel = hasLivesRemaining
     -- Trigger banner drop animation (drop 320px from current position)
     TopBanner.triggerDrop(Constants.TIMING.GAME_OVER_BANNER_DROP)
-    Game.glitchTextWriteProgress = 0  -- Reset write-on effect
+    Game.visualEffects.glitchTextWriteProgress = 0  -- Reset write-on effect
     DynamicMusic.stopAutomatic()  -- Stop automatic music
     Sound.playIntroMusic()  -- Play intro music (same as attract mode)
+end
+
+-- Helper function to clear weapon upgrades (defined before restartLevel)
+local function clearWeaponUpgrades()
+    Game.isUpgraded = false
+    Constants.PUCK_LIFETIME = Constants.PUCK.LIFETIME
 end
 
 -- Restart the current level after losing a life
 -- Note: Score and level are preserved (not reset)
 function restartLevel()
     -- Start matrix transition to hide the reset
-    Game.matrixTransitionActive = true
+    Game.levelTransition.matrixActive = true
     MatrixEffect.startTransition(2.0, function()
         -- Transition complete - now do the actual reset
-        Game.gameOverActive = false
-        Game.gameOverTimer = 0
+        Game.modes.gameOver = false
+        Game.timers.gameOver = 0
         Game.shouldRestartLevel = false
-        Game.auditorActive = false  -- Make sure THE AUDITOR is not active
-        Game.auditorTimer = 0
-        Game.auditorPhase = 1
-        Game.lifeLostAuditorActive = false  -- Make sure life lost auditor is not active
-        Game.lifeLostAuditorTimer = 0
-        Game.lifeLostAuditorPhase = 1
+        Game.modes.auditor = false  -- Make sure THE AUDITOR is not active
+        Game.timers.auditor = 0
+        Game.auditor.phase = 1
+        Game.modes.lifeLostAuditor = false  -- Make sure life lost auditor is not active
+        Game.timers.lifeLostAuditor = 0
+        Game.lifeLostAuditor.phase = 1
         -- Reset banner to original position on restart
         TopBanner.reset()
         
         -- Trigger ready sequence
-        Game.readyActive = true
-        Game.readyTimer = 0
-        Game.readyPhase = 1
-        Game.readySparks = {}
+        Game.modes.ready = true
+        Game.timers.ready = 0
+        Game.ready.phase = 1
+        Game.ready.sparks = {}
         Game.gameState = "ready"
         Game.winCondition = nil
         Game.hasUnitBeenConverted = false
@@ -1031,94 +1023,20 @@ function restartLevel()
         MonitorFrame.resetAnimations()
         
         -- Clear all game entities
-        for i = #Game.units, 1, -1 do
-            local u = Game.units[i]
-            if u.body and not u.isDead then
-                u.body:destroy()
-            end
-            table.remove(Game.units, i)
-        end
-        for i = #Game.projectiles, 1, -1 do
-            local p = Game.projectiles[i]
-            -- Stop whistle sound before destroying
-            if p.whistleSound then
-                pcall(function()
-                    p.whistleSound:stop()
-                    p.whistleSound:release()
-                end)
-                p.whistleSound = nil
-            end
-            if p.body then
-                p.body:destroy()
-            end
-            table.remove(Game.projectiles, i)
-        end
-        for i = #Game.powerups, 1, -1 do
-            local p = Game.powerups[i]
-            if p.body then
-                p.body:destroy()
-            end
-            table.remove(Game.powerups, i)
-        end
-        for i = #Game.explosionZones, 1, -1 do
-            local z = Game.explosionZones[i]
-            if z.body then
-                z.body:destroy()
-            end
-            table.remove(Game.explosionZones, i)
-        end
-        Game.hazards = {}
-        Game.effects = {}
+        EntityManager.clearAll(false)  -- Don't destroy turret on restart
         
         -- Clear weapon upgrades on level restart
-        Game.isUpgraded = false
-        Constants.PUCK_LIFETIME = Constants.PUCK.LIFETIME
+        clearWeaponUpgrades()
         
         -- Spawn units for current level
         spawnUnitsForLevel()
         
         -- End transition
-        Game.matrixTransitionActive = false
+        Game.levelTransition.matrixActive = false
     end)
     
     -- Clear entities immediately (before transition starts)
-    for i = #Game.units, 1, -1 do
-        local u = Game.units[i]
-        if u.body and not u.isDead then
-            u.body:destroy()
-        end
-        table.remove(Game.units, i)
-    end
-    for i = #Game.projectiles, 1, -1 do
-        local p = Game.projectiles[i]
-        if p.whistleSound then
-            pcall(function()
-                p.whistleSound:stop()
-                p.whistleSound:release()
-            end)
-            p.whistleSound = nil
-        end
-        if p.body then
-            p.body:destroy()
-        end
-        table.remove(Game.projectiles, i)
-    end
-    for i = #Game.powerups, 1, -1 do
-        local p = Game.powerups[i]
-        if p.body then
-            p.body:destroy()
-        end
-        table.remove(Game.powerups, i)
-    end
-    for i = #Game.explosionZones, 1, -1 do
-        local z = Game.explosionZones[i]
-        if z.body then
-            z.body:destroy()
-        end
-        table.remove(Game.explosionZones, i)
-    end
-    Game.hazards = {}
-    Game.effects = {}
+    EntityManager.clearAll(false)  -- Don't destroy turret on restart
 end
 
 -- Return to attract mode
@@ -1126,45 +1044,45 @@ function returnToAttractMode()
     -- Stop automatic music when returning to attract mode
     DynamicMusic.stopAutomatic()
     
-    Game.logoMode = false
-    Game.logoTimer = 0
-    Game.previousLogoTimer = 0
-    Game.videoMode = false
-    Game.introMode = false
-    Game.attractMode = true
-    Game.attractModeTimer = 0
+    Game.modes.logo = false
+    Game.timers.logo = 0
+    Game.timers.previousLogo = 0
+    Game.modes.video = false
+    Game.modes.intro = false
+    Game.modes.attract = true
+    Game.modes.attractTimer = 0
     
     -- Stop and reset video if it's playing
-    if Game.introVideo then
+    if Game.assets.introVideo then
         -- Safely check if video is playing and pause it
         local success, isPlaying = pcall(function()
-            return Game.introVideo:isPlaying()
+            return Game.assets.introVideo:isPlaying()
         end)
         if success and isPlaying then
             pcall(function()
-                if Game.introVideo.pause then
-                    Game.introVideo:pause()
+                if Game.assets.introVideo.pause then
+                    Game.assets.introVideo:pause()
                 end
             end)
         end
         -- Safely seek to beginning
         pcall(function()
-            if Game.introVideo.seek then
-                Game.introVideo:seek(0)  -- Reset to beginning
+            if Game.assets.introVideo.seek then
+                Game.assets.introVideo:seek(0)  -- Reset to beginning
             end
         end)
     end
-    Game.gameOverActive = false
-    Game.gameOverTimer = 0
+    Game.modes.gameOver = false
+    Game.timers.gameOver = 0
     -- Reset banner
     TopBanner.reset()
-    Game.auditorActive = false
-    Game.auditorTimer = 0
-    Game.auditorPhase = 1
-    Game.nameEntryActive = false
-    Game.nameEntryText = ""
-    Game.nameEntryCursor = 1
-    Game.nameEntryCharIndex = {}
+    Game.modes.auditor = false
+    Game.timers.auditor = 0
+    Game.auditor.phase = 1
+    Game.modes.nameEntry = false
+    Game.nameEntry.text = ""
+    Game.nameEntry.cursor = 1
+    Game.nameEntry.charIndex = {}
     Game.gameState = "attract"
     Game.winCondition = nil
     
@@ -1182,63 +1100,11 @@ function returnToAttractMode()
         Game.turret.chargeSound = nil
     end
     
-    -- Stop all projectile whistle sounds
-    for _, p in ipairs(Game.projectiles) do
-        if p.whistleSound then
-            -- Use pcall to safely check if sound is still valid
-            local success, isPlaying = pcall(function() return p.whistleSound:isPlaying() end)
-            if success and isPlaying then
-                pcall(function() p.whistleSound:stop() end)
-                pcall(function() p.whistleSound:release() end)
-            end
-        end
-        p.whistleSound = nil
-    end
+    -- Stop all projectile whistle sounds (before clearing entities)
+    EntityManager.stopAllProjectileSounds()
     
-    -- Clear all game entities
-    if Game.turret and Game.turret.body then
-        Game.turret.body:destroy()
-    end
-    Game.turret = nil
-    
-    for i = #Game.units, 1, -1 do
-        local u = Game.units[i]
-        if u.body and not u.isDead then
-            u.body:destroy()
-        end
-        table.remove(Game.units, i)
-    end
-    for i = #Game.projectiles, 1, -1 do
-        local p = Game.projectiles[i]
-        -- Stop whistle sound before destroying
-        if p.whistleSound then
-            pcall(function()
-                p.whistleSound:stop()
-                p.whistleSound:release()
-            end)
-            p.whistleSound = nil
-        end
-        if p.body then
-            p.body:destroy()
-        end
-        table.remove(Game.projectiles, i)
-    end
-    for i = #Game.powerups, 1, -1 do
-        local p = Game.powerups[i]
-        if p.body then
-            p.body:destroy()
-        end
-        table.remove(Game.powerups, i)
-    end
-    for i = #Game.explosionZones, 1, -1 do
-        local z = Game.explosionZones[i]
-        if z.body then
-            z.body:destroy()
-        end
-        table.remove(Game.explosionZones, i)
-    end
-    Game.hazards = {}
-    Game.effects = {}
+    -- Clear all game entities (including turret)
+    EntityManager.clearAll(true)  -- Destroy turret on game over
 end
 
 -- Draw joystick test / input diagnostics screen
@@ -1292,6 +1158,31 @@ end
 -- Helper function to get screen center coordinates
 local function getScreenCenter()
     return Constants.SCREEN_WIDTH / 2, Constants.SCREEN_HEIGHT / 2
+end
+
+-- Helper function to clear button held status
+local function clearButtonHeldStatus()
+    if Game.turret then
+        Game.turret.isCharging = false
+        Game.turret.chargeTimer = 0
+        if Game.turret.chargeSound then
+            pcall(function()
+                Game.turret.chargeSound:stop()
+                Game.turret.chargeSound:release()
+            end)
+            Game.turret.chargeSound = nil
+        end
+    end
+    Game.joystick.button1Pressed = false
+    Game.joystick.button2Pressed = false
+end
+
+-- Helper function to calculate plexi scale factors
+local function calculatePlexiScale()
+    if not Game.plexi then return 1, 1 end
+    local plexiScaleX = (Constants.SCREEN_WIDTH / Game.plexi:getWidth()) * Constants.UI.PLEXI_SCALE_FACTOR
+    local plexiScaleY = (Constants.SCREEN_HEIGHT / Game.plexi:getHeight()) * Constants.UI.PLEXI_SCALE_FACTOR
+    return plexiScaleX, plexiScaleY
 end
 
 -- Helper function to draw text with outline
@@ -1451,113 +1342,24 @@ function drawJoystickTestScreen()
     end
 end
 
--- Draw booting screen
-function drawBootingScreen()
-    love.graphics.clear(0, 0, 0)  -- Black background
-    
-    -- Draw "Booting..." text centered
-    love.graphics.setFont(Game.fonts.large)
-    love.graphics.setColor(1, 1, 1, 1)  -- White text
-    local text = "Booting..."
-    local textWidth = Game.fonts.large:getWidth(text)
-    local textHeight = Game.fonts.large:getHeight()
-    local centerX = Constants.SCREEN_WIDTH / 2
-    local centerY = Constants.SCREEN_HEIGHT / 2
-    love.graphics.print(text, centerX - textWidth / 2, centerY - textHeight / 2)
-end
-
--- Draw logo screen with slide-in animation
-function drawLogoScreen()
-    love.graphics.clear(0, 0, 0)  -- Black background
-    
-    if not Game.logo then
-        -- Fallback if logo didn't load
-        love.graphics.setFont(Game.fonts.large)
-        love.graphics.setColor(1, 1, 1)
-        love.graphics.print("LOGO", Constants.SCREEN_WIDTH / 2 - 50, Constants.SCREEN_HEIGHT / 2)
-        return
-    end
-    
-    local logoWidth = Game.logo:getWidth()
-    local logoHeight = Game.logo:getHeight()
-    local centerX = Constants.SCREEN_WIDTH / 2
-    local centerY = Constants.SCREEN_HEIGHT / 2
-    
-    -- Calculate scale to fit logo within screen (with some padding)
-    local maxWidth = Constants.SCREEN_WIDTH * 0.8  -- 80% of screen width
-    local maxHeight = Constants.SCREEN_HEIGHT * 0.8  -- 80% of screen height
-    local scaleX = maxWidth / logoWidth
-    local scaleY = maxHeight / logoHeight
-    local scale = math.min(scaleX, scaleY)  -- Maintain aspect ratio
-    
-    -- Scaled dimensions for animation calculations
-    local scaledWidth = logoWidth * scale
-    local scaledHeight = logoHeight * scale
-    
-    -- Animation phases:
-    -- 0-1s: Slide in from left (silently, no sound)
-    -- 1-2.5s: Hold at center (1.5 seconds)
-    -- 2.5-2.75s: Show blink version (0.25 seconds)
-    -- 2.75-5.75s: Show normal version (3 seconds)
-    -- 5.75s+: Transition to attract mode
-    
-    local t = Game.logoTimer
-    local x, y = centerX, centerY
-    
-    -- Phase 1: Slide in (0-1 second) - silently, no sound
-    if t < 1.0 then
-        local progress = t / 1.0
-        -- Ease out cubic for smooth deceleration
-        progress = 1 - math.pow(1 - progress, 3)
-        x = -scaledWidth + (centerX + scaledWidth) * progress
-    end
-    
-    -- Determine which logo to show (blink or normal)
-    local logoToShow = Game.logo
-    if Game.logoBlink and t >= 2.5 and t < 2.75 then
-        logoToShow = Game.logoBlink
-    end
-    
-    -- Enable alpha blending for compositing
-    love.graphics.setBlendMode("alpha")
-    
-    -- Draw logo with transformations
-    love.graphics.push()
-    love.graphics.translate(x, y)
-    love.graphics.scale(scale, scale)
-    love.graphics.setColor(1, 1, 1, 1)
-    love.graphics.draw(logoToShow, -logoWidth / 2, -logoHeight / 2)
-    love.graphics.pop()
-    
-    -- Reset blend mode
-    love.graphics.setBlendMode("alpha")
-end
-
-
--- Draw intro video screen (background only - video is drawn separately after CRT)
-function drawIntroVideo()
-    love.graphics.clear(0, 0, 0, 1)  -- Black background
-    
-    -- Video is drawn separately after CRT effect in love.draw()
-    -- This function just provides the background
-end
+-- Screen drawing functions moved to src/screens/ modules
 
 -- Draw intro screen with centered webcam
 function drawIntroScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
     -- Intro messages (multiple steps) - Chase Paxton's onboarding
-    local currentStep = math.min(Game.introStep, #ChasePaxton.INTRO_MESSAGES)
+    local currentStep = math.min(Game.intro.step, #ChasePaxton.INTRO_MESSAGES)
     local currentMessage = ChasePaxton.getIntroMessage(currentStep)
     local stepStartTime = 0
     for i = 1, currentStep - 1 do
         stepStartTime = stepStartTime + ChasePaxton.INTRO_MESSAGES[i].duration
     end
-    local stepElapsed = Game.introTimer - stepStartTime
+    local stepElapsed = Game.timers.intro - stepStartTime
     
     -- Auto-advance steps (except last one which waits for input)
     if currentStep < #ChasePaxton.INTRO_MESSAGES and stepElapsed >= currentMessage.duration then
-        Game.introStep = currentStep + 1
+        Game.intro.step = currentStep + 1
     end
     
     -- Draw centered webcam window (larger for intro screen to accommodate portrait and text)
@@ -1643,11 +1445,11 @@ end
 
 -- Draw name entry rays and text (drawn after godrays, on top of everything)
 function drawNameEntryRaysAndText()
-    if not Game.nameEntryActive then return end
+    if not Game.modes.nameEntry then return end
     
     -- For name entry, always show text and rays (don't require banner drop visibility check)
     -- The banner should already be dropped when we reach name entry screen
-    local glitchTextTimer = Game.glitchTextTimer or 0
+    local glitchTextTimer = Game.timers.glitchText or 0
     
     -- Use terminal font for glitchy effect
     local terminalFont = Game.fonts.terminal
@@ -1657,7 +1459,7 @@ function drawNameEntryRaysAndText()
     
     -- Calculate name entry text position (centered on screen, no box)
     local charWidth = terminalFont:getWidth("A")
-    local totalWidth = charWidth * Game.nameEntryMaxLength
+    local totalWidth = charWidth * Game.nameEntry.maxLength
     local startX = (Constants.SCREEN_WIDTH - totalWidth) / 2
     local textY = Constants.SCREEN_HEIGHT / 2
     
@@ -1682,8 +1484,8 @@ function drawNameEntryRaysAndText()
     
     local charData = {}
     
-    for i = 1, Game.nameEntryMaxLength do
-        local char = Game.nameEntryText:sub(i, i) or "A"
+    for i = 1, Game.nameEntry.maxLength do
+        local char = Game.nameEntry.text:sub(i, i) or "A"
         local charX = startX + (i - 1) * charWidth
         
         -- Apply glitch corruption (3% chance) - same as terminal text
@@ -1702,7 +1504,7 @@ function drawNameEntryRaysAndText()
             char = displayChar,
             x = charX,
             y = textY,
-            isCursor = (i == Game.nameEntryCursor),
+            isCursor = (i == Game.nameEntry.cursor),
             isVisible = charIsVisible  -- Per-character visibility
         })
     end
@@ -1971,11 +1773,11 @@ function drawLifeLostAuditor()
         end
         
         -- Draw background image if loaded and enabled (full screen) - now affected by shake
-        if Game.showBackgroundForeground and Game.background then
+        if Game.showBackgroundForeground and Game.assets.background then
             love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.draw(Game.background, 0, 0, 0, 
-                Constants.SCREEN_WIDTH / Game.background:getWidth(),
-                Constants.SCREEN_HEIGHT / Game.background:getHeight())
+            love.graphics.draw(Game.assets.background, 0, 0, 0, 
+                Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
+                Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
         end
         
         -- Draw frozen game elements
@@ -2003,7 +1805,7 @@ function drawLifeLostAuditor()
         drawScoreWindow()
         
         -- Draw multiplier window (below engagement plot) - skip in demo mode
-        if not Game.demoMode then
+        if not Game.modes.demo then
             drawMultiplierWindow()
         end
         
@@ -2016,8 +1818,8 @@ function drawLifeLostAuditor()
         end
     
     -- Draw terminal text for life lost
-    if Game.lifeLostAuditorActive then
-        TopBanner.drawLifeLostText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
+    if Game.modes.lifeLostAuditor then
+        TopBanner.drawLifeLostText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
     end
 end
 
@@ -2033,11 +1835,11 @@ function drawGameOver()
         end
         
         -- Draw background image if loaded and enabled (full screen) - now affected by shake
-        if Game.showBackgroundForeground and Game.background then
+        if Game.showBackgroundForeground and Game.assets.background then
             love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.draw(Game.background, 0, 0, 0, 
-                Constants.SCREEN_WIDTH / Game.background:getWidth(),
-                Constants.SCREEN_HEIGHT / Game.background:getHeight())
+            love.graphics.draw(Game.assets.background, 0, 0, 0, 
+                Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
+                Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
         end
         
         -- Draw frozen game elements
@@ -2065,7 +1867,7 @@ function drawGameOver()
         drawScoreWindow()
         
         -- Draw multiplier window (below engagement plot) - skip in demo mode
-        if not Game.demoMode then
+        if not Game.modes.demo then
             drawMultiplierWindow()
         end
         
@@ -2078,15 +1880,15 @@ function drawGameOver()
     end
     
     -- Draw terminal text for game over
-    if Game.gameOverActive then
-        TopBanner.drawGameOverText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
+    if Game.modes.gameOver then
+        TopBanner.drawGameOverText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
     end
 end
 
 -- Draw THE AUDITOR game over sequence
 function drawAuditor()
     -- Phase 1: System freeze - show frozen game state
-    if Game.auditorPhase == 1 then
+    if Game.auditor.phase == 1 then
         -- Draw frozen game state (no updates, but visible)
         love.graphics.clear(Constants.COLORS.BACKGROUND)
         
@@ -2101,8 +1903,8 @@ function drawAuditor()
         love.graphics.print(errorMsg, Constants.SCREEN_WIDTH / 2 - errorWidth / 2, Constants.SCREEN_HEIGHT / 2)
         
     -- Phase 2: Fade to black, show THE AUDITOR
-    elseif Game.auditorPhase == 2 then
-        local fadeProgress = Game.auditorTimer / 2.0
+    elseif Game.auditor.phase == 2 then
+        local fadeProgress = Game.timers.auditor / 2.0
         local fadeAlpha = math.min(fadeProgress, 1.0)
         
         -- Fade to black
@@ -2115,7 +1917,7 @@ function drawAuditor()
         end
         
     -- Phase 3: Show verdict text
-    elseif Game.auditorPhase == 3 then
+    elseif Game.auditor.phase == 3 then
         -- Black background
         drawBlackOverlay(1.0)
         
@@ -2136,7 +1938,7 @@ function drawAuditor()
         love.graphics.print(verdict2, Constants.SCREEN_WIDTH / 2 - v2Width / 2, Constants.SCREEN_HEIGHT / 2 + 50)
         
     -- Phase 4: Crash to black
-    elseif Game.auditorPhase == 4 then
+    elseif Game.auditor.phase == 4 then
         drawBlackOverlay(1.0)
     end
 end
@@ -2237,42 +2039,42 @@ function drawWinTextScreen()
     -- Win text removed - Chase Paxton handles this in his dialogue
     
     -- Draw animating webcam window if animation is active (during matrix transition)
-    if Game.webcamWindowAnimating or Game.webcamWindowDialogueActive then
+    if Game.webcamWindow.animating or Game.webcamWindow.dialogueActive then
         drawAnimatingWebcamWindow()
     end
 end
 
 -- Draw animating webcam window (used during level complete sequence)
 function drawAnimatingWebcamWindow()
-    if not Game.webcamWindowAnimating and not Game.webcamWindowDialogueActive then
+    if not Game.webcamWindow.animating and not Game.webcamWindow.dialogueActive then
         return
     end
     
     -- Get original webcam window position and size
-    local originalWidth = 300
-    local originalHeight = 200
-    local originalX = Constants.OFFSET_X + Constants.PLAYFIELD_WIDTH - originalWidth - 20
-    local originalY = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + 20
+    local originalWidth = Constants.UI.WEBCAM_GAMEPLAY_WIDTH
+    local originalHeight = Constants.UI.WEBCAM_GAMEPLAY_HEIGHT
+    local originalX = Constants.OFFSET_X + Constants.PLAYFIELD_WIDTH - originalWidth - Constants.UI.WEBCAM_GAMEPLAY_OFFSET_X
+    local originalY = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + Constants.UI.WEBCAM_GAMEPLAY_OFFSET_Y
     
-    -- Target position and size (centered, double size)
-    local targetWidth = originalWidth * 2
-    local targetHeight = originalHeight * 2
+    -- Target position and size (centered, scaled up)
+    local targetWidth = originalWidth * Constants.UI.WEBCAM_ANIMATION_SCALE
+    local targetHeight = originalHeight * Constants.UI.WEBCAM_ANIMATION_SCALE
     local targetX = (Constants.SCREEN_WIDTH - targetWidth) / 2
     local targetY = (Constants.SCREEN_HEIGHT - targetHeight) / 2
     
     -- Calculate animated position and scale
     local animProgress = 0
-    if Game.webcamWindowAnimating and Game.webcamWindowAnimDuration and Game.webcamWindowAnimDuration > 0 then
-        if Game.webcamWindowAnimReversing then
+    if Game.webcamWindow.animating and Game.webcamWindow.animDuration and Game.webcamWindow.animDuration > 0 then
+        if Game.webcamWindow.reversing then
             -- Reverse animation: go from 1.0 back to 0.0
-            animProgress = math.max((Game.webcamWindowAnimTimer or 0) / Game.webcamWindowAnimDuration, 0.0)
+            animProgress = math.max((Game.timers.webcamWindowAnim or 0) / Game.webcamWindow.animDuration, 0.0)
             animProgress = 1 - math.pow(1 - animProgress, 3)  -- Ease out (but reversed)
         else
             -- Forward animation: go from 0.0 to 1.0
-            animProgress = math.min((Game.webcamWindowAnimTimer or 0) / Game.webcamWindowAnimDuration, 1.0)
+            animProgress = math.min((Game.timers.webcamWindowAnim or 0) / Game.webcamWindow.animDuration, 1.0)
             animProgress = 1 - math.pow(1 - animProgress, 3)  -- Ease out cubic
         end
-    elseif Game.webcamWindowDialogueActive then
+    elseif Game.webcamWindow.dialogueActive then
         animProgress = 1.0  -- Fully centered during dialogue
     else
         animProgress = 0.0
@@ -2305,7 +2107,7 @@ function drawAnimatingWebcamWindow()
     ChasePortrait.draw(charX, charY, portraitScale)
     
     -- Draw dialogue messages when centered (dialogue active)
-    if Game.webcamWindowDialogueActive and animProgress >= 0.99 then
+    if Game.webcamWindow.dialogueActive and animProgress >= 0.99 then
         -- Calculate subtitle position (below portrait, centered)
         local subtitleY = charY + (availableHeight / 2) + 20  -- Below portrait center
         local subtitleHeight = 50  -- Increased for larger font
@@ -2317,8 +2119,8 @@ function drawAnimatingWebcamWindow()
         love.graphics.rectangle("fill", subtitleX, subtitleY, subtitleWidth, subtitleHeight)
         
         -- Draw current sentence as subtitle (centered)
-        if Game.webcamWindowDialogueCurrentSentence <= #Game.webcamWindowDialogueSentences then
-            local currentSentence = Game.webcamWindowDialogueSentences[Game.webcamWindowDialogueCurrentSentence]
+        if Game.webcamWindow.dialogueCurrentSentence <= #Game.webcamWindow.dialogueSentences then
+            local currentSentence = Game.webcamWindow.dialogueSentences[Game.webcamWindow.dialogueCurrentSentence]
             love.graphics.setFont(Game.fonts.large)
             love.graphics.setColor(1, 1, 1, 1)  -- White
             local sentenceWidth = Game.fonts.large:getWidth(currentSentence)
@@ -2329,87 +2131,7 @@ function drawAnimatingWebcamWindow()
     end
 end
 
-function drawLevelCompleteScreen()
-    love.graphics.clear(Constants.COLORS.BACKGROUND)
-    
-    -- Get original webcam window position and size
-    local originalWidth = 300
-    local originalHeight = 200
-    local originalX = Constants.OFFSET_X + Constants.PLAYFIELD_WIDTH - originalWidth - 20
-    local originalY = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + 20
-    
-    -- Target position and size (centered, double size)
-    local targetWidth = originalWidth * 2
-    local targetHeight = originalHeight * 2
-    local targetX = (Constants.SCREEN_WIDTH - targetWidth) / 2
-    local targetY = (Constants.SCREEN_HEIGHT - targetHeight) / 2
-    
-    -- Calculate animated position and scale
-    local animProgress = 0
-    if Game.webcamWindowAnimating and Game.webcamWindowAnimDuration and Game.webcamWindowAnimDuration > 0 then
-        if Game.webcamWindowAnimReversing then
-            -- Reverse animation: go from 1.0 back to 0.0
-            animProgress = math.max((Game.webcamWindowAnimTimer or 0) / Game.webcamWindowAnimDuration, 0.0)
-            animProgress = 1 - math.pow(1 - animProgress, 3)  -- Ease out (but reversed)
-        else
-            -- Forward animation: go from 0.0 to 1.0
-            animProgress = math.min((Game.webcamWindowAnimTimer or 0) / Game.webcamWindowAnimDuration, 1.0)
-            animProgress = 1 - math.pow(1 - animProgress, 3)  -- Ease out cubic
-        end
-    else
-        animProgress = 1.0  -- Already at target
-    end
-    
-    local WEBCAM_WIDTH = originalWidth + (targetWidth - originalWidth) * animProgress
-    local WEBCAM_HEIGHT = originalHeight + (targetHeight - originalHeight) * animProgress
-    local WEBCAM_X = originalX + (targetX - originalX) * animProgress
-    local WEBCAM_Y = originalY + (targetY - originalY) * animProgress
-    
-    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
-    local borderWidth = Constants.UI.BORDER_WIDTH
-    
-    -- Draw transparent black background for content area
-    drawWindowContentBackground(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, titleBarHeight, borderWidth)
-    
-    -- Draw Windows 95 style frame with title bar
-    WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
-    
-    -- Draw Chase Paxton character portrait - adjust for title bar
-    local charX = WEBCAM_X + WEBCAM_WIDTH / 2
-    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2
-    
-    -- Calculate available space (accounting for title bar and borders)
-    local availableWidth = WEBCAM_WIDTH - (borderWidth * 2)
-    local availableHeight = WEBCAM_HEIGHT - titleBarHeight - (borderWidth * 2)
-    
-    -- Calculate scale to fit within level complete window
-    local portraitScale = ChasePortrait.calculateScale(availableWidth, availableHeight, 10)
-    ChasePortrait.draw(charX, charY, portraitScale)
-    
-    -- Draw dialogue messages when centered (dialogue active)
-    if Game.webcamWindowDialogueActive and animProgress >= 0.99 then
-        -- Calculate subtitle position (below portrait, centered)
-        local subtitleY = charY + (availableHeight / 2) + 20  -- Below portrait center
-        local subtitleHeight = 50  -- Increased for larger font
-        local subtitleWidth = availableWidth - 20
-        local subtitleX = WEBCAM_X + borderWidth + 10
-        
-        -- Draw subtitle background (semi-transparent black bar)
-        love.graphics.setColor(0, 0, 0, 0.7)  -- Semi-transparent black
-        love.graphics.rectangle("fill", subtitleX, subtitleY, subtitleWidth, subtitleHeight)
-        
-        -- Draw current sentence as subtitle (centered)
-        if Game.webcamWindowDialogueCurrentSentence <= #Game.webcamWindowDialogueSentences then
-            local currentSentence = Game.webcamWindowDialogueSentences[Game.webcamWindowDialogueCurrentSentence]
-            love.graphics.setFont(Game.fonts.large)
-            love.graphics.setColor(1, 1, 1, 1)  -- White
-            local sentenceWidth = Game.fonts.large:getWidth(currentSentence)
-            local sentenceX = subtitleX + (subtitleWidth - sentenceWidth) / 2
-            local sentenceY = subtitleY + (subtitleHeight - Game.fonts.large:getHeight()) / 2
-            love.graphics.print(currentSentence, sentenceX, sentenceY)
-        end
-    end
-end
+-- drawLevelCompleteScreen() removed - functionality now handled by drawAnimatingWebcamWindow()
 
 -- Draw ready screen with GET READY and GO! text
 function drawReadyScreen()
@@ -2423,11 +2145,11 @@ function drawReadyScreen()
         end
         
         -- Draw background image if loaded and enabled
-        if Game.showBackgroundForeground and Game.background then
+        if Game.showBackgroundForeground and Game.assets.background then
             love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.draw(Game.background, 0, 0, 0, 
-                Constants.SCREEN_WIDTH / Game.background:getWidth(),
-                Constants.SCREEN_HEIGHT / Game.background:getHeight())
+            love.graphics.draw(Game.assets.background, 0, 0, 0, 
+                Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
+                Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
         end
         
         -- Draw game elements
@@ -2489,7 +2211,7 @@ function drawReadyScreen()
         drawScoreWindow()
         
         -- Draw multiplier window (below engagement plot) - skip in demo mode
-        if not Game.demoMode then
+        if not Game.modes.demo then
             drawMultiplierWindow()
         end
         
@@ -2502,12 +2224,12 @@ function drawReadyScreen()
     
     local centerX, centerY = getScreenCenter()
     
-    if Game.readyPhase == 1 then
+    if Game.ready.phase == 1 then
         -- Phase 1: Fade out black overlay (show frozen game)
         -- Text not shown yet
-    elseif Game.readyPhase == 2 then
+    elseif Game.ready.phase == 2 then
         -- Phase 2: Show "GET READY" text
-        local elapsed = Game.readyTimer - Constants.TIMING.READY_FADE_OUT_DURATION
+        local elapsed = Game.timers.ready - Constants.TIMING.READY_FADE_OUT_DURATION
         local textAlpha = math.min(elapsed / 0.3, 1.0)  -- Fade in over 0.3s
         
         love.graphics.setFont(Game.fonts.multiplierGiant)
@@ -2525,10 +2247,10 @@ function drawReadyScreen()
         drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
         
         -- Draw sparks
-        drawSparkParticles(Game.readySparks)
-    elseif Game.readyPhase == 3 then
+        ParticleSystem.draw(Game.ready.sparks)
+    elseif Game.ready.phase == 3 then
         -- Phase 3: Show "GO!" text
-        local elapsed = Game.readyTimer - Constants.TIMING.READY_FADE_OUT_DURATION - Constants.TIMING.READY_GET_READY_DURATION
+        local elapsed = Game.timers.ready - Constants.TIMING.READY_FADE_OUT_DURATION - Constants.TIMING.READY_GET_READY_DURATION
         local textAlpha = math.min(elapsed / 0.2, 1.0)  -- Fade in quickly
         
         love.graphics.setFont(Game.fonts.multiplierGiant)
@@ -2547,7 +2269,7 @@ function drawReadyScreen()
         drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
         
         -- Draw sparks
-        drawSparkParticles(Game.readySparks)
+        ParticleSystem.draw(Game.ready.sparks)
     end
 end
 
@@ -2559,27 +2281,27 @@ function love.update(dt)
     end
     
     -- Handle booting screen
-    if Game.bootingMode then
-        Game.bootingTimer = Game.bootingTimer + dt
+    if Game.modes.booting then
+        Game.timers.booting = Game.timers.booting + dt
         
         -- After 10 seconds, transition to logo screen
-        if Game.bootingTimer >= 10.0 then
-            Game.bootingMode = false
-            Game.bootingTimer = 0
-            Game.logoMode = true
-            Game.logoTimer = 0
-            Game.previousLogoTimer = 0
-            Game.logoFanfarePlayed = false
+        if Game.timers.booting >= 10.0 then
+            Game.modes.booting = false
+            Game.timers.booting = 0
+            Game.modes.logo = true
+            Game.timers.logo = 0
+            Game.timers.previousLogo = 0
+            Game.assets.logoFanfarePlayed = false
         end
         
         return  -- Don't update game logic during booting screen
     end
     
     -- Handle matrix screen
-    if Game.matrixMode then
+    if Game.modes.matrix then
         -- Pause matrix screen updates if dynamic music sandbox is open
         if not DynamicMusic.isActive() then
-            Game.matrixTimer = Game.matrixTimer + dt
+            Game.timers.matrix = Game.timers.matrix + dt
             MatrixEffect.update(dt)
             -- Keep running until space is pressed (handled in InputHandler)
         end
@@ -2591,26 +2313,26 @@ function love.update(dt)
     end
     
     -- Handle logo screen
-    if Game.logoMode then
+    if Game.modes.logo then
         -- Pause logo screen updates if dynamic music sandbox is open
         if not DynamicMusic.isActive() then
-            Game.previousLogoTimer = Game.logoTimer
-            Game.logoTimer = Game.logoTimer + dt
+            Game.timers.previousLogo = Game.timers.logo
+            Game.timers.logo = Game.timers.logo + dt
             
             -- Play fanfare exactly when the blink animation starts (at 2.5 seconds)
             -- This happens when the logo image changes to the blink version
-            if Game.previousLogoTimer < 2.5 and Game.logoTimer >= 2.5 then
+            if Game.timers.previousLogo < 2.5 and Game.timers.logo >= 2.5 then
                 Sound.playFanfare()
             end
             
             -- After 5.75 seconds (1s slide + 1.5s wait + 0.25s blink + 3s wait), transition to attract mode
-            if Game.logoTimer >= 5.75 then
-                Game.logoMode = false
-                Game.logoTimer = 0
-                Game.previousLogoTimer = 0
-                Game.logoFanfarePlayed = false
-                Game.attractMode = true
-                Game.attractModeTimer = 0
+            if Game.timers.logo >= 5.75 then
+                Game.modes.logo = false
+                Game.timers.logo = 0
+                Game.timers.previousLogo = 0
+                Game.assets.logoFanfarePlayed = false
+                Game.modes.attract = true
+                Game.modes.attractTimer = 0
                 -- Start playing intro music when transitioning to attract mode
                 Sound.playIntroMusic()
             end
@@ -2623,19 +2345,19 @@ function love.update(dt)
     end
 
     -- Handle joystick test mode (input-only screen, no game simulation)
-    if Game.joystickTestMode then
+    if Game.modes.joystickTest then
         return
     end
     
     -- Handle demo mode
-    if Game.demoMode then
+    if Game.modes.demo then
         DemoMode.update(dt)
         -- Update game normally in demo mode
         -- (AI will control turret, but game logic runs)
     end
     
     -- Handle attract mode
-    if Game.attractMode then
+    if Game.modes.attract then
         -- Pause attract mode updates if dynamic music sandbox is open
         if not DynamicMusic.isActive() then
             AttractMode.update(dt)
@@ -2645,23 +2367,23 @@ function love.update(dt)
     end
     
     -- Update dynamic music player (also during logo screen)
-    if Game.logoMode then
+    if Game.modes.logo then
         DynamicMusic.update(dt)
     end
     
     -- Handle ready screen (GET READY / GO!)
-    if Game.readyActive then
-        Game.readyTimer = Game.readyTimer + dt
+    if Game.modes.ready then
+        Game.timers.ready = Game.timers.ready + dt
         
         -- Phase 1: Fade out black overlay (0.5s)
-        if Game.readyPhase == 1 then
-            if Game.readyTimer >= Constants.TIMING.READY_FADE_OUT_DURATION then
-                Game.readyPhase = 2
-                Game.readyTimer = Constants.TIMING.READY_FADE_OUT_DURATION
+        if Game.ready.phase == 1 then
+            if Game.timers.ready >= Constants.TIMING.READY_FADE_OUT_DURATION then
+                Game.ready.phase = 2
+                Game.timers.ready = Constants.TIMING.READY_FADE_OUT_DURATION
                 -- Create sparks for GET READY
                 local centerX = Constants.SCREEN_WIDTH / 2
                 local centerY = Constants.SCREEN_HEIGHT / 2
-                Game.readySparks = createSparkParticles(
+                Game.ready.sparks = ParticleSystem.createSparks(
                     centerX, centerY,
                     Constants.UI.SPARK_COUNT_READY,
                     Constants.UI.SPARK_SPEED_MIN,
@@ -2672,13 +2394,13 @@ function love.update(dt)
                 )
             end
         -- Phase 2: Show "GET READY" (1.5s)
-        elseif Game.readyPhase == 2 then
-            if Game.readyTimer >= Constants.TIMING.READY_FADE_OUT_DURATION + Constants.TIMING.READY_GET_READY_DURATION then
-                Game.readyPhase = 3
+        elseif Game.ready.phase == 2 then
+            if Game.timers.ready >= Constants.TIMING.READY_FADE_OUT_DURATION + Constants.TIMING.READY_GET_READY_DURATION then
+                Game.ready.phase = 3
                 -- Create more sparks for GO!
                 local centerX = Constants.SCREEN_WIDTH / 2
                 local centerY = Constants.SCREEN_HEIGHT / 2
-                Game.readySparks = createSparkParticles(
+                Game.ready.sparks = ParticleSystem.createSparks(
                     centerX, centerY,
                     Constants.UI.SPARK_COUNT_LEVEL_COMPLETE,
                     Constants.UI.SPARK_SPEED_MIN_LEVEL_COMPLETE,
@@ -2689,11 +2411,11 @@ function love.update(dt)
                 )
             end
         -- Phase 3: Show "GO!" (0.5s), then start playing
-        elseif Game.readyPhase == 3 then
-            if Game.readyTimer >= Constants.TIMING.READY_FADE_OUT_DURATION + Constants.TIMING.READY_GET_READY_DURATION + Constants.TIMING.READY_GO_DURATION then
-                Game.readyActive = false
-                Game.readyTimer = 0
-                Game.readyPhase = 1
+        elseif Game.ready.phase == 3 then
+            if Game.timers.ready >= Constants.TIMING.READY_FADE_OUT_DURATION + Constants.TIMING.READY_GET_READY_DURATION + Constants.TIMING.READY_GO_DURATION then
+                Game.modes.ready = false
+                Game.timers.ready = 0
+                Game.ready.phase = 1
                 Game.gameState = "playing"
                 -- Trigger eyelid animation when gameplay starts
                 MonitorFrame.startEyelidAnimation()
@@ -2701,7 +2423,7 @@ function love.update(dt)
         end
         
         -- Update sparks
-        updateSparkParticles(Game.readySparks, dt, nil, Constants.UI.SPARK_FADE_RATE_READY)
+        ParticleSystem.update(Game.ready.sparks, dt, nil, Constants.UI.SPARK_FADE_RATE_READY)
         
         -- Update monitor frame (for eyelid animation that starts at end of ready sequence)
         MonitorFrame.update(dt)
@@ -2715,33 +2437,33 @@ function love.update(dt)
     end
     
     -- Handle intro video
-    if Game.videoMode then
+    if Game.modes.video then
         -- Update music fade
-        if Game.introMusicFadeActive then
-            Game.introMusicFadeTimer = Game.introMusicFadeTimer + dt
+        if Game.intro.musicFadeActive then
+            Game.timers.introMusicFade = Game.timers.introMusicFade + dt
             local fadeDuration = 3.0  -- 3 seconds
-            local fadeProgress = math.min(1.0, Game.introMusicFadeTimer / fadeDuration)
+            local fadeProgress = math.min(1.0, Game.timers.introMusicFade / fadeDuration)
             
             -- Interpolate volume from start to target
-            local currentVolume = Game.introMusicFadeStartVolume + 
-                (Game.introMusicFadeTargetVolume - Game.introMusicFadeStartVolume) * fadeProgress
+            local currentVolume = Game.intro.musicFadeStartVolume + 
+                (Game.intro.musicFadeTargetVolume - Game.intro.musicFadeStartVolume) * fadeProgress
             Sound.setMusicVolume(currentVolume)
             
             -- Fade complete
             if fadeProgress >= 1.0 then
-                Game.introMusicFadeActive = false
+                Game.intro.musicFadeActive = false
             end
         end
         
-        if Game.introVideo then
+        if Game.assets.introVideo then
             -- Check if video has finished
-            if not Game.introVideo:isPlaying() and Game.introVideo:tell() > 0 then
+            if not Game.assets.introVideo:isPlaying() and Game.assets.introVideo:tell() > 0 then
                 -- Video has finished, transition to intro screen
-                Game.videoMode = false
-                Game.introMode = true
-                Game.introTimer = 0
-                Game.introStep = 1
-                Game.introMusicFadeActive = false
+                Game.modes.video = false
+                Game.modes.intro = true
+                Game.timers.intro = 0
+                Game.intro.step = 1
+                Game.intro.musicFadeActive = false
                 -- Restore normal glow strength when video ends
                 if Game.glowEffect and Game.glowStrengthNormal then
                     Game.glowEffect.strength = Game.glowStrengthNormal
@@ -2749,11 +2471,11 @@ function love.update(dt)
             end
         else
             -- If video doesn't exist, skip directly to intro screen
-            Game.videoMode = false
-            Game.introMode = true
-            Game.introTimer = 0
-            Game.introStep = 1
-            Game.introMusicFadeActive = false
+            Game.modes.video = false
+            Game.modes.intro = true
+            Game.timers.intro = 0
+            Game.intro.step = 1
+            Game.intro.musicFadeActive = false
             -- Restore normal glow strength when video ends
             if Game.glowEffect and Game.glowStrengthNormal then
                 Game.glowEffect.strength = Game.glowStrengthNormal
@@ -2763,20 +2485,20 @@ function love.update(dt)
     end
     
     -- Handle intro screen
-    if Game.introMode then
-        Game.introTimer = Game.introTimer + dt
+    if Game.modes.intro then
+        Game.timers.intro = Game.timers.intro + dt
         -- Update portrait animation
         ChasePortrait.update(dt)
         return  -- Don't update game logic during intro
     end
     
     -- Handle name entry
-    if Game.nameEntryActive then
+    if Game.modes.nameEntry then
         -- Update banner animation to maintain dropped state
-        TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
+        TopBanner.update(dt, Game.gameState, Engagement.value, Game.modes.gameOver, Game.modes.lifeLostAuditor)
         
         -- Update glitch text timer for flicker effect
-        Game.glitchTextTimer = Game.glitchTextTimer + dt
+        Game.timers.glitchText = Game.timers.glitchText + dt
         
         -- Decay shake to prevent it from getting stuck
         if Game.shake > 0 then
@@ -2787,9 +2509,9 @@ function love.update(dt)
     end
     
     -- Handle life lost auditor screen (engagement depleted but lives remain)
-    if Game.lifeLostAuditorActive then
+    if Game.modes.lifeLostAuditor then
         -- Update banner animation FIRST (before checking if it's dropped)
-        TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
+        TopBanner.update(dt, Game.gameState, Engagement.value, Game.modes.gameOver, Game.modes.lifeLostAuditor)
         
         -- Update monitor frame animations (eyelid, BottomCenterPanel, etc.)
         MonitorFrame.update(dt)
@@ -2798,9 +2520,9 @@ function love.update(dt)
         MonitorFrame.updateEngagementAnimations(Engagement.value, dt)
         
         -- Update glitch text timer and write-on progress
-        Game.glitchTextTimer = Game.glitchTextTimer + dt
-        if Game.glitchTextWriteProgress < 1.0 then
-            Game.glitchTextWriteProgress = math.min(1.0, Game.glitchTextWriteProgress + dt * 1.5)
+        Game.timers.glitchText = Game.timers.glitchText + dt
+        if Game.visualEffects.glitchTextWriteProgress < 1.0 then
+            Game.visualEffects.glitchTextWriteProgress = math.min(1.0, Game.visualEffects.glitchTextWriteProgress + dt * 1.5)
         end
         
         -- Wait at dropped position for 5.5 seconds (banner drop animation is handled by TopBanner.update())
@@ -2810,10 +2532,10 @@ function love.update(dt)
             MonitorFrame.setEngagementPanelsToMaximum()
             
             -- Start counting timer when banner finishes dropping
-            Game.lifeLostAuditorTimer = Game.lifeLostAuditorTimer + dt
+            Game.timers.lifeLostAuditor = Game.timers.lifeLostAuditor + dt
             
             -- Check if we should start reverse animation
-            if not Game.reverseAnimationActive and Game.lifeLostAuditorTimer >= Constants.TIMING.LIFE_LOST_WAIT_TIME then
+            if not Game.reverseAnimationActive and Game.timers.lifeLostAuditor >= Constants.TIMING.LIFE_LOST_WAIT_TIME then
                 -- Start reverse animations
                 Game.reverseAnimationActive = true
                 Game.reverseEngagementActive = true
@@ -2824,7 +2546,7 @@ function love.update(dt)
             end
         else
             -- Banner hasn't finished dropping yet, reset timer
-            Game.lifeLostAuditorTimer = 0
+            Game.timers.lifeLostAuditor = 0
         end
         
         -- Update reverse animations if active (check this outside the banner dropped check)
@@ -2846,9 +2568,9 @@ function love.update(dt)
             if TopBanner.isReverseAnimationComplete() and MonitorFrame.isReverseAnimationComplete() and not Game.reverseEngagementActive then
                 -- Reverse animations complete, restart the level
                 Game.reverseAnimationActive = false
-                Game.lifeLostAuditorActive = false
-                Game.lifeLostAuditorTimer = 0
-                Game.lifeLostAuditorPhase = 1
+                Game.modes.lifeLostAuditor = false
+                Game.timers.lifeLostAuditor = 0
+                Game.lifeLostAuditor.phase = 1
                 restartLevel()
             end
         end
@@ -2868,25 +2590,25 @@ function love.update(dt)
     
     -- Auditor sequence removed - game over now uses same screen as life lost (top bar only)
     -- This block is disabled
-    if false and Game.auditorActive and not Game.introMode then
-        Game.auditorTimer = Game.auditorTimer + dt
+    if false and Game.modes.auditor and not Game.modes.intro then
+        Game.timers.auditor = Game.timers.auditor + dt
         
         -- Phase 1: System freeze (1 second)
-        if Game.auditorPhase == 1 and Game.auditorTimer >= 1.0 then
-            Game.auditorPhase = 2
-            Game.auditorTimer = 0
+        if Game.auditor.phase == 1 and Game.timers.auditor >= 1.0 then
+            Game.auditor.phase = 2
+            Game.timers.auditor = 0
         -- Phase 2: Fade to black and show THE AUDITOR (2 seconds)
-        elseif Game.auditorPhase == 2 and Game.auditorTimer >= 2.0 then
-            Game.auditorPhase = 3
-            Game.auditorTimer = 0
+        elseif Game.auditor.phase == 2 and Game.timers.auditor >= 2.0 then
+            Game.auditor.phase = 3
+            Game.timers.auditor = 0
         -- Phase 3: Show verdict (3 seconds)
-        elseif Game.auditorPhase == 3 and Game.auditorTimer >= 3.0 then
-            Game.auditorPhase = 4
-            Game.auditorTimer = 0
+        elseif Game.auditor.phase == 3 and Game.timers.auditor >= 3.0 then
+            Game.auditor.phase = 4
+            Game.timers.auditor = 0
         -- Phase 4: Crash to black (1 second), then check for high score
-        elseif Game.auditorPhase == 4 and Game.auditorTimer >= 1.0 then
+        elseif Game.auditor.phase == 4 and Game.timers.auditor >= 1.0 then
             -- Check for high score before returning to attract mode
-            if isHighScore(Game.score) then
+            if HighScores.isHighScore(Game.score) then
                 -- Stop all projectile whistle sounds before name entry
                 for _, p in ipairs(Game.projectiles) do
                     if p.whistleSound then
@@ -2900,13 +2622,13 @@ function love.update(dt)
                 end
                 
                 -- Start name entry (arcade style)
-                Game.auditorActive = false  -- Clear auditor sequence
-                Game.auditorTimer = 0
-                Game.auditorPhase = 1
-                Game.nameEntryActive = true
-                Game.nameEntryText = "AAA"  -- Initialize with 'A' in all positions
-                Game.nameEntryCursor = 1
-                Game.nameEntryCharIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
+                Game.modes.auditor = false  -- Clear auditor sequence
+                Game.timers.auditor = 0
+                Game.auditor.phase = 1
+                Game.modes.nameEntry = true
+                Game.nameEntry.text = "AAA"  -- Initialize with 'A' in all positions
+                Game.nameEntry.cursor = 1
+                Game.nameEntry.charIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
             else
                 -- No high score, return to attract mode
                 returnToAttractMode()
@@ -2917,16 +2639,16 @@ function love.update(dt)
     end
     
     -- Handle game over screen
-    if Game.gameOverActive then
+    if Game.modes.gameOver then
         -- Update banner animation FIRST (before checking if it's dropped)
-        TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
+        TopBanner.update(dt, Game.gameState, Engagement.value, Game.modes.gameOver, Game.modes.lifeLostAuditor)
         
         -- Don't stop sounds here - let projectile whistles continue until they explode
         
         -- Update glitch text timer and write-on progress
-        Game.glitchTextTimer = Game.glitchTextTimer + dt
-        if Game.glitchTextWriteProgress < 1.0 then
-            Game.glitchTextWriteProgress = math.min(1.0, Game.glitchTextWriteProgress + dt * 1.5)
+        Game.timers.glitchText = Game.timers.glitchText + dt
+        if Game.visualEffects.glitchTextWriteProgress < 1.0 then
+            Game.visualEffects.glitchTextWriteProgress = math.min(1.0, Game.visualEffects.glitchTextWriteProgress + dt * 1.5)
         end
         
         -- Wait at dropped position for 2 seconds (banner drop animation is handled by TopBanner.update())
@@ -2934,10 +2656,10 @@ function love.update(dt)
             -- When banner hits down position, instantly move animated frame layers to top
             MonitorFrame.setEngagementPanelsToMaximum()
             
-            Game.gameOverTimer = Game.gameOverTimer - dt
+            Game.timers.gameOver = Game.timers.gameOver - dt
             
             -- Check if we should start reverse animation
-            if not Game.reverseAnimationActive and Game.gameOverTimer <= 0 and Game.shouldRestartLevel and Game.lives > 0 then
+            if not Game.reverseAnimationActive and Game.timers.gameOver <= 0 and Game.shouldRestartLevel and Game.lives > 0 then
                 -- Start reverse animations
                 Game.reverseAnimationActive = true
                 Game.reverseEngagementActive = true
@@ -2969,14 +2691,14 @@ function love.update(dt)
                     restartLevel()
                     return
                 end
-            elseif Game.gameOverTimer <= 0 then
+            elseif Game.timers.gameOver <= 0 then
                 -- Game over screen complete (no reverse needed - going to name entry or attract)
                 if Game.shouldRestartLevel and Game.lives > 0 then
                     -- This shouldn't happen if reverse is working, but keep as fallback
                     restartLevel()
                 elseif Game.lives <= 0 then
                     -- All lives lost - check for high score
-                    if isHighScore(Game.score) then
+                    if HighScores.isHighScore(Game.score) then
                         -- Stop all projectile whistle sounds before name entry
                         for _, p in ipairs(Game.projectiles) do
                             if p.whistleSound then
@@ -2990,11 +2712,11 @@ function love.update(dt)
                         end
                         
                         -- Start name entry (arcade style)
-                        Game.gameOverActive = false  -- Clear game over screen
-                        Game.nameEntryActive = true
-                        Game.nameEntryText = "AAA"  -- Initialize with 'A' in all positions
-                        Game.nameEntryCursor = 1
-                        Game.nameEntryCharIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
+                        Game.modes.gameOver = false  -- Clear game over screen
+                        Game.modes.nameEntry = true
+                        Game.nameEntry.text = "AAA"  -- Initialize with 'A' in all positions
+                        Game.nameEntry.cursor = 1
+                        Game.nameEntry.charIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
                     else
                         -- No high score, return to attract mode
                         returnToAttractMode()
@@ -3021,9 +2743,9 @@ function love.update(dt)
     
     -- Handle slow-motion ramp to freeze
     local gameDt = dt
-    if Game.slowMoActive then
-        Game.slowMoTimer = Game.slowMoTimer + dt
-        local progress = math.min(Game.slowMoTimer / Game.slowMoDuration, 1.0)
+    if Game.slowMo.active then
+        Game.timers.slowMo = Game.timers.slowMo + dt
+        local progress = math.min(Game.timers.slowMo / Game.slowMo.duration, 1.0)
         -- Ramp from 1.0 to 0.0 (smooth ease-out)
         Game.timeScale = 1.0 - (progress * progress)  -- Quadratic ease-out
         
@@ -3036,15 +2758,15 @@ function love.update(dt)
         -- When fully frozen, handle differently in demo mode vs normal gameplay
         if Game.timeScale <= 0.0 then
             Game.timeScale = 0.0
-            if Game.demoMode and Game.demoStep == 8 then
+            if Game.modes.demo and Game.demo.step == 8 then
                 -- In demo mode step 8, just freeze - don't show win text
                 -- The freeze will be released when step completes
             else
                 -- Normal gameplay: show win text
-                Game.slowMoActive = false
+                Game.slowMo.active = false
                 -- Skip win text, go straight to Chase Paxton animation
-                Game.winTextActive = false
-                Game.winTextTimer = 0
+                Game.modes.winText = false
+                Game.timers.winText = 0
                 -- Clean up any remaining game sounds when frozen (fanfare should be done by now)
                 Sound.cleanup()
                 Sound.unmute()  -- Re-enable for any UI sounds
@@ -3053,19 +2775,19 @@ function love.update(dt)
                     DynamicMusic.startPart(2)
                 end
                 -- Start matrix transition and webcam window animation immediately
-                Game.matrixTransitionActive = true
-                Game.webcamWindowAnimating = true
-                Game.webcamWindowAnimReversing = false
-                Game.webcamWindowAnimTimer = 0
-                Game.webcamWindowDialogueActive = false
-                Game.webcamWindowDialogueTimer = 0
+                Game.levelTransition.matrixActive = true
+                Game.webcamWindow.animating = true
+                Game.webcamWindow.reversing = false
+                Game.timers.webcamWindowAnim = 0
+                Game.webcamWindow.dialogueActive = false
+                Game.timers.webcamWindowDialogue = 0
                 -- Ensure duration is set
-                if not Game.webcamWindowAnimDuration or Game.webcamWindowAnimDuration <= 0 then
-                    Game.webcamWindowAnimDuration = 1.0
+                if not Game.webcamWindow.animDuration or Game.webcamWindow.animDuration <= 0 then
+                    Game.webcamWindow.animDuration = 1.0
                 end
                 MatrixEffect.startTransition(2.0, function()
                     -- Transition complete - matrix done, animation continues to center
-                    Game.matrixTransitionActive = false
+                    Game.levelTransition.matrixActive = false
                 end)
                 Sound.update(dt)
                 return
@@ -3079,79 +2801,81 @@ function love.update(dt)
     end
     
     -- Handle win text display (pause before webcam)
-    if Game.winTextActive then
-        Game.winTextTimer = Game.winTextTimer - dt
+    if Game.modes.winText then
+        Game.timers.winText = Game.timers.winText - dt
         -- Update sound system during win text display
         Sound.update(dt)
-        if Game.winTextTimer <= 0 then
+        if Game.timers.winText <= 0 then
             -- Win text done, start matrix transition to Chase Paxton screen
-            Game.winTextActive = false
-            Game.winTextTimer = 0
-            Game.matrixTransitionActive = true
+            Game.modes.winText = false
+            Game.timers.winText = 0
+            Game.levelTransition.matrixActive = true
             -- Start webcam window animation (forward to center)
-            Game.webcamWindowAnimating = true
-            Game.webcamWindowAnimReversing = false
-            Game.webcamWindowAnimTimer = 0
-            Game.webcamWindowDialogueActive = false
-            Game.webcamWindowDialogueTimer = 0
-            Game.webcamWindowDialogueSentences = {}
-            Game.webcamWindowDialogueCurrentSentence = 1
-            Game.webcamWindowDialogueSentenceTimer = 0
+            Game.webcamWindow.animating = true
+            Game.webcamWindow.reversing = false
+            Game.timers.webcamWindowAnim = 0
+            Game.webcamWindow.dialogueActive = false
+            Game.timers.webcamWindowDialogue = 0
+            Game.webcamWindow.dialogueSentences = {}
+            Game.webcamWindow.dialogueCurrentSentence = 1
+            Game.timers.webcamWindowDialogueSentence = 0
             -- Ensure duration is set
-            if not Game.webcamWindowAnimDuration or Game.webcamWindowAnimDuration <= 0 then
-                Game.webcamWindowAnimDuration = 1.0
+            if not Game.webcamWindow.animDuration or Game.webcamWindow.animDuration <= 0 then
+                Game.webcamWindow.animDuration = 1.0
             end
             MatrixEffect.startTransition(2.0, function()
                 -- Transition complete - matrix done, animation continues to center
-                Game.matrixTransitionActive = false
+                Game.levelTransition.matrixActive = false
             end)
         end
         return  -- Don't update game logic during win text display
     end
     
     -- Handle webcam window animation
-    if Game.webcamWindowAnimating then
-        if not Game.webcamWindowAnimReversing then
+    if Game.webcamWindow.animating then
+        if not Game.webcamWindow.reversing then
             -- Animating forward to center
-            if not Game.webcamWindowDialogueActive then
+            if not Game.webcamWindow.dialogueActive then
                 -- Only update timer if dialogue hasn't started yet
-                Game.webcamWindowAnimTimer = Game.webcamWindowAnimTimer + dt
-                if Game.webcamWindowAnimTimer >= Game.webcamWindowAnimDuration then
+                Game.timers.webcamWindowAnim = Game.timers.webcamWindowAnim + dt
+                if Game.timers.webcamWindowAnim >= Game.webcamWindow.animDuration then
                     -- Reached center, start dialogue
-                    Game.webcamWindowAnimTimer = Game.webcamWindowAnimDuration
-                    Game.webcamWindowDialogueActive = true
-                    Game.webcamWindowDialogueTimer = 0
+                    Game.timers.webcamWindowAnim = Game.webcamWindow.animDuration
+                    Game.webcamWindow.dialogueActive = true
+                    Game.timers.webcamWindowDialogue = 0
                     -- Split message into sentences
                     local levelCompleteMsg = ChasePaxton.getLevelCompleteMessage(Game.winCondition)
-                    Game.webcamWindowDialogueSentences = {}
+                    Game.webcamWindow.dialogueSentences = {}
                     -- Split by sentence delimiters (. ! ?)
                     for sentence in levelCompleteMsg.message:gmatch("([^%.%!%?]+[%.%!%?]?)") do
                         sentence = sentence:match("^%s*(.-)%s*$")  -- Trim whitespace
                         if sentence ~= "" then
-                            table.insert(Game.webcamWindowDialogueSentences, sentence)
+                            table.insert(Game.webcamWindow.dialogueSentences, sentence)
                         end
                     end
                     -- If no sentences found, use the whole message
-                    if #Game.webcamWindowDialogueSentences == 0 then
-                        table.insert(Game.webcamWindowDialogueSentences, levelCompleteMsg.message)
+                    if #Game.webcamWindow.dialogueSentences == 0 then
+                        table.insert(Game.webcamWindow.dialogueSentences, levelCompleteMsg.message)
                     end
-                    Game.webcamWindowDialogueCurrentSentence = 1
-                    Game.webcamWindowDialogueSentenceTimer = 0
+                    Game.webcamWindow.dialogueCurrentSentence = 1
+                    Game.timers.webcamWindowDialogueSentence = 0
                     Webcam.showComment("level_complete")
                     ChasePortrait.setTalking(true)
                 end
             end
         else
             -- Animating reverse back to original position
-            Game.webcamWindowAnimTimer = Game.webcamWindowAnimTimer - dt
-            if Game.webcamWindowAnimTimer <= 0 then
+            Game.timers.webcamWindowAnim = Game.timers.webcamWindowAnim - dt
+            if Game.timers.webcamWindowAnim <= 0 then
                 -- Back to original position, animation complete
-                Game.webcamWindowAnimTimer = 0
-                Game.webcamWindowAnimating = false
-                Game.webcamWindowAnimReversing = false
-                Game.webcamWindowDialogueActive = false
+                Game.timers.webcamWindowAnim = 0
+                Game.webcamWindow.animating = false
+                Game.webcamWindow.reversing = false
+                Game.webcamWindow.dialogueActive = false
                 
-                -- Clear all units from previous level during matrix wipe
+                -- Clear all units and area effects from previous level during matrix wipe
+                -- Note: We only clear units and explosion zones here, not projectiles/hazards
+                -- (those are cleared in the transition callback)
                 for i = #Game.units, 1, -1 do
                     local u = Game.units[i]
                     if u.body and not u.isDead then
@@ -3173,12 +2897,12 @@ function love.update(dt)
                 Game.effects = {}
                 
                 -- Start matrix transition to hide the level change
-                Game.matrixTransitionActive = true
+                Game.levelTransition.matrixActive = true
                 MatrixEffect.startTransition(2.0, function()
                     -- Transition complete - now do the actual level transition
                     Game.level = Game.level + 1
-                    Game.levelTransitionActive = false
-                    Game.levelTransitionTimer = 0
+                    Game.levelTransition.active = false
+                    Game.timers.levelTransition = 0
                     Game.gameState = "playing"
                     Game.winCondition = nil
                     Game.hasUnitBeenConverted = false
@@ -3186,7 +2910,8 @@ function love.update(dt)
                     -- Reset engagement to 100% for new level
                     Engagement.init()
                     
-                    -- Clear projectiles and hazards for new level
+                    -- Clear projectiles, hazards, explosion zones, and effects for new level
+                    -- Note: Units are already cleared before the transition
                     for i = #Game.projectiles, 1, -1 do
                         local p = Game.projectiles[i]
                         if p.whistleSound then
@@ -3215,33 +2940,18 @@ function love.update(dt)
                     -- Clear visual effects for new level
                     Game.effects = {}
                     
-                    -- Clear button held status
-                    if Game.turret then
-                        Game.turret.isCharging = false
-                        Game.turret.chargeTimer = 0
-                        if Game.turret.chargeSound then
-                            pcall(function()
-                                Game.turret.chargeSound:stop()
-                                Game.turret.chargeSound:release()
-                            end)
-                            Game.turret.chargeSound = nil
-                        end
-                    end
-                    Game.joystickButton1Pressed = false
-                    Game.joystickButton2Pressed = false
-                    
-                    -- Clear weapon upgrades on level change
-                    Game.isUpgraded = false
-                    Constants.PUCK_LIFETIME = Constants.PUCK.LIFETIME
+                    -- Clear button held status and weapon upgrades
+                    clearButtonHeldStatus()
+                    clearWeaponUpgrades()
                     
                     -- Spawn new units for next level
                     spawnUnitsForLevel()
                     
                     -- Trigger ready sequence for new level
-                    Game.readyActive = true
-                    Game.readyTimer = 0
-                    Game.readyPhase = 1
-                    Game.readySparks = {}
+                    Game.modes.ready = true
+                    Game.timers.ready = 0
+                    Game.ready.phase = 1
+                    Game.ready.sparks = {}
                     Game.gameState = "ready"
                     -- Reset banner to original position
                     TopBanner.reset()
@@ -3257,12 +2967,12 @@ function love.update(dt)
                     end
                     
                     -- End transition
-                    Game.matrixTransitionActive = false
+                    Game.levelTransition.matrixActive = false
                 end)
                 
                 -- Proceed to level transition (but matrix will handle the visual)
-                Game.levelTransitionActive = true
-                Game.levelTransitionTimer = 2.0  -- 2 second transition
+                Game.levelTransition.active = true
+                Game.timers.levelTransition = 2.0  -- 2 second transition
                 Game.timeScale = 1.0  -- Reset time scale
                 
                 -- Clear projectiles and hazards immediately
@@ -3283,19 +2993,7 @@ function love.update(dt)
                 Game.hazards = {}
                 
                 -- Clear button held status immediately
-                if Game.turret then
-                    Game.turret.isCharging = false
-                    Game.turret.chargeTimer = 0
-                    if Game.turret.chargeSound then
-                        pcall(function()
-                            Game.turret.chargeSound:stop()
-                            Game.turret.chargeSound:release()
-                        end)
-                        Game.turret.chargeSound = nil
-                    end
-                end
-                Game.joystickButton1Pressed = false
-                Game.joystickButton2Pressed = false
+                clearButtonHeldStatus()
                 
                 -- Clean up any remaining sounds before transition
                 Sound.cleanup()
@@ -3309,9 +3007,9 @@ function love.update(dt)
     end
     
     -- Handle dialogue display (when window is centered)
-    if Game.webcamWindowDialogueActive then
-        Game.webcamWindowDialogueTimer = Game.webcamWindowDialogueTimer + dt
-        Game.webcamWindowDialogueSentenceTimer = Game.webcamWindowDialogueSentenceTimer + dt
+    if Game.webcamWindow.dialogueActive then
+        Game.timers.webcamWindowDialogue = Game.timers.webcamWindowDialogue + dt
+        Game.timers.webcamWindowDialogueSentence = Game.timers.webcamWindowDialogueSentence + dt
         -- Update sound system during dialogue
         Sound.update(dt)
         -- Update portrait animation (always talking during dialogue)
@@ -3319,26 +3017,26 @@ function love.update(dt)
         ChasePortrait.update(dt)
         
         -- Advance to next sentence if current sentence time is up
-        if Game.webcamWindowDialogueSentenceTimer >= Game.webcamWindowDialogueSentenceDuration then
-            Game.webcamWindowDialogueCurrentSentence = Game.webcamWindowDialogueCurrentSentence + 1
-            Game.webcamWindowDialogueSentenceTimer = 0
+        if Game.timers.webcamWindowDialogueSentence >= Game.webcamWindow.dialogueSentenceDuration then
+            Game.webcamWindow.dialogueCurrentSentence = Game.webcamWindow.dialogueCurrentSentence + 1
+            Game.timers.webcamWindowDialogueSentence = 0
             -- If we've shown all sentences, wait a bit before ending dialogue
-            if Game.webcamWindowDialogueCurrentSentence > #Game.webcamWindowDialogueSentences then
+            if Game.webcamWindow.dialogueCurrentSentence > #Game.webcamWindow.dialogueSentences then
                 -- All sentences shown, wait a bit more then end
-                if Game.webcamWindowDialogueTimer >= Game.webcamWindowDialogueDuration then
+                if Game.timers.webcamWindowDialogue >= Game.webcamWindow.dialogueDuration then
                     -- Dialogue done, start reverse animation
-                    Game.webcamWindowDialogueActive = false
-                    Game.webcamWindowDialogueTimer = 0
-                    Game.webcamWindowDialogueSentenceTimer = 0
-                    Game.webcamWindowDialogueSentences = {}
-                    Game.webcamWindowDialogueCurrentSentence = 1
+                    Game.webcamWindow.dialogueActive = false
+                    Game.timers.webcamWindowDialogue = 0
+                    Game.timers.webcamWindowDialogueSentence = 0
+                    Game.webcamWindow.dialogueSentences = {}
+                    Game.webcamWindow.dialogueCurrentSentence = 1
                     -- Make sure animation is still active and timer is at max for reverse
-                    if not Game.webcamWindowAnimating then
-                        Game.webcamWindowAnimating = true
+                    if not Game.webcamWindow.animating then
+                        Game.webcamWindow.animating = true
                     end
-                    Game.webcamWindowAnimReversing = true
-                    if Game.webcamWindowAnimTimer < Game.webcamWindowAnimDuration then
-                        Game.webcamWindowAnimTimer = Game.webcamWindowAnimDuration
+                    Game.webcamWindow.reversing = true
+                    if Game.timers.webcamWindowAnim < Game.webcamWindow.animDuration then
+                        Game.timers.webcamWindowAnim = Game.webcamWindow.animDuration
                     end
                     ChasePortrait.setTalking(false)
                 end
@@ -3347,30 +3045,30 @@ function love.update(dt)
     end
     
     -- Handle matrix transition (for level restarts and transitions)
-    if Game.matrixTransitionActive then
+    if Game.levelTransition.matrixActive then
         MatrixEffect.update(dt)
         -- Also update level transition timer if both are active
-        if Game.levelTransitionActive then
-            Game.levelTransitionTimer = Game.levelTransitionTimer - dt
-            if Game.levelTransitionTimer <= 0 then
-                Game.levelTransitionTimer = 0  -- Keep it at 0 until matrix transition completes
+        if Game.levelTransition.active then
+            Game.timers.levelTransition = Game.timers.levelTransition - dt
+            if Game.timers.levelTransition <= 0 then
+                Game.timers.levelTransition = 0  -- Keep it at 0 until matrix transition completes
             end
         end
         return  -- Don't update other game logic during matrix transition
     end
     
     -- Handle level transition (matrix transition handles the visual, this just tracks timing)
-    if Game.levelTransitionActive then
-        Game.levelTransitionTimer = Game.levelTransitionTimer - dt
+    if Game.levelTransition.active then
+        Game.timers.levelTransition = Game.timers.levelTransition - dt
         -- Matrix transition callback will handle the actual level change
-        if Game.levelTransitionTimer <= 0 then
-            Game.levelTransitionTimer = 0  -- Keep it at 0 until matrix transition completes
+        if Game.timers.levelTransition <= 0 then
+            Game.timers.levelTransition = 0  -- Keep it at 0 until matrix transition completes
         end
         return  -- Don't update other game logic during transition
     end
     
     -- Don't spawn powerups in demo mode
-    if not Game.demoMode then
+    if not Game.modes.demo then
         Game.powerupSpawnTimer = Game.powerupSpawnTimer - dt
         if Game.powerupSpawnTimer <= 0 then
             Game.powerupSpawnTimer = math.random(15, 25)
@@ -3392,9 +3090,9 @@ function love.update(dt)
     -- Skip main game updates during slow-mo or when game state is not playing
     -- This prevents new sounds from being created during win sequence
     -- Exception: In demo mode, allow updates during slow-mo (for step 7 toxic sludge demo)
-    if (Game.slowMoActive or Game.gameState ~= "playing") and not Game.demoMode then
+    if (Game.slowMo.active or Game.gameState ~= "playing") and not Game.modes.demo then
         -- Sound is already updated above during slow-mo handling
-        if not Game.slowMoActive then
+        if not Game.slowMo.active then
             Sound.update(dt)
         end
         Webcam.update(dt)
@@ -3414,15 +3112,15 @@ function love.update(dt)
     local toxicHazardCount = #Game.hazards
     
     -- Don't update engagement decay in demo mode
-    if not Game.demoMode then
+    if not Game.modes.demo then
         Engagement.update(gameDt, toxicHazardCount, Game.level)
     end
     
     -- Update banner animation (using TopBanner module)
     -- Note: Banner is already updated above for gameOverActive and lifeLostAuditorActive cases
     -- Only update here if we're in normal gameplay
-    if not Game.gameOverActive and not Game.lifeLostAuditorActive then
-        TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
+    if not Game.modes.gameOver and not Game.modes.lifeLostAuditor then
+        TopBanner.update(dt, Game.gameState, Engagement.value, Game.modes.gameOver, Game.modes.lifeLostAuditor)
     end
     
     World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt); Godray.update(dt); DynamicMusic.update(dt)
@@ -3430,7 +3128,7 @@ function love.update(dt)
     -- Check if engagement ran out (game over)
     -- Only check if we're actually playing and not already in a game over state
     if Game.gameState == "playing" and Engagement.value <= 0 then
-        if not Game.gameOverActive and not Game.lifeLostAuditorActive then
+        if not Game.modes.gameOver and not Game.modes.lifeLostAuditor then
             handleGameOver("engagement_depleted")
             Webcam.showComment("game_over")
         end
@@ -3456,19 +3154,19 @@ function love.update(dt)
         -- Only trigger when crossing the threshold from below, not when already at 100%
         -- Skip multipliers in demo mode
         local isAtMax = Engagement.value >= Constants.ENGAGEMENT_MAX
-        if isAtMax and not Game.previousEngagementAtMax and not Game.pointMultiplierActive and not Game.demoMode then
+        if isAtMax and not Game.previousEngagementAtMax and not Game.pointMultiplier.valueActive and not Game.modes.demo then
             -- Activate point multiplier
-            Game.pointMultiplier = Game.pointMultiplier + 1  -- Incremental multiplier
-            Game.pointMultiplierActive = true
-            Game.pointMultiplierTimer = 10.0  -- 10 seconds
-            Game.pointMultiplierFlashTimer = 2.0  -- Flash animation duration (increased for spark effect)
-            Game.pointMultiplierTextTimer = 3.0  -- Text display duration (3 seconds before fade)
+            Game.pointMultiplier.value = Game.pointMultiplier.value + 1  -- Incremental multiplier
+            Game.pointMultiplier.valueActive = true
+            Game.timers.pointMultiplier = 10.0  -- 10 seconds
+            Game.timers.pointMultiplierFlash = 2.0  -- Flash animation duration (increased for spark effect)
+            Game.timers.pointMultiplierText = 3.0  -- Text display duration (3 seconds before fade)
             Game.shake = math.max(Game.shake, 1.5)  -- Screen shake
             
             -- Create spark particles for the multiplier effect
             local centerX = Constants.SCREEN_WIDTH / 2
             local centerY = Constants.SCREEN_HEIGHT / 2 - 100
-            Game.pointMultiplierSparks = createSparkParticles(
+            Game.pointMultiplier.valueSparks = ParticleSystem.createSparks(
                 centerX, centerY,
                 Constants.UI.SPARK_COUNT_MULTIPLIER,
                 Constants.UI.SPARK_SPEED_MIN,
@@ -3489,37 +3187,37 @@ function love.update(dt)
         Game.previousEngagementAtMax = isAtMax
         
         -- Update point multiplier timer (skip in demo mode)
-        if Game.pointMultiplierActive and not Game.demoMode then
-            Game.pointMultiplierTimer = Game.pointMultiplierTimer - dt
-            if Game.pointMultiplierTimer <= 0 then
+        if Game.pointMultiplier.valueActive and not Game.modes.demo then
+            Game.timers.pointMultiplier = Game.timers.pointMultiplier - dt
+            if Game.timers.pointMultiplier <= 0 then
                 -- Timer expired - deactivate multiplier
-                Game.pointMultiplierActive = false
-                Game.pointMultiplierFlashTimer = 0
-                Game.pointMultiplierSparks = {}  -- Clear sparks
+                Game.pointMultiplier.valueActive = false
+                Game.timers.pointMultiplierFlash = 0
+                Game.pointMultiplier.valueSparks = {}  -- Clear sparks
                 Game.previousEngagementAtMax = false  -- Reset flag to allow re-triggering
             else
                 -- Update flash timer
-                if Game.pointMultiplierFlashTimer > 0 then
-                    Game.pointMultiplierFlashTimer = Game.pointMultiplierFlashTimer - dt
+                if Game.timers.pointMultiplierFlash > 0 then
+                    Game.timers.pointMultiplierFlash = Game.timers.pointMultiplierFlash - dt
                 end
                 
                 -- Update text timer (fades out after 3 seconds)
-                if Game.pointMultiplierTextTimer > 0 then
-                    Game.pointMultiplierTextTimer = Game.pointMultiplierTextTimer - dt
+                if Game.timers.pointMultiplierText > 0 then
+                    Game.timers.pointMultiplierText = Game.timers.pointMultiplierText - dt
                 end
                 
             -- Update spark particles
-            updateSparkParticles(Game.pointMultiplierSparks, dt, Constants.UI.SPARK_GRAVITY, Constants.UI.SPARK_FADE_RATE_MULTIPLIER)
+            ParticleSystem.update(Game.pointMultiplier.valueSparks, dt, Constants.UI.SPARK_GRAVITY, Constants.UI.SPARK_FADE_RATE_MULTIPLIER)
             end
             -- Note: Multiplier stays active for full duration regardless of engagement level
         end
         
         -- Update rapid fire text timer and sparks
-        if Game.rapidFireTextTimer > 0 then
-            Game.rapidFireTextTimer = Game.rapidFireTextTimer - dt
+        if Game.timers.rapidFireText > 0 then
+            Game.timers.rapidFireText = Game.timers.rapidFireText - dt
             
             -- Update rapid fire spark particles
-            updateSparkParticles(Game.rapidFireSparks, dt, Constants.UI.SPARK_GRAVITY, Constants.UI.SPARK_FADE_RATE_MULTIPLIER)
+            ParticleSystem.update(Game.rapidFire.sparks, dt, Constants.UI.SPARK_GRAVITY, Constants.UI.SPARK_FADE_RATE_MULTIPLIER)
         end
         
         if engagementPct < 0.25 and math.random() < 0.01 then  -- 1% chance per frame when low
@@ -3559,7 +3257,7 @@ function love.update(dt)
 
     if Game.turret then 
         -- In demo mode, AI controls the turret
-        if Game.demoMode then
+        if Game.modes.demo then
             DemoMode.updateAI(dt)
         end
         Game.turret:update(dt, Game.projectiles, Game.isUpgraded) 
@@ -3568,9 +3266,9 @@ function love.update(dt)
     -- Update units (freeze movement in demo mode to prevent random wandering, except step 4 for enrage demo)
     for i = #Game.units, 1, -1 do 
         local u = Game.units[i]
-        if Game.demoMode then
+        if Game.modes.demo then
             -- Step 4: Allow full unit updates to show enraged unit attacking
-            if Game.demoStep == 4 then
+            if Game.demo.step == 4 then
                 u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret)
             -- In demo mode, freeze unit movement but allow state changes
             elseif not u.isDead then
@@ -3592,7 +3290,7 @@ function love.update(dt)
                 end
                 
                 -- Only update isolation timer for insane units demo steps
-                if (Game.demoStep == 6 or Game.demoStep == 8) and u.state == "neutral" then
+                if (Game.demo.step == 6 or Game.demo.step == 8) and u.state == "neutral" then
                     u:checkIsolation(gameDt, Game.units)
                 end
                 
@@ -3618,7 +3316,7 @@ function love.update(dt)
     for i = #Game.projectiles, 1, -1 do local p = Game.projectiles[i]; p:update(gameDt); if p.isDead then table.remove(Game.projectiles, i) end end
     
     -- Check win conditions (skip in demo mode)
-    if Game.gameState == "playing" and not Game.demoMode then
+    if Game.gameState == "playing" and not Game.modes.demo then
         local blueCount = 0
         local redCount = 0
         local neutralCount = 0
@@ -3639,24 +3337,24 @@ function love.update(dt)
         
         -- Win condition 1: Only blue units left
         if totalUnits > 0 and blueCount > 0 and redCount == 0 and neutralCount == 0 then
-            if not Game.levelTransitionActive then
+            if not Game.levelTransition.active then
                 advanceToNextLevel("blue_only")
             end
         -- Win condition 2: Only red units left
         elseif totalUnits > 0 and redCount > 0 and blueCount == 0 and neutralCount == 0 then
-            if not Game.levelTransitionActive then
+            if not Game.levelTransition.active then
                 advanceToNextLevel("red_only")
             end
         -- Win condition 3: No units left
         elseif totalUnits == 0 then
-            if not Game.levelTransitionActive and not Game.gameOverActive then
+            if not Game.levelTransition.active and not Game.modes.gameOver then
                 handleGameOver("no_units")
             end
         -- Win condition 4: Only neutral units left (grey win condition)
         -- IMPORTANT: This win condition is ONLY active if at least one unit has been converted on this stage
         -- This prevents winning immediately if all units start as neutral and none are converted
         elseif totalUnits > 0 and neutralCount == totalUnits and Game.hasUnitBeenConverted then
-            if not Game.levelTransitionActive then
+            if not Game.levelTransition.active then
                 advanceToNextLevel("neutral_only")
             end
         end
@@ -3715,11 +3413,11 @@ function drawGame()
         end
         
     -- Draw background image if loaded and enabled (full screen) - now affected by shake
-    if Game.showBackgroundForeground and Game.background then
+    if Game.showBackgroundForeground and Game.assets.background then
         love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(Game.background, 0, 0, 0, 
-            Constants.SCREEN_WIDTH / Game.background:getWidth(),
-            Constants.SCREEN_HEIGHT / Game.background:getHeight())
+        love.graphics.draw(Game.assets.background, 0, 0, 0, 
+            Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
+            Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
     end
     
     World.draw(function()
@@ -3834,16 +3532,16 @@ function drawGame()
     end
     
     -- Draw terminal text for game over
-    if Game.gameOverActive then
-        TopBanner.drawGameOverText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
+    if Game.modes.gameOver then
+        TopBanner.drawGameOverText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
     end
     
     -- Draw foreground image if loaded and enabled (full screen, on top of game elements) - now affected by shake
-    if Game.showBackgroundForeground and Game.foreground then
+    if Game.showBackgroundForeground and Game.assets.foreground then
         love.graphics.setColor(1, 1, 1, 1)
-        love.graphics.draw(Game.foreground, 0, 0, 0, 
-            Constants.SCREEN_WIDTH / Game.foreground:getWidth(),
-            Constants.SCREEN_HEIGHT / Game.foreground:getHeight())
+        love.graphics.draw(Game.assets.foreground, 0, 0, 0, 
+            Constants.SCREEN_WIDTH / Game.assets.foreground:getWidth(),
+            Constants.SCREEN_HEIGHT / Game.assets.foreground:getHeight())
     end
     
     -- Draw HUD - now affected by shake and CRT
@@ -3859,7 +3557,7 @@ function drawGame()
     drawScoreWindow()
     
     -- Draw multiplier window (below engagement plot) - skip in demo mode
-    if not Game.demoMode then
+    if not Game.modes.demo then
         drawMultiplierWindow()
     end
     
@@ -3922,7 +3620,7 @@ local function calculateWindowBounds()
     maxY = math.max(maxY, SCORE_Y + SCORE_HEIGHT)
     
     -- Multiplier window (if active)
-    if not Game.demoMode then
+    if not Game.modes.demo then
         local MULTIPLIER_WIDTH = PLOT_WIDTH
         local MULTIPLIER_HEIGHT = Constants.UI.MULTIPLIER_WINDOW_HEIGHT
         local MULTIPLIER_X = PLOT_X
@@ -3972,14 +3670,12 @@ function love.draw()
     -- sceneCanvas: canvas containing the scene before plexi (for bright pixel detection)
     local function drawPlexiOverlay(sceneCanvas)
         if Game.plexi then
-            -- Scale up by 15%
-            local scaleFactor = 1.15
-            local plexiScaleX = (Constants.SCREEN_WIDTH / Game.plexi:getWidth()) * scaleFactor
-            local plexiScaleY = (Constants.SCREEN_HEIGHT / Game.plexi:getHeight()) * scaleFactor
+            -- Calculate plexi scale (15% larger)
+            local plexiScaleX, plexiScaleY = calculatePlexiScale()
             
-            -- Draw first plexi layer (additive, 12% opacity)
-            love.graphics.setBlendMode("add")
-            love.graphics.setColor(1, 1, 1, 0.12)  -- 12% opacity
+                -- Draw first plexi layer (additive)
+                love.graphics.setBlendMode("add")
+                love.graphics.setColor(1, 1, 1, Constants.UI.PLEXI_OPACITY)
             
             if isFullscreen then
                 -- Draw at fullscreen resolution to match CRT output
@@ -4143,21 +3839,21 @@ function love.draw()
     end
     
     -- Draw joystick test screen (from attract mode)
-    if Game.joystickTestMode then
+    if Game.modes.joystickTest then
         drawWithCRT(drawJoystickTestScreen)
         MonitorFrame.draw()
         return
     end
 
     -- Draw booting screen (before logo)
-    if Game.bootingMode then
-        drawWithCRT(drawBootingScreen)
+    if Game.modes.booting then
+        drawWithCRT(BootingScreen.draw)
         MonitorFrame.draw()
         return
     end
     
     -- Draw matrix screen (before logo)
-    if Game.matrixMode then
+    if Game.modes.matrix then
         love.graphics.clear(0, 0, 0)  -- Black background
         MatrixEffect.draw()
         DynamicMusic.draw()  -- Draw on top of matrix screen
@@ -4166,15 +3862,15 @@ function love.draw()
     end
     
     -- Draw logo screen (before attract mode)
-    if Game.logoMode then
-        drawWithCRT(drawLogoScreen)
+    if Game.modes.logo then
+        drawWithCRT(LogoScreen.draw)
         DynamicMusic.draw()  -- Draw on top of logo screen
         MonitorFrame.draw()
         return
     end
     
     -- Draw attract mode screen
-    if Game.attractMode then
+    if Game.modes.attract then
         drawWithCRT(AttractMode.draw)
         DynamicMusic.draw()  -- Draw on top of attract mode
         MonitorFrame.draw()
@@ -4182,7 +3878,7 @@ function love.draw()
     end
     
     -- Draw demo mode screen
-    if Game.demoMode then
+    if Game.modes.demo then
         drawWithCRT(DemoMode.draw)
         MonitorFrame.draw()
         Godray.draw()
@@ -4190,14 +3886,14 @@ function love.draw()
     end
     
     -- Draw intro video (before intro screen)
-    if Game.videoMode then
-        drawWithCRT(drawIntroVideo)
+    if Game.modes.video then
+        drawWithCRT(IntroVideoScreen.draw)
         
         -- Draw video after CRT effect but before monitor frame
-        if Game.introVideo then
+        if Game.assets.introVideo then
             -- Get video dimensions
-            local videoWidth = Game.introVideo:getWidth()
-            local videoHeight = Game.introVideo:getHeight()
+            local videoWidth = Game.assets.introVideo:getWidth()
+            local videoHeight = Game.assets.introVideo:getHeight()
             
             -- Calculate scaling to fit screen while maintaining aspect ratio
             local scaleX = Constants.SCREEN_WIDTH / videoWidth
@@ -4212,7 +3908,7 @@ function love.draw()
             
             -- Draw video centered (after CRT, before monitor frame)
             love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.draw(Game.introVideo, x, y, 0, scale, scale)
+            love.graphics.draw(Game.assets.introVideo, x, y, 0, scale, scale)
         else
             -- If video doesn't exist, show a message (shouldn't happen, but fallback)
             love.graphics.setColor(1, 1, 1, 1)
@@ -4228,7 +3924,7 @@ function love.draw()
     end
     
     -- Draw intro screen (check before AUDITOR to prevent showing CRITICAL_ERROR on new game)
-    if Game.introMode then
+    if Game.modes.intro then
         drawWithCRT(drawIntroScreen)
         MonitorFrame.draw()
         Godray.draw()
@@ -4236,9 +3932,9 @@ function love.draw()
     end
     
     -- Draw level completion screen (Chase Paxton)
-    if Game.winTextActive then
+    if Game.modes.winText then
         -- Draw win text + scanlines + matrix together, then apply CRT to the combined result
-        if Game.matrixTransitionActive then
+        if Game.levelTransition.matrixActive then
             drawWithCRT(function()
                 drawWinTextScreen()
                 -- Draw animated scanlines on top of win text
@@ -4255,15 +3951,15 @@ function love.draw()
     end
     
     -- Draw animating webcam window (level complete sequence)
-    if Game.webcamWindowAnimating or Game.webcamWindowDialogueActive then
+    if Game.webcamWindow.animating or Game.webcamWindow.dialogueActive then
         -- Draw everything just like normal gameplay, but with animating webcam window
         drawWithCRT(function()
             -- Draw background image if loaded and enabled
-            if Game.showBackgroundForeground and Game.background then
+            if Game.showBackgroundForeground and Game.assets.background then
                 love.graphics.setColor(1, 1, 1, 1)
-                love.graphics.draw(Game.background, 0, 0, 0, 
-                    Constants.SCREEN_WIDTH / Game.background:getWidth(),
-                    Constants.SCREEN_HEIGHT / Game.background:getHeight())
+                love.graphics.draw(Game.assets.background, 0, 0, 0, 
+                    Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
+                    Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
             end
             
             -- Draw frozen game state (same as drawGame but frozen)
@@ -4314,11 +4010,11 @@ function love.draw()
             end
             
             -- Draw foreground image if loaded and enabled
-            if Game.showBackgroundForeground and Game.foreground then
+            if Game.showBackgroundForeground and Game.assets.foreground then
                 love.graphics.setColor(1, 1, 1, 1)
-                love.graphics.draw(Game.foreground, 0, 0, 0, 
-                    Constants.SCREEN_WIDTH / Game.foreground:getWidth(),
-                    Constants.SCREEN_HEIGHT / Game.foreground:getHeight())
+                love.graphics.draw(Game.assets.foreground, 0, 0, 0, 
+                    Constants.SCREEN_WIDTH / Game.assets.foreground:getWidth(),
+                    Constants.SCREEN_HEIGHT / Game.assets.foreground:getHeight())
             end
             
             -- Draw HUD
@@ -4334,7 +4030,7 @@ function love.draw()
             drawScoreWindow()
             
             -- Draw multiplier window (below engagement plot) - skip in demo mode
-            if not Game.demoMode then
+            if not Game.modes.demo then
                 drawMultiplierWindow()
             end
             
@@ -4347,7 +4043,7 @@ function love.draw()
     end
     
     -- Draw life lost auditor screen (engagement depleted but lives remain)
-    if Game.lifeLostAuditorActive then
+    if Game.modes.lifeLostAuditor then
         drawWithCRT(drawLifeLostAuditor)
         -- Respect shouldDrawOnTop() check - only draw on top when banner has moved out of frame
         if TopBanner.shouldDrawOnTop() then
@@ -4359,14 +4055,14 @@ function love.draw()
             TopBanner.draw()
             MonitorFrame.draw()
         end
-        TopBanner.drawLifeLostText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
+        TopBanner.drawLifeLostText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
         Godray.draw()
         TextTrace.draw()
         return
     end
     
     -- Draw game over screen (same as life lost but with different text)
-    if Game.gameOverActive then
+    if Game.modes.gameOver then
         drawWithCRT(drawGameOver)
         -- Respect shouldDrawOnTop() check - only draw on top when banner has moved out of frame
         if TopBanner.shouldDrawOnTop() then
@@ -4378,14 +4074,14 @@ function love.draw()
             TopBanner.draw()
             MonitorFrame.draw()
         end
-        TopBanner.drawGameOverText(Game.glitchTextTimer, Game.glitchTextWriteProgress, Game.fonts.terminal)
+        TopBanner.drawGameOverText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
         Godray.draw()
         TextTrace.draw()
         return
     end
     
     -- Draw matrix transition overlay (for level transitions and restarts)
-    if Game.matrixTransitionActive then
+    if Game.levelTransition.matrixActive then
         -- Draw game + scanlines + matrix together, then apply CRT to the combined result
         drawWithCRT(function()
             drawGame()
@@ -4399,7 +4095,7 @@ function love.draw()
     end
     
     -- Draw ready screen (GET READY / GO!)
-    if Game.readyActive then
+    if Game.modes.ready then
         drawWithCRT(drawReadyScreen)
         TopBanner.draw()
         MonitorFrame.draw()
@@ -4428,7 +4124,7 @@ function love.draw()
     Godray.draw()
     
     -- Draw name entry screen (draw after godrays so rays appear on top)
-    if Game.nameEntryActive then
+    if Game.modes.nameEntry then
         -- Draw name entry rays and text (on top of everything except text itself)
         drawNameEntryRaysAndText()
     end
@@ -4501,20 +4197,20 @@ function drawMultiplierWindow()
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT, "Multiplier")
     
-    if Game.pointMultiplierActive then
+    if Game.pointMultiplier.valueActive then
         -- Draw multiplier content - adjust for title bar
         love.graphics.setFont(Game.fonts.medium)
         
         -- Multiplier value with gold/yellow pulsing
         local flash = (math.sin(love.timer.getTime() * 3) + 1) / 2
         love.graphics.setColor(1, 0.8 + flash * 0.2, 0.2, 1)
-        local multiplierText = "x" .. Game.pointMultiplier .. " POINT MULTIPLIER"
+        local multiplierText = "x" .. Game.pointMultiplier.value .. " POINT MULTIPLIER"
         local multiplierWidth = Game.fonts.medium:getWidth(multiplierText)
         love.graphics.print(multiplierText, MULTIPLIER_X + (MULTIPLIER_WIDTH - multiplierWidth) / 2, MULTIPLIER_Y + titleBarHeight + borderWidth + 10)
         
         -- Timer
         love.graphics.setColor(1, 1, 1, 0.9)
-        local timerText = math.ceil(Game.pointMultiplierTimer) .. "s remaining"
+        local timerText = math.ceil(Game.timers.pointMultiplier) .. "s remaining"
         local timerWidth = Game.fonts.medium:getWidth(timerText)
         love.graphics.print(timerText, MULTIPLIER_X + (MULTIPLIER_WIDTH - timerWidth) / 2, MULTIPLIER_Y + titleBarHeight + borderWidth + 35)
     else
@@ -4546,24 +4242,24 @@ function drawHUD()
     if Game.isUpgraded then love.graphics.setColor(1, 1, 0); love.graphics.print("WEAPONS UPGRADED!", 10, 70) end
     
     -- Draw point multiplier announcement (giant flashing "2X" with sparks) - skip in demo mode
-    if Game.pointMultiplierActive and not Game.demoMode then
+    if Game.pointMultiplier.valueActive and not Game.modes.demo then
         local centerX, centerY = getScreenCenter()
         centerY = centerY - 100
         
         -- Draw spark particles
-        drawSparkParticles(Game.pointMultiplierSparks)
+        ParticleSystem.draw(Game.pointMultiplier.valueSparks)
         
         -- Calculate flash alpha
         local flashAlpha = 1.0
-        if Game.pointMultiplierFlashTimer > 0 then
+        if Game.timers.pointMultiplierFlash > 0 then
             -- Flash animation during first 2 seconds
-            flashAlpha = 0.6 + 0.4 * (math.sin(Game.pointMultiplierFlashTimer * 12) + 1) / 2
+            flashAlpha = 0.6 + 0.4 * (math.sin(Game.timers.pointMultiplierFlash * 12) + 1) / 2
         end
         
         -- Use cached giant font for "2X" text
         love.graphics.setFont(Game.fonts.announcementGiant)
         
-        local multiplierText = Game.pointMultiplier .. "X"
+        local multiplierText = Game.pointMultiplier.value .. "X"
         local multiplierWidth = Game.fonts.announcementGiant:getWidth(multiplierText)
         local multiplierX = centerX - multiplierWidth / 2
         local multiplierY = centerY - Constants.UI.FONT_ANNOUNCEMENT_GIANT / 2
@@ -4597,11 +4293,11 @@ function drawHUD()
     end
     
     -- Draw rapid fire announcement (giant flashing "RAPID FIRE" with sparks)
-    if Game.rapidFireTextTimer > 0 then
+    if Game.timers.rapidFireText > 0 then
         local centerX = Constants.SCREEN_WIDTH / 2
         -- Position rapid fire text above multiplier text if multiplier is active
         local centerY
-        if Game.pointMultiplierActive then
+        if Game.pointMultiplier.valueActive then
             -- Place above multiplier text (multiplier is at SCREEN_HEIGHT/2 - 100, with 120px font)
             -- Rapid fire should be about 150px above the multiplier text center
             centerY = Constants.SCREEN_HEIGHT / 2 - 250
@@ -4612,23 +4308,23 @@ function drawHUD()
         
         -- Draw spark particles (adjust their visual position if multiplier is active)
         local sparkOffsetY = 0
-        if Game.pointMultiplierActive then
+        if Game.pointMultiplier.valueActive then
             -- Adjust spark positions to match the rapid fire text position above multiplier
             sparkOffsetY = -150  -- Move sparks up by 150px to match text position
         end
-        drawSparkParticles(Game.rapidFireSparks, sparkOffsetY)
+        ParticleSystem.draw(Game.rapidFire.sparks, sparkOffsetY)
         
         -- Calculate flash alpha and fade out after 3 seconds
         local flashAlpha = 1.0
-        local flashTimer = 3.0 - Game.rapidFireTextTimer
+        local flashTimer = 3.0 - Game.timers.rapidFireText
         if flashTimer < 2.0 then
             -- Flash animation during first 2 seconds
             flashAlpha = 0.6 + 0.4 * (math.sin(flashTimer * 12) + 1) / 2
         end
         -- Fade out after 3 seconds
-        if Game.rapidFireTextTimer < 1.0 then
+        if Game.timers.rapidFireText < 1.0 then
             -- Fade out over last second
-            flashAlpha = flashAlpha * (Game.rapidFireTextTimer / 1.0)
+            flashAlpha = flashAlpha * (Game.timers.rapidFireText / 1.0)
         end
         
         -- Use cached giant font for "RAPID FIRE" text
@@ -4669,7 +4365,7 @@ function drawHUD()
     
     
     -- Display level transition message
-    if Game.levelTransitionActive then
+    if Game.levelTransition.active then
         love.graphics.setFont(Game.fonts.large)
         love.graphics.setColor(0, 1, 0)
         local message = Popups.getWinMessage(Game.winCondition)
@@ -4682,7 +4378,7 @@ function drawHUD()
         local nextLevelWidth = Game.fonts.medium:getWidth(nextLevelMsg)
         love.graphics.print(nextLevelMsg, (Constants.SCREEN_WIDTH - nextLevelWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
     -- Removed old game over screen messages - banner drop replaces them
-    elseif Game.nameEntryActive then
+    elseif Game.modes.nameEntry then
         -- Name entry screen - only terminal text is drawn (rays and text drawn separately after godrays)
         -- All UI elements (box, title, score, instructions) removed - only green terminal text remains
     end

@@ -83,7 +83,7 @@ function Godray.draw()
     end
     
     -- Draw during playing, life lost, or game over states
-    if Game.gameState ~= "playing" and not Game.lifeLostAuditorActive and not Game.gameOverActive then
+    if Game.gameState ~= "playing" and not Game.modes.lifeLostAuditor and not Game.modes.gameOver then
         return
     end
     

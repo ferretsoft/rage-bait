@@ -10,44 +10,45 @@ local Engagement = require("src.core.engagement")
 local DynamicMusic = require("src.core.dynamic_music")
 local TopBanner = require("src.core.top_banner")
 local MonitorFrame = require("src.core.monitor_frame")
+local HighScores = require("src.core.high_scores")
 
 local InputHandler = {}
 
 -- Helper function to submit high score name
 local function submitNameEntry()
-    local name = Game.nameEntryText:gsub("^%s+", ""):gsub("%s+$", "")  -- Trim whitespace
+    local name = Game.nameEntry.text:gsub("^%s+", ""):gsub("%s+$", "")  -- Trim whitespace
     if name == "" or name == "AAA" then
         name = "AAA"  -- Default name
     end
-    addHighScore(name, Game.score)
-    Game.nameEntryActive = false
-    Game.nameEntryText = ""
-    Game.nameEntryCursor = 1
-    Game.nameEntryCharIndex = {}
+    HighScores.add(name, Game.score)
+    Game.modes.nameEntry = false
+    Game.nameEntry.text = ""
+    Game.nameEntry.cursor = 1
+    Game.nameEntry.charIndex = {}
     returnToAttractMode()
 end
 
 -- Helper function to update name entry character
 local function updateNameEntryChar()
     local nameChars = {}
-    for i = 1, Game.nameEntryMaxLength do
+    for i = 1, Game.nameEntry.maxLength do
         local idx = Game.nameEntryCharIndex[i] or 1
         nameChars[i] = Game.nameEntryCharSet:sub(idx, idx)
     end
-    Game.nameEntryText = table.concat(nameChars)
+    Game.nameEntry.text = table.concat(nameChars)
 end
 
 -- Handle keyboard key press
 function InputHandler.handleKeyPressed(key)
     -- Handle matrix screen: space to continue to logo
-    if Game.matrixMode then
+    if Game.modes.matrix then
         if key == "space" then
-            Game.matrixMode = false
+            Game.modes.matrix = false
             Game.matrixTimer = 0
-            Game.logoMode = true
-            Game.logoTimer = 0
+            Game.modes.logo = true
+            Game.timers.logo = 0
             Game.previousLogoTimer = 0
-            Game.logoFanfarePlayed = false
+            Game.logo.fanfarePlayed = false
             return true
         end
         -- Allow dynamic music sandbox to open during matrix screen
@@ -88,19 +89,19 @@ function InputHandler.handleKeyPressed(key)
     -- Quick start: Press 'q' to skip directly to gameplay from any screen
     if key == "q" then
         -- Skip all intro screens and go straight to gameplay
-        Game.bootingMode = false
-        Game.logoMode = false
-        Game.attractMode = false
-        Game.videoMode = false
-        Game.introMode = false
-        Game.joystickTestMode = false
-        Game.demoMode = false
+        Game.modes.booting = false
+        Game.modes.logo = false
+        Game.modes.attract = false
+        Game.modes.video = false
+        Game.modes.intro = false
+        Game.modes.joystickTest = false
+        Game.modes.demo = false
         
         -- Stop video if playing
-        if Game.introVideo then
+        if Game.assets.introVideo then
             pcall(function()
-                if Game.introVideo.pause then
-                    Game.introVideo:pause()
+                if Game.assets.introVideo.pause then
+                    Game.assets.introVideo:pause()
                 end
             end)
         end
@@ -114,7 +115,7 @@ function InputHandler.handleKeyPressed(key)
     end
     
     -- Handle dynamic music player (only at logo or attract screen)
-    if Game.logoMode or Game.attractMode then
+    if Game.modes.logo or Game.modes.attract then
         if key == "m" then
             DynamicMusic.toggle()
             -- Mute other sounds when opening sandbox
@@ -150,17 +151,17 @@ function InputHandler.handleKeyPressed(key)
     end
     
     -- Handle name entry (arcade style)
-    if Game.nameEntryActive then
+    if Game.modes.nameEntry then
         local charSet = Game.nameEntryCharSet
-        local cursor = Game.nameEntryCursor
+        local cursor = Game.nameEntry.cursor
         local charIndex = Game.nameEntryCharIndex[cursor] or 1
         
         if key == "left" then
             -- Move cursor left
-            Game.nameEntryCursor = math.max(1, cursor - 1)
+            Game.nameEntry.cursor = math.max(1, cursor - 1)
         elseif key == "right" then
             -- Move cursor right
-            Game.nameEntryCursor = math.min(Game.nameEntryMaxLength, cursor + 1)
+            Game.nameEntry.cursor = math.min(Game.nameEntry.maxLength, cursor + 1)
         elseif key == "up" then
             -- Change character up
             charIndex = charIndex + 1
@@ -185,24 +186,24 @@ function InputHandler.handleKeyPressed(key)
     end
     
     -- Handle joystick test exit
-    if Game.joystickTestMode then
+    if Game.modes.joystickTest then
         if key == "escape" or key == "space" or key == "return" or key == "enter" then
-            Game.joystickTestMode = false
-            Game.attractMode = true
-            Game.attractModeTimer = 0
+            Game.modes.joystickTest = false
+            Game.modes.attract = true
+            Game.modes.attractTimer = 0
         end
         return true
     end
 
     -- Handle coin insertion and options in attract mode
-    if Game.attractMode then
+    if Game.modes.attract then
         if key == "space" or key == "return" or key == "enter" then
             startGame()
             return true
         elseif key == "j" then
             -- Open joystick test screen from attract mode
-            Game.attractMode = false
-            Game.joystickTestMode = true
+            Game.modes.attract = false
+            Game.modes.joystickTest = true
             return true
         elseif key == "d" then
             -- Start demo mode
@@ -212,51 +213,51 @@ function InputHandler.handleKeyPressed(key)
     end
     
     -- Handle video mode input (allow skipping)
-    if Game.videoMode then
+    if Game.modes.video then
         if key == "space" or key == "return" or key == "enter" or key == "escape" then
             -- Skip video and go directly to intro screen
-            if Game.introVideo then
+            if Game.assets.introVideo then
                 -- Safely check if video is playing and pause it
                 local success, isPlaying = pcall(function()
-                    return Game.introVideo:isPlaying()
+                    return Game.assets.introVideo:isPlaying()
                 end)
                 if success and isPlaying then
                     pcall(function()
-                        if Game.introVideo.pause then
-                            Game.introVideo:pause()
+                        if Game.assets.introVideo.pause then
+                            Game.assets.introVideo:pause()
                         end
                     end)
                 end
             end
-            Game.videoMode = false
-            Game.introMode = true
+            Game.modes.video = false
+            Game.modes.intro = true
             Game.introTimer = 0
-            Game.introStep = 1
+            Game.intro.step = 1
             Game.introMusicFadeActive = false
             return true
         end
     end
     
     -- Handle demo mode input
-    if Game.demoMode then
+    if Game.modes.demo then
         if DemoMode.keypressed(key) then
             return true
         end
     end
     
     -- Handle input during intro screen
-    if Game.introMode then
+    if Game.modes.intro then
         if key == "space" or key == "return" or key == "enter" then
             -- Skip to gameplay
             startGameplay()
             return true
         elseif key == "right" or key == "d" then
             -- Advance to next step
-            if Game.introStep < #ChasePaxton.INTRO_MESSAGES then
-                Game.introStep = Game.introStep + 1
+            if Game.intro.step < #ChasePaxton.INTRO_MESSAGES then
+                Game.intro.step = Game.intro.step + 1
                 -- Reset timer for new step
                 local stepStartTime = 0
-                for i = 1, Game.introStep - 1 do
+                for i = 1, Game.intro.step - 1 do
                     stepStartTime = stepStartTime + ChasePaxton.INTRO_MESSAGES[i].duration
                 end
                 Game.introTimer = stepStartTime
@@ -348,7 +349,7 @@ function InputHandler.handleKeyPressed(key)
     
     -- Debug mode: Instant win (F2) - only when debug mode is active and game is playing
     if key == "f2" and Game.debugMode then
-        if Game.gameState == "playing" and not Game.levelTransitionActive and not Game.gameOverActive then
+        if Game.gameState == "playing" and not Game.levelTransition.active and not Game.modes.gameOver then
             -- Trigger win condition by converting all units to blue
             for _, u in ipairs(Game.units) do
                 if not u.isDead then
@@ -363,7 +364,7 @@ function InputHandler.handleKeyPressed(key)
     
     -- Debug mode: Instant lose (F3) - only when debug mode is active and game is playing
     if key == "f3" and Game.debugMode then
-        if Game.gameState == "playing" and not Game.levelTransitionActive and not Game.gameOverActive then
+        if Game.gameState == "playing" and not Game.levelTransition.active and not Game.modes.gameOver then
             -- Trigger lose condition by depleting engagement (same as natural life lost)
             Engagement.value = 0
             -- The engagement check in love.update() will detect this and call handleGameOver("engagement_depleted")
@@ -373,7 +374,7 @@ function InputHandler.handleKeyPressed(key)
     
     -- Debug mode: Instant game over (F4) - only when debug mode is active and game is playing
     if key == "f4" and Game.debugMode then
-        if Game.gameState == "playing" and not Game.levelTransitionActive and not Game.gameOverActive then
+        if Game.gameState == "playing" and not Game.levelTransition.active and not Game.modes.gameOver then
             -- Trigger game over by setting lives to 0 and calling handleGameOver
             Game.lives = 0
             handleGameOver("no_units")
@@ -423,8 +424,8 @@ end
 -- Handle joystick button press
 function InputHandler.handleJoystickPressed(joystick, button)
     -- Handle name entry (arcade style)
-    if Game.nameEntryActive then
-        local cursor = Game.nameEntryCursor
+    if Game.modes.nameEntry then
+        local cursor = Game.nameEntry.cursor
         
         -- Button 3 = submit/commit at any time
         if button == 3 then
@@ -433,18 +434,18 @@ function InputHandler.handleJoystickPressed(joystick, button)
         -- Button 1 or 2 (fire buttons) = move cursor right or submit if at last position
         elseif button == 1 or button == 2 then
             -- If at last position, submit; otherwise move cursor right
-            if cursor >= Game.nameEntryMaxLength then
+            if cursor >= Game.nameEntry.maxLength then
                 submitNameEntry()
             else
                 -- Move cursor right
-                Game.nameEntryCursor = math.min(Game.nameEntryMaxLength, cursor + 1)
+                Game.nameEntry.cursor = math.min(Game.nameEntry.maxLength, cursor + 1)
             end
             return true
         end
     end
     
     -- Handle attract mode navigation
-    if Game.attractMode and not Game.joystickTestMode then
+    if Game.modes.attract and not Game.modes.joystickTest then
         if button == 4 then
             -- Button 4 = start game (equivalent to SPACE/ENTER)
             startGame()
@@ -455,25 +456,25 @@ function InputHandler.handleJoystickPressed(joystick, button)
             return true
         else
             -- Any other button opens joystick test screen
-            Game.attractMode = false
-            Game.joystickTestMode = true
+            Game.modes.attract = false
+            Game.modes.joystickTest = true
             return true
         end
     end
     
     -- Handle joystick test mode exit
-    if Game.joystickTestMode then
+    if Game.modes.joystickTest then
         if button == 4 then
             -- Button 4 = exit test mode and return to attract mode
-            Game.joystickTestMode = false
-            Game.attractMode = true
-            Game.attractModeTimer = 0
+            Game.modes.joystickTest = false
+            Game.modes.attract = true
+            Game.modes.attractTimer = 0
             return true
         end
     end
     
     -- Handle intro screen (Chase Paxton onboarding)
-    if Game.introMode then
+    if Game.modes.intro then
         if button == 4 then
             -- Button 4 = skip to gameplay (equivalent to SPACE/ENTER)
             startGameplay()
@@ -486,12 +487,12 @@ function InputHandler.handleJoystickPressed(joystick, button)
         if button == 1 then
             -- Button 1 = red fire
             Game.turret:startCharge("red")
-            Game.joystickButton1Pressed = true
+            Game.joystick.button1Pressed = true
             return true
         elseif button == 2 then
             -- Button 2 = blue fire
             Game.turret:startCharge("blue")
-            Game.joystickButton2Pressed = true
+            Game.joystick.button2Pressed = true
             return true
         end
     end
@@ -502,7 +503,7 @@ end
 -- Handle joystick button release
 function InputHandler.handleJoystickReleased(joystick, button)
     -- Don't process button releases during name entry
-    if Game.nameEntryActive then return false end
+    if Game.modes.nameEntry then return false end
     
     if not Game.turret then return false end
     -- Don't allow releasing charge if game state is not playing
@@ -511,12 +512,12 @@ function InputHandler.handleJoystickReleased(joystick, button)
     -- Handle button releases for firing
     if button == 1 then
         -- Button 1 released = release red charge
-        Game.joystickButton1Pressed = false
+        Game.joystick.button1Pressed = false
         Game.turret:releaseCharge(Game.projectiles)
         return true
     elseif button == 2 then
         -- Button 2 released = release blue charge
-        Game.joystickButton2Pressed = false
+        Game.joystick.button2Pressed = false
         Game.turret:releaseCharge(Game.projectiles)
         return true
     end
@@ -527,9 +528,9 @@ end
 -- Handle joystick axis input (for DPad/analog stick in name entry)
 function InputHandler.handleJoystickAxis(joystick, axis, value)
     -- Handle name entry with joystick axes (DPad/analog stick)
-    if Game.nameEntryActive then
+    if Game.modes.nameEntry then
         local charSet = Game.nameEntryCharSet
-        local cursor = Game.nameEntryCursor
+        local cursor = Game.nameEntry.cursor
         local charIndex = Game.nameEntryCharIndex[cursor] or 1
         
         -- Use deadzone to prevent drift
@@ -565,9 +566,9 @@ end
 -- Handle joystick hat input (for DPad in name entry)
 function InputHandler.handleJoystickHat(joystick, hat, direction)
     -- Handle name entry with joystick hat (DPad)
-    if Game.nameEntryActive then
+    if Game.modes.nameEntry then
         local charSet = Game.nameEntryCharSet
-        local cursor = Game.nameEntryCursor
+        local cursor = Game.nameEntry.cursor
         local charIndex = Game.nameEntryCharIndex[cursor] or 1
         
         if direction == "u" or direction == "lu" or direction == "ru" then

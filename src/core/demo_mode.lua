@@ -288,11 +288,11 @@ function DemoMode.start()
     controllerState.showArrowRight = false
     controllerState.arrowTimer = 0
     
-    Game.attractMode = false
-    Game.attractModeTimer = 0
-    Game.demoMode = true
+    Game.modes.attract = false
+    Game.modes.attractTimer = 0
+    Game.modes.demo = true
     Game.demoTimer = 0
-    Game.demoStep = 1
+    Game.demo.step = 1
     Game.demoAITimer = 0
     Game.demoTargetUnit = nil
     Game.demoCharging = false
@@ -323,8 +323,8 @@ function DemoMode.start()
     Game.levelTransitionActive = false
     Game.levelCompleteScreenActive = false
     Game.levelCompleteScreenTimer = 0
-    Game.winTextActive = false
-    Game.slowMoActive = false
+    Game.modes.winText = false
+    Game.slowMo.active = false
     Game.slowMoDuration = 0
     Game.timeScale = 1.0
     
@@ -383,7 +383,7 @@ function DemoMode.updateAI(dt)
     if Game.demoWaitingForMessage then return end  -- Don't act while showing message
     if Game.demoActionComplete then return end  -- Don't act after action is complete
     
-    local script = DEMO_SCRIPT[Game.demoStep]
+    local script = DEMO_SCRIPT[Game.demo.step]
     if not script then return end
     
     -- Initialize script actions when starting a new step
@@ -399,7 +399,7 @@ function DemoMode.updateAI(dt)
         -- Step 5 is informational - keep units and toxic sludge from step 4
         -- Step 6 needs units to stay for isolation demo
         -- Step 7 needs multiple units to show fighting
-        if Game.demoStep ~= 4 and Game.demoStep ~= 5 and Game.demoStep ~= 6 and Game.demoStep ~= 7 then
+        if Game.demo.step ~= 4 and Game.demo.step ~= 5 and Game.demo.step ~= 6 and Game.demo.step ~= 7 then
             for i = #Game.units, 1, -1 do
                 local u = Game.units[i]
                 if u.body and not u.isDead then
@@ -457,7 +457,7 @@ function DemoMode.updateAI(dt)
                     
                     if action.targetUnitIndex then
                         -- Use specific unit index from script
-                        local script = DEMO_SCRIPT[Game.demoStep]
+                        local script = DEMO_SCRIPT[Game.demo.step]
                         if script and script.spawnUnits and script.spawnUnits[action.targetUnitIndex] then
                             -- Find the unit at the spawn position
                             local targetX = script.spawnUnits[action.targetUnitIndex].x
@@ -481,7 +481,7 @@ function DemoMode.updateAI(dt)
                         for _, unit in ipairs(Game.units) do
                             if not unit.isDead then
                                 -- For steps 2-3, only target neutral units to avoid enraging converted units
-                                if Game.demoStep <= 3 and unit.state ~= "neutral" then
+                                if Game.demo.step <= 3 and unit.state ~= "neutral" then
                                     -- Skip non-neutral units in early steps
                                 else
                                     local ux, uy = unit.body:getPosition()
@@ -507,7 +507,7 @@ function DemoMode.updateAI(dt)
                         Game.demoTargetDistance = math.max(50, dist - 10)
                     else
                         -- Calculate distance to target position from rotate action
-                        local script = DEMO_SCRIPT[Game.demoStep]
+                        local script = DEMO_SCRIPT[Game.demo.step]
                         if script and script.actions then
                             for _, act in ipairs(script.actions) do
                                 if act.type == "rotate" then
@@ -552,7 +552,7 @@ function DemoMode.updateAI(dt)
                 end
             elseif action.type == "freeze" then
                 -- Trigger slow-motion freeze when toxic sludge appears
-                Game.slowMoActive = true
+                Game.slowMo.active = true
                 Game.slowMoTimer = 0
                 Game.slowMoDuration = 1.5
                 Game.timeScale = 1.0
@@ -565,12 +565,12 @@ end
 -- Check if demo step verification is complete
 function DemoMode.checkVerification()
     -- Step 1: Welcome message - no verification needed
-    if Game.demoStep == 1 then
+    if Game.demo.step == 1 then
         return true
     end
     
     -- Step 2-3: Need to verify a unit was converted
-    if Game.demoStep == 2 or Game.demoStep == 3 then
+    if Game.demo.step == 2 or Game.demo.step == 3 then
         -- Check if any unit was converted (changed from neutral to passive)
         for _, unit in ipairs(Game.units) do
             if not unit.isDead and unit.state == "passive" and unit.alignment ~= "none" then
@@ -581,7 +581,7 @@ function DemoMode.checkVerification()
     end
     
     -- Step 4: Need to verify a unit was enraged AND toxic sludge appeared (from killed units)
-    if Game.demoStep == 4 then
+    if Game.demo.step == 4 then
         local unitEnraged = false
         for _, unit in ipairs(Game.units) do
             if not unit.isDead and unit.state == "enraged" then
@@ -602,7 +602,7 @@ function DemoMode.checkVerification()
     
     -- Step 5: Need to verify toxic sludge appeared from killed units (informational step)
     -- Since step 4 already ensures toxic sludge exists, this should always pass
-    if Game.demoStep == 5 then
+    if Game.demo.step == 5 then
         -- Check if toxic hazard exists (from killed units in step 4)
         for _, hazard in ipairs(Game.hazards) do
             if hazard.radius > 0 and hazard.timer > 0 then
@@ -613,7 +613,7 @@ function DemoMode.checkVerification()
     end
     
     -- Step 6: Need to verify a unit went insane (exploded from isolation)
-    if Game.demoStep == 6 then
+    if Game.demo.step == 6 then
         -- Check if any unit has gone insane
         for _, unit in ipairs(Game.units) do
             if unit.isInsane then
@@ -636,7 +636,7 @@ function DemoMode.checkVerification()
     end
     
     -- Step 7: Need to verify units are fighting (different alignments exist)
-    if Game.demoStep == 7 then
+    if Game.demo.step == 7 then
         local hasRed = false
         local hasBlue = false
         for _, unit in ipairs(Game.units) do
@@ -649,7 +649,7 @@ function DemoMode.checkVerification()
     end
     
     -- Step 8: Need to verify toxic sludge appeared (for engagement decay explanation)
-    if Game.demoStep == 8 then
+    if Game.demo.step == 8 then
         -- Check if toxic hazard exists (from insane explosion)
         for _, hazard in ipairs(Game.hazards) do
             if hazard.radius > 0 and hazard.timer > 0 then
@@ -660,7 +660,7 @@ function DemoMode.checkVerification()
     end
     
     -- Step 9-10: Informational steps - no verification needed
-    if Game.demoStep >= 9 then
+    if Game.demo.step >= 9 then
         return true
     end
     
@@ -747,8 +747,8 @@ function DemoMode.update(dt)
     ChasePortrait.setTalking(true)
     ChasePortrait.update(dt)
     
-    if Game.demoStep <= #ChasePaxton.DEMO_MESSAGES then
-        local currentMessage = ChasePaxton.DEMO_MESSAGES[Game.demoStep]
+    if Game.demo.step <= #ChasePaxton.DEMO_MESSAGES then
+        local currentMessage = ChasePaxton.DEMO_MESSAGES[Game.demo.step]
         
         -- Phase 1: Show message for a few seconds (reduced for faster demo)
         -- Special case: Step 5 waits for toxic sludge BEFORE showing message
@@ -756,7 +756,7 @@ function DemoMode.update(dt)
         if Game.demoWaitingForMessage then
             -- For step 5, wait for toxic sludge to appear before showing message
             -- Since step 4 already ensures toxic sludge exists, this should pass quickly
-            if Game.demoStep == 5 then
+            if Game.demo.step == 5 then
                 -- Keep waiting until toxic sludge appears (should be immediate since step 4 verified it)
                 if DemoMode.checkVerification() then
                     -- Toxic sludge exists, wait a moment to ensure it's clearly visible before showing message
@@ -767,14 +767,14 @@ function DemoMode.update(dt)
                     end
                 end
             -- Step 10: Show message for full duration, then return to attract mode
-            elseif Game.demoStep == 10 then
+            elseif Game.demo.step == 10 then
                 if Game.demoAITimer >= currentMessage.duration then
                     -- Return to attract mode
-                    Game.demoMode = false
-                    Game.attractMode = true
-                    Game.attractModeTimer = 0
+                    Game.modes.demo = false
+                    Game.modes.attract = true
+                    Game.modes.attractTimer = 0
                     Game.demoTimer = 0
-                    Game.demoStep = 1
+                    Game.demo.step = 1
                     Game.demoAITimer = 0
                     Game.demoTargetUnit = nil
                     Game.demoCharging = false
@@ -847,7 +847,7 @@ function DemoMode.update(dt)
                 Game.demoUnitEnraged = false
                 Game.demoUnitsFighting = false
                 -- Reset slow-mo state when starting a new step
-                Game.slowMoActive = false
+                Game.slowMo.active = false
                 Game.timeScale = 1.0
                 Game.slowMoTimer = 0
                 Game.slowMoDuration = 0
@@ -855,9 +855,9 @@ function DemoMode.update(dt)
         -- Phase 2: Perform action and verify
         elseif not Game.demoActionComplete then
             -- Step 5 is informational - it already verified in Phase 1, just show message and complete
-            if Game.demoStep == 5 then
+            if Game.demo.step == 5 then
                 -- Ensure slow-mo is not active (shouldn't be, but just in case)
-                Game.slowMoActive = false
+                Game.slowMo.active = false
                 Game.timeScale = 1.0
                 Game.slowMoTimer = 0
                 Game.slowMoDuration = 0
@@ -872,8 +872,8 @@ function DemoMode.update(dt)
                 if DemoMode.checkVerification() then
                     -- For step 4, wait longer to let enraged unit attack and create toxic sludge
                     -- For step 8, trigger freeze when toxic sludge appears
-                    if Game.demoStep == 8 and not Game.slowMoActive then
-                        Game.slowMoActive = true
+                    if Game.demo.step == 8 and not Game.slowMo.active then
+                        Game.slowMo.active = true
                         Game.slowMoTimer = 0
                         Game.slowMoDuration = 1.5
                         Game.timeScale = 1.0
@@ -882,10 +882,10 @@ function DemoMode.update(dt)
                     -- Step 4: Wait longer after toxic sludge appears to ensure it's visible
                     -- Step 8: Wait longer to show the frozen toxic sludge
                     local waitTime = 0.8  -- Default
-                    if Game.demoStep == 4 then
+                    if Game.demo.step == 4 then
                         -- Wait 2 seconds after toxic sludge appears to ensure it's visible when step 5 starts
                         waitTime = 2.0
-                    elseif Game.demoStep == 8 then
+                    elseif Game.demo.step == 8 then
                         waitTime = 2.5  -- Show frozen toxic sludge
                     end
                     if Game.demoAITimer >= waitTime then
@@ -897,19 +897,19 @@ function DemoMode.update(dt)
         -- Phase 3: Action complete, advance to next step (faster transition)
         elseif Game.demoActionComplete then
             if Game.demoAITimer >= 0.5 then  -- Reduced from 1.0 to 0.5 seconds
-                if Game.demoStep < #ChasePaxton.DEMO_MESSAGES then
+                if Game.demo.step < #ChasePaxton.DEMO_MESSAGES then
                     -- Clear script state for next step
                     Game.demoScriptActions = {}
                     Game.demoScriptTimer = 0
                     
                     -- Reset shake and slow-mo to prevent them from getting stuck between steps
                     Game.shake = 0
-                    Game.slowMoActive = false
+                    Game.slowMo.active = false
                     Game.timeScale = 1.0
                     Game.slowMoTimer = 0
                     Game.slowMoDuration = 0
                     
-                    local nextStep = Game.demoStep + 1
+                    local nextStep = Game.demo.step + 1
                     
                     -- Clear units before transitioning (except steps that need to keep units)
                     -- Step 4 needs units to stay so enraged unit can attack and create toxic sludge
@@ -981,7 +981,7 @@ function DemoMode.update(dt)
                         end
                     end
                     
-                    Game.demoStep = nextStep
+                    Game.demo.step = nextStep
                     Game.demoWaitingForMessage = true
                     Game.demoActionComplete = false
                     Game.demoAITimer = 0
@@ -1004,8 +1004,8 @@ function DemoMode.draw()
     DemoMode.drawControllerWindow()
     
     -- Draw tutorial message overlay (always visible, only text changes)
-    if Game.demoStep <= #ChasePaxton.DEMO_MESSAGES then
-        local currentMessage = ChasePaxton.DEMO_MESSAGES[Game.demoStep]
+    if Game.demo.step <= #ChasePaxton.DEMO_MESSAGES then
+        local currentMessage = ChasePaxton.DEMO_MESSAGES[Game.demo.step]
         
         -- Always show the Paxton window, only the text changes
         -- Draw webcam with tutorial message (positioned at top center for visibility)
@@ -1101,9 +1101,9 @@ end
 function DemoMode.keypressed(key)
     if key == "space" or key == "return" or key == "enter" then
         -- Exit demo mode and return to attract mode
-        Game.demoMode = false
+        Game.modes.demo = false
         Game.demoTimer = 0
-        Game.demoStep = 1
+        Game.demo.step = 1
         Game.demoAITimer = 0
         Game.demoTargetUnit = nil
         Game.demoCharging = false
@@ -1165,8 +1165,8 @@ function DemoMode.keypressed(key)
         Sound.unmute()
         
         -- Return to attract mode
-        Game.attractMode = true
-        Game.attractModeTimer = 0
+        Game.modes.attract = true
+        Game.modes.attractTimer = 0
         -- Start playing intro music when returning to attract mode
         Sound.playIntroMusic()
         return true
