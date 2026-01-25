@@ -92,11 +92,34 @@ ChasePaxton.INTRO_MESSAGES = {
     }
 }
 
--- Level complete screen messages
+-- Level complete screen messages (context-aware based on win condition)
 ChasePaxton.LEVEL_COMPLETE_MESSAGES = {
-    "GREAT JOB!",
-    "Get ready for the next level!"
+    blue_only = {
+        title = "EXCELLENT WORK!",
+        message = "You've successfully converted all units to BLUE alignment!\nThis shows strong user segmentation and targeted engagement.\nThe metrics are looking great - let's keep this momentum going!"
+    },
+    red_only = {
+        title = "OUTSTANDING PERFORMANCE!",
+        message = "All units are now RED aligned - that's aggressive user conversion!\nYou've created a highly engaged user base with maximum retention.\nThis is exactly the kind of results we need to see!"
+    },
+    neutral_only = {
+        title = "STRATEGIC WIN!",
+        message = "You've returned all units to NEUTRAL state - excellent crowd control!\nSometimes the best engagement strategy is maintaining balance.\nThis shows real tactical thinking. Ready to level up?"
+    }
 }
+
+-- Get level complete message based on win condition
+function ChasePaxton.getLevelCompleteMessage(winCondition)
+    local messages = ChasePaxton.LEVEL_COMPLETE_MESSAGES[winCondition]
+    if messages then
+        return messages
+    end
+    -- Fallback
+    return {
+        title = "GREAT JOB!",
+        message = "You've completed the level!\nKeep up the excellent work and let's push forward to the next challenge!"
+    }
+end
 
 -- Demo mode tutorial messages
 ChasePaxton.DEMO_MESSAGES = {

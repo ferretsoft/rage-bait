@@ -435,6 +435,18 @@ function Sound.cleanup()
     loopingSounds = {}
 end
 
+-- Mute sounds (prevent new sounds from playing)
+function Sound.mute()
+    soundsMuted = true
+    -- Stop music
+    Sound.stopMusic()
+    -- Stop all active sounds
+    love.audio.stop()
+    -- Clear active sounds list
+    activeSounds = {}
+    loopingSounds = {}
+end
+
 -- Unmute sounds (call when starting a new game)
 function Sound.unmute()
     soundsMuted = false

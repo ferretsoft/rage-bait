@@ -27,6 +27,8 @@ return function(moonshine)
     extern number scanlineIntensity;
     extern number chromaIntensity;
     extern vec2 screenSize;
+    extern number vignetteIntensity;
+    extern vec4 windowBounds;  // x, y, width, height in normalized coordinates (0-1)
 
     vec4 effect(vec4 color, Image tex, vec2 uv, vec2 px) {
       // to barrel coordinates
@@ -57,6 +59,22 @@ return function(moonshine)
       number scanline = mod(floor(uv.y * screenSize.y), 2.0);
       // Make even lines darker, keep odd lines at full brightness
       col.rgb *= mix(1.0 - scanlineIntensity, 1.0, scanline);
+      
+      // Vignette based on distance from window bounds box
+      // Calculate distance from each edge of the window bounds box
+      number distLeft = max(0.0, windowBounds.x - uv.x);
+      number distRight = max(0.0, uv.x - (windowBounds.x + windowBounds.z));
+      number distTop = max(0.0, windowBounds.y - uv.y);
+      number distBottom = max(0.0, uv.y - (windowBounds.y + windowBounds.w));
+      
+      // Calculate distance from the box (0 if inside, positive if outside)
+      number distFromBox = max(max(distLeft, distRight), max(distTop, distBottom));
+      
+      // Apply vignette - stronger at corners (further from box)
+      // Use smoothstep to create smooth falloff
+      number vignette = 1.0 - smoothstep(0.0, 0.4, distFromBox) * vignetteIntensity;
+      
+      col.rgb *= vignette;
       
       return col;
     }
@@ -97,6 +115,16 @@ return function(moonshine)
     end
   end
 
+  setters.vignetteIntensity = function(v) shader:send("vignetteIntensity", v) end
+  
+  setters.windowBounds = function(v)
+    if type(v) == "table" and #v == 4 then
+      shader:send("windowBounds", v)
+    else
+      error("Invalid value for `windowBounds'")
+    end
+  end
+
   local defaults = {
     distortionFactor = {1.06, 1.065},
     feather = 0.02,
@@ -104,6 +132,8 @@ return function(moonshine)
     scanlineIntensity = 0.3,
     chromaIntensity = 0.5,
     screenSize = {love.graphics.getWidth(), love.graphics.getHeight()},
+    vignetteIntensity = 0.0,
+    windowBounds = {0.5, 0.5, 0.0, 0.0},  -- Center, no size by default
   }
 
   return moonshine.Effect{

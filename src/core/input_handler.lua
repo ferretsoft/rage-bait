@@ -7,6 +7,9 @@ local ChasePaxton = require("src.core.chase_paxton")
 local Sound = require("src.core.sound")
 local Screenshot = require("src.core.screenshot")
 local Engagement = require("src.core.engagement")
+local DynamicMusic = require("src.core.dynamic_music")
+local TopBanner = require("src.core.top_banner")
+local MonitorFrame = require("src.core.monitor_frame")
 
 local InputHandler = {}
 
@@ -36,6 +39,52 @@ end
 
 -- Handle keyboard key press
 function InputHandler.handleKeyPressed(key)
+    -- Handle matrix screen: space to continue to logo
+    if Game.matrixMode then
+        if key == "space" then
+            Game.matrixMode = false
+            Game.matrixTimer = 0
+            Game.logoMode = true
+            Game.logoTimer = 0
+            Game.previousLogoTimer = 0
+            Game.logoFanfarePlayed = false
+            return true
+        end
+        -- Allow dynamic music sandbox to open during matrix screen
+        if key == "m" then
+            DynamicMusic.toggle()
+            if DynamicMusic.isActive() then
+                Sound.mute()
+            else
+                Sound.unmute()
+            end
+            return true
+        elseif DynamicMusic.isActive() then
+            -- Handle escape to close sandbox
+            if key == "escape" then
+                DynamicMusic.close()
+                Sound.unmute()
+                return true
+            elseif key == "1" then
+                DynamicMusic.switchToPart(1)
+                return true
+            elseif key == "2" then
+                DynamicMusic.switchToPart(2)
+                return true
+            elseif key == "3" then
+                DynamicMusic.switchToPart(3)
+                return true
+            elseif key == "4" then
+                DynamicMusic.switchToPart(4)
+                return true
+            elseif key == "p" then
+                DynamicMusic.cycleSyncMode()
+                return true
+            end
+        end
+        return false  -- Don't process other keys during matrix screen
+    end
+    
     -- Quick start: Press 'q' to skip directly to gameplay from any screen
     if key == "q" then
         -- Skip all intro screens and go straight to gameplay
@@ -62,6 +111,42 @@ function InputHandler.handleKeyPressed(key)
         -- Start gameplay directly (this will initialize everything)
         startGameplay()
         return true
+    end
+    
+    -- Handle dynamic music player (only at logo or attract screen)
+    if Game.logoMode or Game.attractMode then
+        if key == "m" then
+            DynamicMusic.toggle()
+            -- Mute other sounds when opening sandbox
+            if DynamicMusic.isActive() then
+                Sound.mute()
+            else
+                Sound.unmute()
+            end
+            return true
+        elseif DynamicMusic.isActive() then
+            -- Handle escape to close sandbox
+            if key == "escape" then
+                DynamicMusic.close()
+                Sound.unmute()
+                return true
+            elseif key == "1" then
+                DynamicMusic.switchToPart(1)
+                return true
+            elseif key == "2" then
+                DynamicMusic.switchToPart(2)
+                return true
+            elseif key == "3" then
+                DynamicMusic.switchToPart(3)
+                return true
+            elseif key == "4" then
+                DynamicMusic.switchToPart(4)
+                return true
+            elseif key == "p" then
+                DynamicMusic.cycleSyncMode()
+                return true
+            end
+        end
     end
     
     -- Handle name entry (arcade style)
@@ -253,6 +338,47 @@ function InputHandler.handleKeyPressed(key)
     if key == "f12" or key == "printscreen" then
         Screenshot.capture()
         return true
+    end
+    
+    -- Debug mode toggle (F1) - works from anywhere
+    if key == "f1" then
+        Game.debugMode = not Game.debugMode
+        return true
+    end
+    
+    -- Debug mode: Instant win (F2) - only when debug mode is active and game is playing
+    if key == "f2" and Game.debugMode then
+        if Game.gameState == "playing" and not Game.levelTransitionActive and not Game.gameOverActive then
+            -- Trigger win condition by converting all units to blue
+            for _, u in ipairs(Game.units) do
+                if not u.isDead then
+                    u.alignment = "blue"
+                    u.state = "active"
+                end
+            end
+            -- The win condition check in love.update() will detect this and call advanceToNextLevel
+            return true
+        end
+    end
+    
+    -- Debug mode: Instant lose (F3) - only when debug mode is active and game is playing
+    if key == "f3" and Game.debugMode then
+        if Game.gameState == "playing" and not Game.levelTransitionActive and not Game.gameOverActive then
+            -- Trigger lose condition by depleting engagement (same as natural life lost)
+            Engagement.value = 0
+            -- The engagement check in love.update() will detect this and call handleGameOver("engagement_depleted")
+            return true
+        end
+    end
+    
+    -- Debug mode: Instant game over (F4) - only when debug mode is active and game is playing
+    if key == "f4" and Game.debugMode then
+        if Game.gameState == "playing" and not Game.levelTransitionActive and not Game.gameOverActive then
+            -- Trigger game over by setting lives to 0 and calling handleGameOver
+            Game.lives = 0
+            handleGameOver("no_units")
+            return true
+        end
     end
     
     -- Don't allow charging if game state is not playing (prevents charging during win sequence)

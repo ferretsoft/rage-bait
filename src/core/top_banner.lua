@@ -44,6 +44,8 @@ local state = {
     gameOverDrawOnTop = false,  -- Track if banner should draw on top of everything
     reverseAnimationActive = false,  -- True when reversing animation before reset
     reverseAnimationSpeed = 2.0,  -- Double speed for reverse
+    textAnimationStartY = nil,  -- Starting Y position for text animation (ray center)
+    textAnimationActive = false,  -- Whether text Y animation is active
 }
 
 -- Load banner images
@@ -116,6 +118,9 @@ function TopBanner.startReverseAnimation()
     -- Switch back to original draw order (draw before monitor frame)
     state.gameOverDrawOnTop = false
     state.gameOverCropDisabled = false
+    -- Reset text animation state for reverse
+    state.textAnimationStartY = nil
+    state.textAnimationActive = false
     -- Will reverse from current dropped position back to original
 end
 
@@ -142,6 +147,8 @@ function TopBanner.reset()
     state.gameOverCropDisabled = false
     state.gameOverDrawOnTop = false
     state.reverseAnimationActive = false
+    state.textAnimationStartY = nil
+    state.textAnimationActive = false
 end
 
 -- Get game over grey fade value (for black overlay)
@@ -521,8 +528,8 @@ function TopBanner.draw()
     love.graphics.setLineWidth(1)
 end
 
--- Get the center position of the vigilant layer (for godray effect)
-function TopBanner.getVigilantCenter()
+-- Internal function to get vigilant center (used internally)
+local function getVigilantCenter()
     if not state.vigilant or not state.base then
         return nil, nil
     end
@@ -552,6 +559,11 @@ function TopBanner.getVigilantCenter()
     return centerX, centerY
 end
 
+-- Get the center position of the vigilant layer (for godray effect)
+function TopBanner.getVigilantCenter()
+    return getVigilantCenter()
+end
+
 -- Helper function to calculate banner position (used by both text drawing functions)
 local function getBannerTextPosition()
     if not state.base then return nil, nil end
@@ -568,10 +580,86 @@ local function getBannerTextPosition()
     local baseBannerY = frameY - scaledHeight + 120
     local bannerY = baseBannerY + state.yOffset
     
-    local textY = bannerY + scaledHeight + 20
+    local targetTextY = bannerY + scaledHeight + 20
     local textX = Constants.SCREEN_WIDTH / 2  -- Center of screen
-    local textX = Constants.SCREEN_WIDTH / 2
-    return textX, textY
+    
+    -- For life lost text, animate from ray center to target position
+    -- Only animate during drop phase, not during reverse (text is hidden during reverse anyway)
+    if state.gameOverDrop and state.yOffset > 0 and not state.reverseAnimationActive and state.animationState ~= "reversing" then
+        -- Get ray center Y position (vigilant center - 47)
+        local centerX, centerY = getVigilantCenter()
+        if centerY then
+            local rayCenterY = centerY - 47
+            
+            -- Initialize animation start position on first frame text becomes visible
+            if not state.textAnimationActive then
+                state.textAnimationStartY = rayCenterY
+                state.textAnimationActive = true
+            end
+            
+            -- Calculate animation progress based on banner drop
+            -- Start animating when yOffset > 0, complete when banner reaches lowest position
+            local startOffset = 0  -- Animation starts when yOffset > 0
+            local endOffset = state.gameOverBannerTargetY or (state.yOffset)  -- Complete at target position
+            local currentProgress = 0
+            
+            if state.gameOverBannerDropped then
+                -- Banner has reached lowest position, text should be at target
+                currentProgress = 1.0
+            else
+                -- Interpolate based on current yOffset vs target
+                if endOffset > startOffset then
+                    currentProgress = math.min(1.0, (state.yOffset - startOffset) / (endOffset - startOffset))
+                end
+            end
+            
+            -- Interpolate from ray center Y to target text Y
+            local animatedTextY = state.textAnimationStartY + (targetTextY - state.textAnimationStartY) * currentProgress
+            return textX, animatedTextY
+        end
+    end
+    
+    -- Default: return target position (for game over or when not animating)
+    return textX, targetTextY
+end
+
+-- Internal function to draw a single character with terminal text style (for name entry)
+local function drawGlitchyTerminalChar(char, x, y, glitchTextTimer, terminalFont, alpha)
+    if not terminalFont then return end
+    
+    love.graphics.setFont(terminalFont)
+    
+    -- Apply glitch corruption (3% chance)
+    local glitchChars = {"█", "▓", "▒"}
+    local displayChar = char
+    math.randomseed(math.floor(glitchTextTimer * 100))
+    if math.random() < 0.03 then
+        displayChar = glitchChars[math.random(#glitchChars)]
+    end
+    
+    -- Scaling effect (slight pulse)
+    local baseScale = 1.0 + math.sin(glitchTextTimer * 4) * 0.05  -- Pulse between 0.95 and 1.05
+    
+    -- Get character width for centering
+    local charWidth = terminalFont:getWidth(char)
+    
+    -- Draw character with scaling and pulsing
+    love.graphics.push()
+    love.graphics.translate(x + charWidth / 2, y)
+    love.graphics.scale(baseScale, baseScale)
+    love.graphics.translate(-charWidth / 2, 0)
+    
+    -- Main text with green terminal color, pulsing alpha
+    love.graphics.setColor(0, 1, 0, alpha)  -- Green terminal text with pulsing alpha
+    love.graphics.print(displayChar, 0, 0)
+    
+    -- Subtle red glitch overlay (much less frequent)
+    if math.random() < 0.1 then
+        love.graphics.setColor(1, 0, 0, alpha * 0.2)
+        love.graphics.print(displayChar, 1, 1)
+    end
+    
+    love.graphics.pop()
 end
 
 -- Internal function to draw glitchy terminal text
@@ -640,28 +728,99 @@ local function drawGlitchyTerminalText(text, x, y, fontSize, glitchTextTimer, gl
 end
 
 -- Draw terminal text for game over
+-- Check if game over text should be visible (same logic as life lost text)
+function TopBanner.isGameOverTextVisible(glitchTextTimer)
+    if not state.gameOverDrop then return false end
+    
+    -- Only show text when banner has dropped past original position (yOffset > 0)
+    if state.yOffset <= 0 then return false end
+    
+    -- Flicker off when reverse animation starts (don't show at all during reverse)
+    if state.reverseAnimationActive then return false end
+    
+    -- Add flicker effect: rapid on/off flickering
+    -- Use glitchTextTimer for flicker timing
+    -- Flicker rate: 8 times per second (faster flicker)
+    local flickerRate = 8
+    local flickerTime = glitchTextTimer * flickerRate
+    local flickerPhase = flickerTime % 1.0  -- 0 to 1 cycle
+    -- Show for 60% of the cycle, off for 40% (more visible)
+    return flickerPhase < 0.6
+end
+
 function TopBanner.drawGameOverText(glitchTextTimer, glitchTextWriteProgress, terminalFont)
-    if not state.gameOverDrop then return end
+    if not TopBanner.isGameOverTextVisible(glitchTextTimer) then return end
+    
     local textX, textY = getBannerTextPosition()
     if not textX then return end
     local text = "YIELD NOT SATISFACTORY - LIQUIDATING ASSET"
     drawGlitchyTerminalText(text, textX, textY, 32, glitchTextTimer, glitchTextWriteProgress, terminalFont)
 end
 
+-- Check if life lost text should be visible (for use by TextTrace)
+function TopBanner.isLifeLostTextVisible(glitchTextTimer)
+    if not state.gameOverDrop then return false end
+    
+    -- Only show text when banner has dropped past original position (yOffset > 0)
+    if state.yOffset <= 0 then return false end
+    
+    -- Flicker off when reverse animation starts (don't show at all during reverse)
+    if state.reverseAnimationActive then return false end
+    
+    -- Add flicker effect: rapid on/off flickering
+    -- Use glitchTextTimer for flicker timing
+    -- Flicker rate: 8 times per second (faster flicker)
+    local flickerRate = 8
+    local flickerTime = glitchTextTimer * flickerRate
+    local flickerPhase = flickerTime % 1.0  -- 0 to 1 cycle
+    -- Show for 60% of the cycle, off for 40% (more visible)
+    return flickerPhase < 0.6
+end
+
+-- Check if name entry text should be visible (same logic as life lost text)
+function TopBanner.isNameEntryTextVisible(glitchTextTimer)
+    if not state.gameOverDrop then return false end
+    
+    -- Only show text when banner has dropped past original position (yOffset > 0)
+    if state.yOffset <= 0 then return false end
+    
+    -- Flicker off when reverse animation starts (don't show at all during reverse)
+    if state.reverseAnimationActive then return false end
+    
+    -- Add flicker effect: rapid on/off flickering
+    -- Use glitchTextTimer for flicker timing
+    -- Flicker rate: 8 times per second (faster flicker)
+    local flickerRate = 8
+    local flickerTime = glitchTextTimer * flickerRate
+    local flickerPhase = flickerTime % 1.0  -- 0 to 1 cycle
+    -- Show for 60% of the cycle, off for 40% (more visible)
+    return flickerPhase < 0.6
+end
+
 -- Draw terminal text for life lost
 function TopBanner.drawLifeLostText(glitchTextTimer, glitchTextWriteProgress, terminalFont)
-    if not state.gameOverDrop then return end
-    -- Don't draw text during reverse animation
-    if state.reverseAnimationActive then return end
+    if not TopBanner.isLifeLostTextVisible(glitchTextTimer) then return end
+    
     local textX, textY = getBannerTextPosition()
     if not textX then return end
     local text = "LOW PERFORMANCE DETECTED - INITIALIZE REASSIGNMENT"
+    
     drawGlitchyTerminalText(text, textX, textY, 32, glitchTextTimer, glitchTextWriteProgress, terminalFont)
 end
 
 -- Get text position for text trace (export the internal function)
 function TopBanner.getTextPosition()
     return getBannerTextPosition()
+end
+
+-- Draw a single character with terminal text style (for name entry)
+function TopBanner.drawGlitchyTerminalChar(char, x, y, glitchTextTimer, terminalFont, alpha)
+    drawGlitchyTerminalChar(char, x, y, glitchTextTimer, terminalFont, alpha)
+end
+
+-- Draw glitchy terminal text (for name entry instruction text)
+function TopBanner.drawGlitchyTerminalText(text, x, y, fontSize, glitchTextTimer, glitchTextWriteProgress, terminalFont)
+    drawGlitchyTerminalText(text, x, y, fontSize, glitchTextTimer, glitchTextWriteProgress, terminalFont)
 end
 
 return TopBanner

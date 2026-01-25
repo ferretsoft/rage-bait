@@ -27,6 +27,8 @@ local ChasePortrait = require("src.core.chase_portrait")
 local DrawLayers = require("src.core.draw_layers")
 local Godray = require("src.core.godray")
 local TextTrace = require("src.core.text_trace")
+local DynamicMusic = require("src.core.dynamic_music")
+local MatrixEffect = require("src.core.matrix_effect")
 -- Set BASE so moonshine can find effects in libs directory
 moonshine.BASE = "libs"
 
@@ -52,7 +54,9 @@ Game = {
     showBackgroundForeground = false,  -- Toggle for background/foreground layers
     bootingMode = false,  -- Start with booting screen (disabled)
     bootingTimer = 0,  -- Timer for booting screen
-    logoMode = false,  -- Logo screen (after booting)
+    matrixMode = false,  -- Matrix effect screen (before logo)
+    matrixTimer = 0,  -- Timer for matrix screen
+    logoMode = false,  -- Logo screen (after matrix)
     logoTimer = 0,  -- Timer for logo animation
     logoFanfarePlayed = false,  -- Track if fanfare has been played
     previousLogoTimer = 0,  -- Track previous timer value to detect threshold crossings
@@ -88,6 +92,18 @@ Game = {
     level = 1,  -- Current level
     levelTransitionTimer = 0,  -- Timer for level transition
     levelTransitionActive = false,  -- Whether level transition is active
+    matrixTransitionActive = false,  -- Whether matrix wipe transition is active
+    webcamWindowAnimating = false,  -- Whether webcam window is animating
+    webcamWindowAnimTimer = 0,  -- Timer for webcam window animation
+    webcamWindowAnimDuration = 1.0,  -- Duration of webcam window animation (one way)
+    webcamWindowAnimReversing = false,  -- Whether animation is reversing back
+    webcamWindowDialogueActive = false,  -- Whether dialogue is showing (window centered)
+    webcamWindowDialogueTimer = 0,  -- Timer for dialogue display
+    webcamWindowDialogueDuration = 5.0,  -- How long to show dialogue
+    webcamWindowDialogueSentences = {},  -- Array of sentences to display
+    webcamWindowDialogueCurrentSentence = 1,  -- Current sentence index (1-based)
+    webcamWindowDialogueSentenceTimer = 0,  -- Timer for current sentence
+    webcamWindowDialogueSentenceDuration = 2.0,  -- How long to show each sentence
     levelCompleteScreenActive = false,  -- Whether level completion screen is active
     levelCompleteScreenTimer = 0,  -- Timer for level completion screen (5 seconds)
     winTextActive = false,  -- Whether win text is showing (before webcam)
@@ -132,7 +148,8 @@ Game = {
     readyActive = false,  -- Whether ready screen is active
     readyTimer = 0,  -- Timer for ready screen
     readyPhase = 1,  -- Current phase (1=fade out, 2=get ready, 3=go)
-    readySparks = {}  -- Spark particles for ready screen
+    readySparks = {},  -- Spark particles for ready screen
+    debugMode = false  -- Debug mode (enables instant win/lose)
 }
 
 -- Helper function to create spark particles in a circle pattern
@@ -384,6 +401,13 @@ function addHighScore(name, score)
     saveHighScores()
 end
 
+-- Reset high scores (clear list and save)
+function resetHighScores()
+    Game.highScores = {}
+    saveHighScores()
+    print("High scores reset")
+end
+
 function love.load()
     love.window.setMode(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
     love.window.setTitle("RageBait!")
@@ -403,6 +427,9 @@ function love.load()
     
     -- Load high scores
     loadHighScores()
+    
+    -- Reset high scores
+    resetHighScores()
     
     -- Load background image
     local success, img = pcall(love.graphics.newImage, "assets/background.png")
@@ -447,6 +474,55 @@ function love.load()
         print("Warning: Could not load splash: assets/splash.png")
     end
     
+    -- Load plexiglass overlay image
+    local success7, img7 = pcall(love.graphics.newImage, "assets/plexi.jpeg")
+    if success7 then
+        Game.plexi = img7
+    else
+        Game.plexi = nil
+        print("Warning: Could not load plexi: assets/plexi.jpeg")
+    end
+    
+    -- Load plexi shader
+    local plexiShaderCode = love.filesystem.read("shaders/plexi.fs")
+    if plexiShaderCode then
+        Game.plexiShader = love.graphics.newShader(plexiShaderCode)
+    else
+        Game.plexiShader = nil
+        print("Warning: Could not load plexi shader")
+    end
+    
+    -- Load plexi apply mask shader
+    local plexiApplyMaskShaderCode = love.filesystem.read("shaders/plexi_apply_mask.fs")
+    if plexiApplyMaskShaderCode then
+        Game.plexiApplyMaskShader = love.graphics.newShader(plexiApplyMaskShaderCode)
+    else
+        Game.plexiApplyMaskShader = nil
+        print("Warning: Could not load plexi apply mask shader")
+    end
+    
+    -- Create canvas for capturing scene before plexi overlay (with stencil support)
+    Game.plexiSceneStencilCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT, {format = 'stencil8'})
+    Game.plexiSceneCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    Game.plexiSceneCanvas:setFilter("linear", "linear")
+    
+    -- Create canvas for plexi mask
+    Game.plexiMaskCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    Game.plexiMaskCanvas:setFilter("linear", "linear")
+    
+    -- Create temporary canvas for mask blur passes
+    Game.plexiMaskBlurTempCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+    Game.plexiMaskBlurTempCanvas:setFilter("linear", "linear")
+    
+    -- Load Gaussian blur shader for mask blur
+    local gaussianBlurShaderCode = love.filesystem.read("shaders/gaussian_blur.fs")
+    if gaussianBlurShaderCode then
+        Game.plexiMaskBlurShader = love.graphics.newShader(gaussianBlurShaderCode)
+    else
+        Game.plexiMaskBlurShader = nil
+        print("Warning: Could not load gaussian blur shader for mask")
+    end
+    
     -- Load top banner images (using TopBanner module)
     TopBanner.load()
     
@@ -458,6 +534,12 @@ function love.load()
     
     -- Load text trace effect
     TextTrace.load()
+    
+    -- Load dynamic music player
+    DynamicMusic.load()
+    
+    -- Load matrix effect
+    MatrixEffect.load()
     
     -- Load Chase Paxton portrait images
     ChasePortrait.load()
@@ -475,10 +557,12 @@ function love.load()
     Event.clear(); Engagement.init(); World.init(); Time.init(); Sound.init(); EmojiSprites.init(); Webcam.init(); EngagementPlot.init()
     World.physics:setCallbacks(beginContact, nil, preSolve, nil)
     
-    -- Start with logo screen (booting screen disabled)
+    -- Start with matrix screen (booting screen disabled)
     Game.bootingMode = false
     Game.bootingTimer = 0
-    Game.logoMode = true
+    Game.matrixMode = true
+    Game.matrixTimer = 0
+    Game.logoMode = false
     Game.logoTimer = 0
     Game.previousLogoTimer = 0
     Game.logoFanfarePlayed = false
@@ -527,6 +611,12 @@ function love.load()
     
     -- screenSize: Screen dimensions (needed for scanlines)
     crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
+    
+    -- Vignette intensity (increased for stronger effect)
+    crtEffect.vignetteIntensity = 0.8
+    
+    -- Window bounds will be calculated dynamically in love.draw()
+    crtEffect.windowBounds = {0.5, 0.5, 0.0, 0.0}  -- Default center, no size
     
     -- Create glow effect
     local glowEffect = require("libs.glow")(moonshine)
@@ -673,8 +763,11 @@ function startGameplay()
     Game.introStep = 1
     Webcam.showComment("game_start")
     
-    -- Start background music
-    Sound.playMusic()
+    -- Stop intro/attract mode music
+    Sound.stopMusic()
+    
+    -- Start dynamic music (part 1, bar mode)
+    DynamicMusic.startAutomatic()
     
     -- Reset monitor frame animations for new game
     MonitorFrame.resetEyelidAnimation()
@@ -698,7 +791,14 @@ function startGameplay()
     Game.levelCompleteScreenActive = false
     Game.levelCompleteScreenTimer = 0
     Game.winTextActive = false
+    Game.webcamWindowAnimating = false
+    Game.webcamWindowAnimTimer = 0
+    Game.webcamWindowAnimReversing = false
+    Game.webcamWindowDialogueActive = false
+    Game.webcamWindowDialogueTimer = 0
     Game.winTextTimer = 0
+    Game.webcamWindowAnimating = false
+    Game.webcamWindowAnimTimer = 0
     Game.slowMoActive = false
     Game.slowMoTimer = 0
     Game.timeScale = 1.0
@@ -754,7 +854,13 @@ function spawnUnitsForLevel()
     for i=1, unitsToSpawn do
         local x = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
         local y = math.random(50, Constants.PLAYFIELD_HEIGHT - 300)
-        table.insert(Game.units, Unit.new(World.physics, x, y))
+        local unit = Unit.new(World.physics, x, y)
+        -- Ensure unit starts as neutral (grey)
+        unit.state = "neutral"
+        unit.alignment = "none"
+        unit.isolationTimer = 0
+        unit.isInsane = false
+        table.insert(Game.units, unit)
     end
 end
 
@@ -778,6 +884,14 @@ function advanceToNextLevel(winCondition)
         end
     end
     
+    -- Clear all multipliers on win
+    Game.pointMultiplier = 1
+    Game.pointMultiplierTimer = 0
+    Game.pointMultiplierActive = false
+    Game.pointMultiplierFlashTimer = 0
+    Game.pointMultiplierTextTimer = 0
+    Game.pointMultiplierSparks = {}
+    
     -- Clean up all game sounds first (stops all active sounds)
     Sound.cleanup()
     
@@ -793,6 +907,12 @@ function advanceToNextLevel(winCondition)
     Game.timeScale = 1.0
     Game.winCondition = winCondition
     Game.gameState = "level_complete"
+    
+    -- Restart dynamic music for win (part 2) - Sound.cleanup() stopped it, so restart it immediately
+    if DynamicMusic.isAutomatic() then
+        print("DynamicMusic: Restarting music for win (part 2) after Sound.cleanup()")
+        DynamicMusic.startPart(2)  -- Start part 2 immediately for win music
+    end
     -- Don't show level complete screen yet - wait for freeze
     Game.levelCompleteScreenActive = false
     Game.levelCompleteScreenTimer = 0
@@ -823,7 +943,10 @@ function handleGameOver(condition)
     
     -- Check if we have lives remaining BEFORE decrementing
     local hasLivesRemaining = Game.lives > 1  -- Will have lives after decrement if currently > 1
-    Game.lives = Game.lives - 1
+    -- Only decrement lives if we have lives remaining (prevent going below 0)
+    if Game.lives > 0 then
+        Game.lives = Game.lives - 1
+    end
     
     -- If engagement was depleted and we have lives remaining, show life lost auditor screen
     if condition == "engagement_depleted" and hasLivesRemaining then
@@ -832,6 +955,7 @@ function handleGameOver(condition)
         Game.lifeLostAuditorPhase = 1  -- Start with system freeze
         Game.gameState = "life_lost_auditor"
         Sound.cleanup()  -- Stop all sounds for the auditor sequence
+        DynamicMusic.stopAutomatic()  -- Stop automatic music
         -- Trigger banner drop animation (drop 120px from current position)
         TopBanner.triggerDrop(Constants.TIMING.LIFE_LOST_BANNER_DROP)
         return
@@ -843,6 +967,8 @@ function handleGameOver(condition)
         Game.gameOverTimer = 2.0  -- 2 second wait at dropped banner position
         -- Trigger banner drop (same as life lost)
         TopBanner.triggerDrop(Constants.TIMING.GAME_OVER_BANNER_DROP)
+        DynamicMusic.stopAutomatic()  -- Stop automatic music
+        Sound.playIntroMusic()  -- Play intro music (same as attract mode)
         return
     end
     
@@ -856,46 +982,106 @@ function handleGameOver(condition)
     -- Trigger banner drop animation (drop 320px from current position)
     TopBanner.triggerDrop(Constants.TIMING.GAME_OVER_BANNER_DROP)
     Game.glitchTextWriteProgress = 0  -- Reset write-on effect
+    DynamicMusic.stopAutomatic()  -- Stop automatic music
+    Sound.playIntroMusic()  -- Play intro music (same as attract mode)
 end
 
 -- Restart the current level after losing a life
 -- Note: Score and level are preserved (not reset)
 function restartLevel()
-    Game.gameOverActive = false
-    Game.gameOverTimer = 0
-    Game.shouldRestartLevel = false
-    Game.auditorActive = false  -- Make sure THE AUDITOR is not active
-    Game.auditorTimer = 0
-    Game.auditorPhase = 1
-    Game.lifeLostAuditorActive = false  -- Make sure life lost auditor is not active
-    Game.lifeLostAuditorTimer = 0
-    Game.lifeLostAuditorPhase = 1
-    -- Reset banner to original position on restart
-    TopBanner.reset()
+    -- Start matrix transition to hide the reset
+    Game.matrixTransitionActive = true
+    MatrixEffect.startTransition(2.0, function()
+        -- Transition complete - now do the actual reset
+        Game.gameOverActive = false
+        Game.gameOverTimer = 0
+        Game.shouldRestartLevel = false
+        Game.auditorActive = false  -- Make sure THE AUDITOR is not active
+        Game.auditorTimer = 0
+        Game.auditorPhase = 1
+        Game.lifeLostAuditorActive = false  -- Make sure life lost auditor is not active
+        Game.lifeLostAuditorTimer = 0
+        Game.lifeLostAuditorPhase = 1
+        -- Reset banner to original position on restart
+        TopBanner.reset()
+        
+        -- Trigger ready sequence
+        Game.readyActive = true
+        Game.readyTimer = 0
+        Game.readyPhase = 1
+        Game.readySparks = {}
+        Game.gameState = "ready"
+        Game.winCondition = nil
+        Game.hasUnitBeenConverted = false
+        
+        -- Unmute sounds so they can play again after restart
+        Sound.unmute()
+        
+        -- Stop intro/attract mode music
+        Sound.stopMusic()
+        
+        -- Restart dynamic music (part 1, bar mode)
+        DynamicMusic.startAutomatic()
+        
+        -- Reset engagement to 100% (same as new level/game start)
+        -- Score and level are NOT reset - they are preserved
+        Engagement.value = Constants.ENGAGEMENT_MAX
+        
+        -- Reset monitor frame animations
+        MonitorFrame.resetAnimations()
+        
+        -- Clear all game entities
+        for i = #Game.units, 1, -1 do
+            local u = Game.units[i]
+            if u.body and not u.isDead then
+                u.body:destroy()
+            end
+            table.remove(Game.units, i)
+        end
+        for i = #Game.projectiles, 1, -1 do
+            local p = Game.projectiles[i]
+            -- Stop whistle sound before destroying
+            if p.whistleSound then
+                pcall(function()
+                    p.whistleSound:stop()
+                    p.whistleSound:release()
+                end)
+                p.whistleSound = nil
+            end
+            if p.body then
+                p.body:destroy()
+            end
+            table.remove(Game.projectiles, i)
+        end
+        for i = #Game.powerups, 1, -1 do
+            local p = Game.powerups[i]
+            if p.body then
+                p.body:destroy()
+            end
+            table.remove(Game.powerups, i)
+        end
+        for i = #Game.explosionZones, 1, -1 do
+            local z = Game.explosionZones[i]
+            if z.body then
+                z.body:destroy()
+            end
+            table.remove(Game.explosionZones, i)
+        end
+        Game.hazards = {}
+        Game.effects = {}
+        
+        -- Clear weapon upgrades on level restart
+        Game.isUpgraded = false
+        Constants.PUCK_LIFETIME = Constants.PUCK.LIFETIME
+        
+        -- Spawn units for current level
+        spawnUnitsForLevel()
+        
+        -- End transition
+        Game.matrixTransitionActive = false
+    end)
     
-    -- Trigger ready sequence
-    Game.readyActive = true
-    Game.readyTimer = 0
-    Game.readyPhase = 1
-    Game.readySparks = {}
-    Game.gameState = "ready"
-    Game.winCondition = nil
-    Game.hasUnitBeenConverted = false
-    
-    -- Unmute sounds so they can play again after restart
-    Sound.unmute()
-    
-    -- Restart background music
-    Sound.playMusic()
-    
-    -- Reset engagement to 100% (same as new level/game start)
-    -- Score and level are NOT reset - they are preserved
-    Engagement.value = Constants.ENGAGEMENT_MAX
-    
-    -- Reset monitor frame animations
-    MonitorFrame.resetAnimations()
-    
-    -- Clear all game entities
+    -- Clear entities immediately (before transition starts)
     for i = #Game.units, 1, -1 do
         local u = Game.units[i]
         if u.body and not u.isDead then
@@ -905,7 +1091,6 @@ function restartLevel()
     end
     for i = #Game.projectiles, 1, -1 do
         local p = Game.projectiles[i]
-        -- Stop whistle sound before destroying
         if p.whistleSound then
             pcall(function()
                 p.whistleSound:stop()
@@ -934,13 +1119,13 @@ function restartLevel()
     end
     Game.hazards = {}
     Game.effects = {}
-    
-    -- Spawn units for current level
-    spawnUnitsForLevel()
 end
 
 -- Return to attract mode
 function returnToAttractMode()
+    -- Stop automatic music when returning to attract mode
+    DynamicMusic.stopAutomatic()
+    
     Game.logoMode = false
     Game.logoTimer = 0
     Game.previousLogoTimer = 0
@@ -1456,6 +1641,324 @@ function drawIntroScreen()
     end
 end
 
+-- Draw name entry rays and text (drawn after godrays, on top of everything)
+function drawNameEntryRaysAndText()
+    if not Game.nameEntryActive then return end
+    
+    -- For name entry, always show text and rays (don't require banner drop visibility check)
+    -- The banner should already be dropped when we reach name entry screen
+    local glitchTextTimer = Game.glitchTextTimer or 0
+    
+    -- Use terminal font for glitchy effect
+    local terminalFont = Game.fonts.terminal
+    if not terminalFont then return end
+    
+    love.graphics.setFont(terminalFont)
+    
+    -- Calculate name entry text position (centered on screen, no box)
+    local charWidth = terminalFont:getWidth("A")
+    local totalWidth = charWidth * Game.nameEntryMaxLength
+    local startX = (Constants.SCREEN_WIDTH - totalWidth) / 2
+    local textY = Constants.SCREEN_HEIGHT / 2
+    
+    -- Get center point for rays (same as godrays - vigilant center)
+    local centerX, centerY = TopBanner.getVigilantCenter()
+    if centerX and centerY then
+        centerY = centerY - 47  -- Same offset as godrays
+        centerX = centerX - 4
+    else
+        -- Fallback: use screen center if vigilant center not available
+        centerX = Constants.SCREEN_WIDTH / 2
+        centerY = Constants.SCREEN_HEIGHT / 2 - 100
+    end
+    
+    -- Prepare character data for ray drawing
+    local pulse = (math.sin(glitchTextTimer * 3) + 1) / 2  -- 0 to 1
+    local alpha = 0.6 + pulse * 0.4  -- Pulse between 0.6 and 1.0
+    
+    -- Per-character flicker: each character has its own flicker phase
+    local flickerRate = 8  -- Same as life lost text
+    local flickerTime = glitchTextTimer * flickerRate
+    
+    local charData = {}
+    
+    for i = 1, Game.nameEntryMaxLength do
+        local char = Game.nameEntryText:sub(i, i) or "A"
+        local charX = startX + (i - 1) * charWidth
+        
+        -- Apply glitch corruption (3% chance) - same as terminal text
+        local displayChar = char
+        math.randomseed(math.floor(glitchTextTimer * 100) + i)  -- Per-character seed
+        local glitchChars = {"█", "▓", "▒"}
+        if math.random() < 0.03 then
+            displayChar = glitchChars[math.random(#glitchChars)]
+        end
+        
+        -- Per-character flicker: each character has a phase offset
+        local charFlickerPhase = (flickerTime + (i * 0.1)) % 1.0  -- Offset each character by 0.1
+        local charIsVisible = charFlickerPhase < 0.6  -- Show for 60% of the cycle
+        
+        table.insert(charData, {
+            char = displayChar,
+            x = charX,
+            y = textY,
+            isCursor = (i == Game.nameEntryCursor),
+            isVisible = charIsVisible  -- Per-character visibility
+        })
+    end
+    
+    -- First, draw rays from all characters (on top of everything)
+    -- Always draw rays if center point is available
+    if not centerX or not centerY then
+        -- Fallback center if not available
+        centerX = Constants.SCREEN_WIDTH / 2
+        centerY = Constants.SCREEN_HEIGHT / 2 - 100
+    end
+    
+    -- Match TextTrace exactly: same pixel sample rate, color, line width, and opacity
+    local pixelSampleRate = 8  -- Same as TextTrace
+    local lineColor = {0.2, 1.0, 0.3}  -- Same as TextTrace state.lineColor
+    local rayWidth = 1  -- Same as TextTrace state.rayWidth
+    local finalOpacity = 1.0  -- Same as TextTrace for life lost/game over
+    
+    local oldBlendMode = love.graphics.getBlendMode()
+    local oldColor = {love.graphics.getColor()}
+    local oldLineWidth = love.graphics.getLineWidth()
+    
+    love.graphics.setBlendMode("add")  -- Same as TextTrace
+    love.graphics.setLineWidth(rayWidth)  -- Same as TextTrace
+    
+    -- Draw rays for each character (per-character flicker)
+    for _, data in ipairs(charData) do
+        -- Only draw rays when this character is visible
+        if not data.isVisible then
+            goto continue_char
+        end
+        -- Render character to canvas to sample pixels (same approach as TextTrace)
+        local padding = 10
+        local canvasWidth = charWidth + padding * 2
+        local canvasHeight = terminalFont:getHeight() + padding * 2
+        local charCanvas = love.graphics.newCanvas(canvasWidth, canvasHeight)
+        charCanvas:setFilter("nearest", "nearest")  -- Nearest for pixel-perfect sampling (like TextTrace)
+        
+        local oldCanvas = love.graphics.getCanvas()
+        local oldShader = love.graphics.getShader()
+        local oldBlendModeCanvas = love.graphics.getBlendMode()
+        
+        love.graphics.setCanvas(charCanvas)
+        love.graphics.setShader()  -- No shader
+        love.graphics.setBlendMode("alpha")  -- Normal alpha blending
+        love.graphics.clear(0, 0, 0, 0)
+        
+        -- Render character in green (same as terminal text)
+        love.graphics.setColor(0, 1, 0, 1)  -- Green text, full opacity
+        love.graphics.setFont(terminalFont)
+        love.graphics.print(data.char, padding, padding)
+        
+        love.graphics.setCanvas(oldCanvas)
+        love.graphics.setShader(oldShader)
+        love.graphics.setBlendMode(oldBlendModeCanvas)
+        
+        -- Get ImageData from canvas (must restore canvas first)
+        local imageData = charCanvas:newImageData()
+        charCanvas:release()
+        
+        -- Sample pixels and draw rays (exactly like TextTrace)
+        local width = imageData:getWidth()
+        local height = imageData:getHeight()
+        
+        local pixelsFound = 0
+        
+        -- Sample more densely to ensure we find pixels (check every pixel, not just every 8th)
+        -- But still draw lines at the sample rate to match TextTrace density
+        for y = 0, height - 1, 1 do
+            for x = 0, width - 1, 1 do
+                local r, g, b, a = imageData:getPixel(x, y)
+                
+                -- If pixel has alpha (is part of text), draw a line to center (same threshold as TextTrace)
+                if a > 0.1 then  -- Same threshold as TextTrace
+                    -- Only draw a line if this pixel aligns with our sample rate
+                    if (x % pixelSampleRate == 0) and (y % pixelSampleRate == 0) then
+                        pixelsFound = pixelsFound + 1
+                        -- Convert canvas coordinates to screen coordinates
+                        local screenX = data.x - padding + x
+                        local screenY = data.y - padding + y
+                        
+                        -- Calculate brightness from the sampled pixel (exactly like TextTrace)
+                        local pixelBrightness = g * a  -- Green channel multiplied by alpha (same as TextTrace)
+                        local lineBrightness = pixelBrightness * 0.5  -- Half brightness (same as TextTrace)
+                        
+                        -- Set color with half brightness (exactly like TextTrace)
+                        love.graphics.setColor(
+                            lineColor[1] * lineBrightness,
+                            lineColor[2] * lineBrightness,
+                            lineColor[3] * lineBrightness,
+                            finalOpacity  -- Same as TextTrace
+                        )
+                        
+                        -- Draw thin line from this pixel to center (same as TextTrace)
+                        love.graphics.line(screenX, screenY, centerX, centerY)
+                    end
+                end
+            end
+        end
+        
+        -- Fallback: if no pixels found, draw a line from character center (ensures rays are always visible)
+        if pixelsFound == 0 then
+            local charCenterX = data.x + charWidth / 2
+            local charCenterY = data.y + terminalFont:getHeight() / 2
+            -- Use half brightness to match text trace style
+            love.graphics.setColor(
+                lineColor[1] * 0.5,
+                lineColor[2] * 0.5,
+                lineColor[3] * 0.5,
+                finalOpacity
+            )
+            love.graphics.line(charCenterX, charCenterY, centerX, centerY)
+        end
+        
+        imageData:release()
+        ::continue_char::
+    end
+    
+    -- Draw "Define your identifier, Asset" text above the top banner (same style as name entry)
+    -- Draw instruction text rays using the same setup (before restoring state)
+    local instructionText = "ASSET: DEFINE YOUR IDENTIFIER"  -- All caps
+    local instructionTextX = Constants.SCREEN_WIDTH / 2  -- Centered
+    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+    local borderWidth = Constants.UI.BORDER_WIDTH
+    local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+    local instructionTextY = frameY - 60 + 70 + 40 + 50  -- Lowered by 70px + 40px + 50px more = 160px total (was 60px above, now 100px below frame top)
+    
+    -- Flicker as a unit (same tempo as game over text)
+    local instructionFlickerRate = 8  -- Same as game over text
+    local instructionFlickerTime = glitchTextTimer * instructionFlickerRate
+    local instructionFlickerPhase = instructionFlickerTime % 1.0
+    local instructionIsVisible = instructionFlickerPhase < 0.6  -- Show for 60% of the cycle
+    
+    -- Draw rays for instruction text (only when visible, as a unit)
+    if instructionIsVisible then
+        -- Calculate scaling (same as drawGlitchyTerminalText)
+        local baseScale = 1.0 + math.sin(glitchTextTimer * 4) * 0.05  -- Pulse between 0.95 and 1.05
+        
+        -- Render instruction text to canvas to sample pixels (with scaling applied)
+        local instructionTextWidth = terminalFont:getWidth(instructionText)
+        local instructionPadding = 20
+        -- Account for scaling in canvas size
+        local instructionCanvasWidth = (instructionTextWidth * baseScale) + instructionPadding * 2
+        local instructionCanvasHeight = (terminalFont:getHeight() * baseScale) + instructionPadding * 2
+        local instructionCanvas = love.graphics.newCanvas(instructionCanvasWidth, instructionCanvasHeight)
+        instructionCanvas:setFilter("nearest", "nearest")
+        
+        local oldCanvas2 = love.graphics.getCanvas()
+        local oldShader2 = love.graphics.getShader()
+        local oldBlendMode2 = love.graphics.getBlendMode()
+        
+        love.graphics.setCanvas(instructionCanvas)
+        love.graphics.setShader()
+        love.graphics.setBlendMode("alpha")
+        love.graphics.clear(0, 0, 0, 0)
+        
+        -- Apply scaling when rendering to canvas (same as drawGlitchyTerminalText)
+        -- The text baseline is at y, and scaled around the horizontal center
+        love.graphics.push()
+        local canvasTextX = instructionPadding + (instructionTextWidth * baseScale) / 2
+        local canvasTextY = instructionPadding  -- Baseline at padding (not vertically centered)
+        love.graphics.translate(canvasTextX, canvasTextY)
+        love.graphics.scale(baseScale, baseScale)
+        love.graphics.translate(-instructionTextWidth / 2, 0)  -- Only horizontal centering
+        
+        love.graphics.setColor(0, 1, 0, alpha)  -- Use same alpha as text
+        love.graphics.setFont(terminalFont)
+        love.graphics.print(instructionText, 0, 0)
+        
+        love.graphics.pop()
+        
+        love.graphics.setCanvas(oldCanvas2)
+        love.graphics.setShader(oldShader2)
+        love.graphics.setBlendMode(oldBlendMode2)
+        
+        -- Get ImageData and sample pixels for rays
+        local instructionImageData = instructionCanvas:newImageData()
+        instructionCanvas:release()
+        
+        local instWidth = instructionImageData:getWidth()
+        local instHeight = instructionImageData:getHeight()
+        
+        -- Calculate text position for ray coordinate conversion (accounting for scaling)
+        -- The text baseline is at instructionTextY, horizontally centered at instructionTextX
+        local textCenterX = instructionTextX
+        local textBaselineY = instructionTextY
+        
+        -- Canvas position where text is rendered (accounting for padding and scaling)
+        local canvasTextX = instructionPadding + (instructionTextWidth * baseScale) / 2
+        local canvasTextBaselineY = instructionPadding  -- Baseline at padding
+        
+        for y = 0, instHeight - 1, 1 do
+            for x = 0, instWidth - 1, 1 do
+                local r, g, b, a = instructionImageData:getPixel(x, y)
+                if a > 0.1 then
+                    if (x % pixelSampleRate == 0) and (y % pixelSampleRate == 0) then
+                        -- Convert canvas coordinates to screen coordinates
+                        -- The canvas has the scaled text, so we need to map canvas pixels to screen pixels
+                        -- Canvas pixel (x, y) is relative to canvas text position, then we map to screen position
+                        local canvasRelX = x - canvasTextX
+                        local canvasRelY = y - canvasTextBaselineY
+                        
+                        -- Map to screen space (text baseline at instructionTextY, centered at instructionTextX)
+                        local screenX = textCenterX + canvasRelX
+                        local screenY = textBaselineY + canvasRelY
+                        
+                        local pixelBrightness = g * a
+                        local lineBrightness = pixelBrightness * 0.5
+                        
+                        love.graphics.setColor(
+                            lineColor[1] * lineBrightness,
+                            lineColor[2] * lineBrightness,
+                            lineColor[3] * lineBrightness,
+                            finalOpacity
+                        )
+                        
+                        love.graphics.line(screenX, screenY, centerX, centerY)
+                    end
+                end
+            end
+        end
+        
+        instructionImageData:release()
+        
+        -- Draw instruction text using the same terminal text style (flickers as a unit)
+        TopBanner.drawGlitchyTerminalText(instructionText, instructionTextX, instructionTextY, 32, glitchTextTimer, 1.0, terminalFont)
+    end
+    
+    -- Restore state (after drawing both name entry and instruction text rays)
+    love.graphics.setBlendMode(oldBlendMode)
+    love.graphics.setColor(oldColor[1], oldColor[2], oldColor[3], oldColor[4])
+    love.graphics.setLineWidth(oldLineWidth)
+    
+    -- Then, draw the text characters on top of the rays using the same terminal text style
+    -- Per-character flicker: each character flickers independently
+    for _, data in ipairs(charData) do
+        -- Only draw when this character is visible
+        if not data.isVisible then
+            goto continue_char_text
+        end
+        
+        -- Highlight current cursor position with yellow background
+        if data.isCursor then
+            -- Draw blinking cursor background
+            if math.floor(love.timer.getTime() * 2) % 2 == 0 then
+                love.graphics.setColor(1, 1, 0, 0.3)
+                love.graphics.rectangle("fill", data.x - 5, data.y - 5, charWidth + 10, terminalFont:getHeight() + 10)
+            end
+        end
+        
+        -- Draw character using the same terminal text style as other terminal text
+        TopBanner.drawGlitchyTerminalChar(data.char, data.x, data.y, glitchTextTimer, terminalFont, alpha)
+        ::continue_char_text::
+    end
+end
+
 -- Draw life lost auditor screen (engagement depleted but lives remain)
 function drawLifeLostAuditor()
     -- Draw frozen game state (no updates, but visible)
@@ -1731,22 +2234,137 @@ function drawWinTextScreen()
         end
     end
     
-    -- Draw win text
-    love.graphics.setFont(Game.fonts.large)
-    love.graphics.setColor(0, 1, 0)  -- Green
-    local message = Popups.getWinMessage(Game.winCondition)
-    local textWidth = Game.fonts.large:getWidth(message)
-    love.graphics.print(message, (Constants.SCREEN_WIDTH - textWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
+    -- Win text removed - Chase Paxton handles this in his dialogue
+    
+    -- Draw animating webcam window if animation is active (during matrix transition)
+    if Game.webcamWindowAnimating or Game.webcamWindowDialogueActive then
+        drawAnimatingWebcamWindow()
+    end
+end
+
+-- Draw animating webcam window (used during level complete sequence)
+function drawAnimatingWebcamWindow()
+    if not Game.webcamWindowAnimating and not Game.webcamWindowDialogueActive then
+        return
+    end
+    
+    -- Get original webcam window position and size
+    local originalWidth = 300
+    local originalHeight = 200
+    local originalX = Constants.OFFSET_X + Constants.PLAYFIELD_WIDTH - originalWidth - 20
+    local originalY = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + 20
+    
+    -- Target position and size (centered, double size)
+    local targetWidth = originalWidth * 2
+    local targetHeight = originalHeight * 2
+    local targetX = (Constants.SCREEN_WIDTH - targetWidth) / 2
+    local targetY = (Constants.SCREEN_HEIGHT - targetHeight) / 2
+    
+    -- Calculate animated position and scale
+    local animProgress = 0
+    if Game.webcamWindowAnimating and Game.webcamWindowAnimDuration and Game.webcamWindowAnimDuration > 0 then
+        if Game.webcamWindowAnimReversing then
+            -- Reverse animation: go from 1.0 back to 0.0
+            animProgress = math.max((Game.webcamWindowAnimTimer or 0) / Game.webcamWindowAnimDuration, 0.0)
+            animProgress = 1 - math.pow(1 - animProgress, 3)  -- Ease out (but reversed)
+        else
+            -- Forward animation: go from 0.0 to 1.0
+            animProgress = math.min((Game.webcamWindowAnimTimer or 0) / Game.webcamWindowAnimDuration, 1.0)
+            animProgress = 1 - math.pow(1 - animProgress, 3)  -- Ease out cubic
+        end
+    elseif Game.webcamWindowDialogueActive then
+        animProgress = 1.0  -- Fully centered during dialogue
+    else
+        animProgress = 0.0
+    end
+    
+    local WEBCAM_WIDTH = originalWidth + (targetWidth - originalWidth) * animProgress
+    local WEBCAM_HEIGHT = originalHeight + (targetHeight - originalHeight) * animProgress
+    local WEBCAM_X = originalX + (targetX - originalX) * animProgress
+    local WEBCAM_Y = originalY + (targetY - originalY) * animProgress
+    
+    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+    local borderWidth = Constants.UI.BORDER_WIDTH
+    
+    -- Draw transparent black background for content area
+    drawWindowContentBackground(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, titleBarHeight, borderWidth)
+    
+    -- Draw Windows 95 style frame with title bar
+    WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
+    
+    -- Draw Chase Paxton character portrait - adjust for title bar
+    local charX = WEBCAM_X + WEBCAM_WIDTH / 2
+    local charY = WEBCAM_Y + titleBarHeight + borderWidth + (WEBCAM_HEIGHT - titleBarHeight - borderWidth) / 2
+    
+    -- Calculate available space (accounting for title bar and borders)
+    local availableWidth = WEBCAM_WIDTH - (borderWidth * 2)
+    local availableHeight = WEBCAM_HEIGHT - titleBarHeight - (borderWidth * 2)
+    
+    -- Calculate scale to fit within webcam window
+    local portraitScale = ChasePortrait.calculateScale(availableWidth, availableHeight, 10)
+    ChasePortrait.draw(charX, charY, portraitScale)
+    
+    -- Draw dialogue messages when centered (dialogue active)
+    if Game.webcamWindowDialogueActive and animProgress >= 0.99 then
+        -- Calculate subtitle position (below portrait, centered)
+        local subtitleY = charY + (availableHeight / 2) + 20  -- Below portrait center
+        local subtitleHeight = 50  -- Increased for larger font
+        local subtitleWidth = availableWidth - 20
+        local subtitleX = WEBCAM_X + borderWidth + 10
+        
+        -- Draw subtitle background (semi-transparent black bar)
+        love.graphics.setColor(0, 0, 0, 0.7)  -- Semi-transparent black
+        love.graphics.rectangle("fill", subtitleX, subtitleY, subtitleWidth, subtitleHeight)
+        
+        -- Draw current sentence as subtitle (centered)
+        if Game.webcamWindowDialogueCurrentSentence <= #Game.webcamWindowDialogueSentences then
+            local currentSentence = Game.webcamWindowDialogueSentences[Game.webcamWindowDialogueCurrentSentence]
+            love.graphics.setFont(Game.fonts.large)
+            love.graphics.setColor(1, 1, 1, 1)  -- White
+            local sentenceWidth = Game.fonts.large:getWidth(currentSentence)
+            local sentenceX = subtitleX + (subtitleWidth - sentenceWidth) / 2
+            local sentenceY = subtitleY + (subtitleHeight - Game.fonts.large:getHeight()) / 2
+            love.graphics.print(currentSentence, sentenceX, sentenceY)
+        end
+    end
 end
 
 function drawLevelCompleteScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
-    -- Draw centered, larger webcam window for Chase Paxton
-    local WEBCAM_WIDTH = 600
-    local WEBCAM_HEIGHT = 450
-    local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
-    local WEBCAM_Y = (Constants.SCREEN_HEIGHT - WEBCAM_HEIGHT) / 2 - 100
+    -- Get original webcam window position and size
+    local originalWidth = 300
+    local originalHeight = 200
+    local originalX = Constants.OFFSET_X + Constants.PLAYFIELD_WIDTH - originalWidth - 20
+    local originalY = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + 20
+    
+    -- Target position and size (centered, double size)
+    local targetWidth = originalWidth * 2
+    local targetHeight = originalHeight * 2
+    local targetX = (Constants.SCREEN_WIDTH - targetWidth) / 2
+    local targetY = (Constants.SCREEN_HEIGHT - targetHeight) / 2
+    
+    -- Calculate animated position and scale
+    local animProgress = 0
+    if Game.webcamWindowAnimating and Game.webcamWindowAnimDuration and Game.webcamWindowAnimDuration > 0 then
+        if Game.webcamWindowAnimReversing then
+            -- Reverse animation: go from 1.0 back to 0.0
+            animProgress = math.max((Game.webcamWindowAnimTimer or 0) / Game.webcamWindowAnimDuration, 0.0)
+            animProgress = 1 - math.pow(1 - animProgress, 3)  -- Ease out (but reversed)
+        else
+            -- Forward animation: go from 0.0 to 1.0
+            animProgress = math.min((Game.webcamWindowAnimTimer or 0) / Game.webcamWindowAnimDuration, 1.0)
+            animProgress = 1 - math.pow(1 - animProgress, 3)  -- Ease out cubic
+        end
+    else
+        animProgress = 1.0  -- Already at target
+    end
+    
+    local WEBCAM_WIDTH = originalWidth + (targetWidth - originalWidth) * animProgress
+    local WEBCAM_HEIGHT = originalHeight + (targetHeight - originalHeight) * animProgress
+    local WEBCAM_X = originalX + (targetX - originalX) * animProgress
+    local WEBCAM_Y = originalY + (targetY - originalY) * animProgress
+    
     local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
     local borderWidth = Constants.UI.BORDER_WIDTH
     
@@ -1768,25 +2386,29 @@ function drawLevelCompleteScreen()
     local portraitScale = ChasePortrait.calculateScale(availableWidth, availableHeight, 10)
     ChasePortrait.draw(charX, charY, portraitScale)
     
-    -- Draw congratulatory messages (from Chase Paxton dialogue)
-    love.graphics.setFont(Game.fonts.large)
-    love.graphics.setColor(1, 1, 0, 1)  -- Yellow
-    local congratsMsg = ChasePaxton.LEVEL_COMPLETE_MESSAGES[1] or "GREAT JOB!"
-    local congratsWidth = Game.fonts.large:getWidth(congratsMsg)
-    love.graphics.print(congratsMsg, WEBCAM_X + (WEBCAM_WIDTH - congratsWidth) / 2, WEBCAM_Y + 30)
-    
-    love.graphics.setFont(Game.fonts.medium)
-    love.graphics.setColor(1, 1, 1, 1)
-    local readyMsg = ChasePaxton.LEVEL_COMPLETE_MESSAGES[2] or "Get ready for the next level!"
-    local readyWidth = Game.fonts.medium:getWidth(readyMsg)
-    love.graphics.print(readyMsg, WEBCAM_X + (WEBCAM_WIDTH - readyWidth) / 2, WEBCAM_Y + WEBCAM_HEIGHT - 60)
-    
-    -- Show countdown timer
-    local timeLeft = math.ceil(Game.levelCompleteScreenTimer)
-    local timerText = Popups.getStartingIn(timeLeft)
-    love.graphics.setColor(0.7, 0.7, 0.7, 1)
-    local timerWidth = Game.fonts.medium:getWidth(timerText)
-    love.graphics.print(timerText, WEBCAM_X + (WEBCAM_WIDTH - timerWidth) / 2, WEBCAM_Y + WEBCAM_HEIGHT - 30)
+    -- Draw dialogue messages when centered (dialogue active)
+    if Game.webcamWindowDialogueActive and animProgress >= 0.99 then
+        -- Calculate subtitle position (below portrait, centered)
+        local subtitleY = charY + (availableHeight / 2) + 20  -- Below portrait center
+        local subtitleHeight = 50  -- Increased for larger font
+        local subtitleWidth = availableWidth - 20
+        local subtitleX = WEBCAM_X + borderWidth + 10
+        
+        -- Draw subtitle background (semi-transparent black bar)
+        love.graphics.setColor(0, 0, 0, 0.7)  -- Semi-transparent black
+        love.graphics.rectangle("fill", subtitleX, subtitleY, subtitleWidth, subtitleHeight)
+        
+        -- Draw current sentence as subtitle (centered)
+        if Game.webcamWindowDialogueCurrentSentence <= #Game.webcamWindowDialogueSentences then
+            local currentSentence = Game.webcamWindowDialogueSentences[Game.webcamWindowDialogueCurrentSentence]
+            love.graphics.setFont(Game.fonts.large)
+            love.graphics.setColor(1, 1, 1, 1)  -- White
+            local sentenceWidth = Game.fonts.large:getWidth(currentSentence)
+            local sentenceX = subtitleX + (subtitleWidth - sentenceWidth) / 2
+            local sentenceY = subtitleY + (subtitleHeight - Game.fonts.large:getHeight()) / 2
+            love.graphics.print(currentSentence, sentenceX, sentenceY)
+        end
+    end
 end
 
 -- Draw ready screen with GET READY and GO! text
@@ -1931,7 +2553,10 @@ end
 
 
 function love.update(dt)
-    if love.keyboard.isDown("escape") then love.event.quit() end
+    -- Don't quit on escape if dynamic music sandbox is open
+    if not DynamicMusic.isActive() and love.keyboard.isDown("escape") then 
+        love.event.quit() 
+    end
     
     -- Handle booting screen
     if Game.bootingMode then
@@ -1950,28 +2575,49 @@ function love.update(dt)
         return  -- Don't update game logic during booting screen
     end
     
+    -- Handle matrix screen
+    if Game.matrixMode then
+        -- Pause matrix screen updates if dynamic music sandbox is open
+        if not DynamicMusic.isActive() then
+            Game.matrixTimer = Game.matrixTimer + dt
+            MatrixEffect.update(dt)
+            -- Keep running until space is pressed (handled in InputHandler)
+        end
+        
+        -- Update dynamic music player (even when paused)
+        DynamicMusic.update(dt)
+        
+        return  -- Don't update game logic during matrix screen
+    end
+    
     -- Handle logo screen
     if Game.logoMode then
-        Game.previousLogoTimer = Game.logoTimer
-        Game.logoTimer = Game.logoTimer + dt
-        
-        -- Play fanfare exactly when the blink animation starts (at 2.5 seconds)
-        -- This happens when the logo image changes to the blink version
-        if Game.previousLogoTimer < 2.5 and Game.logoTimer >= 2.5 then
-            Sound.playFanfare()
+        -- Pause logo screen updates if dynamic music sandbox is open
+        if not DynamicMusic.isActive() then
+            Game.previousLogoTimer = Game.logoTimer
+            Game.logoTimer = Game.logoTimer + dt
+            
+            -- Play fanfare exactly when the blink animation starts (at 2.5 seconds)
+            -- This happens when the logo image changes to the blink version
+            if Game.previousLogoTimer < 2.5 and Game.logoTimer >= 2.5 then
+                Sound.playFanfare()
+            end
+            
+            -- After 5.75 seconds (1s slide + 1.5s wait + 0.25s blink + 3s wait), transition to attract mode
+            if Game.logoTimer >= 5.75 then
+                Game.logoMode = false
+                Game.logoTimer = 0
+                Game.previousLogoTimer = 0
+                Game.logoFanfarePlayed = false
+                Game.attractMode = true
+                Game.attractModeTimer = 0
+                -- Start playing intro music when transitioning to attract mode
+                Sound.playIntroMusic()
+            end
         end
         
-        -- After 5.75 seconds (1s slide + 1.5s wait + 0.25s blink + 3s wait), transition to attract mode
-        if Game.logoTimer >= 5.75 then
-            Game.logoMode = false
-            Game.logoTimer = 0
-            Game.previousLogoTimer = 0
-            Game.logoFanfarePlayed = false
-            Game.attractMode = true
-            Game.attractModeTimer = 0
-            -- Start playing intro music when transitioning to attract mode
-            Sound.playIntroMusic()
-        end
+        -- Update dynamic music player (even when paused)
+        DynamicMusic.update(dt)
         
         return  -- Don't update game logic during logo screen
     end
@@ -1990,8 +2636,17 @@ function love.update(dt)
     
     -- Handle attract mode
     if Game.attractMode then
-        AttractMode.update(dt)
+        -- Pause attract mode updates if dynamic music sandbox is open
+        if not DynamicMusic.isActive() then
+            AttractMode.update(dt)
+        end
+        DynamicMusic.update(dt)
         return  -- Don't update game logic in attract mode
+    end
+    
+    -- Update dynamic music player (also during logo screen)
+    if Game.logoMode then
+        DynamicMusic.update(dt)
     end
     
     -- Handle ready screen (GET READY / GO!)
@@ -2117,7 +2772,18 @@ function love.update(dt)
     
     -- Handle name entry
     if Game.nameEntryActive then
-        return  -- Don't update game logic during name entry
+        -- Update banner animation to maintain dropped state
+        TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
+        
+        -- Update glitch text timer for flicker effect
+        Game.glitchTextTimer = Game.glitchTextTimer + dt
+        
+        -- Decay shake to prevent it from getting stuck
+        if Game.shake > 0 then
+            Game.shake = math.max(0, Game.shake - 2.5 * dt)
+        end
+        
+        return  -- Don't update other game logic during name entry
     end
     
     -- Handle life lost auditor screen (engagement depleted but lives remain)
@@ -2308,7 +2974,7 @@ function love.update(dt)
                 if Game.shouldRestartLevel and Game.lives > 0 then
                     -- This shouldn't happen if reverse is working, but keep as fallback
                     restartLevel()
-                elseif Game.lives == 0 then
+                elseif Game.lives <= 0 then
                     -- All lives lost - check for high score
                     if isHighScore(Game.score) then
                         -- Stop all projectile whistle sounds before name entry
@@ -2376,11 +3042,31 @@ function love.update(dt)
             else
                 -- Normal gameplay: show win text
                 Game.slowMoActive = false
-                Game.winTextActive = true
-                Game.winTextTimer = 5.0  -- 5 second pause on win text
+                -- Skip win text, go straight to Chase Paxton animation
+                Game.winTextActive = false
+                Game.winTextTimer = 0
                 -- Clean up any remaining game sounds when frozen (fanfare should be done by now)
                 Sound.cleanup()
                 Sound.unmute()  -- Re-enable for any UI sounds
+                -- Restart dynamic music (part 2) after cleanup
+                if DynamicMusic.isAutomatic() then
+                    DynamicMusic.startPart(2)
+                end
+                -- Start matrix transition and webcam window animation immediately
+                Game.matrixTransitionActive = true
+                Game.webcamWindowAnimating = true
+                Game.webcamWindowAnimReversing = false
+                Game.webcamWindowAnimTimer = 0
+                Game.webcamWindowDialogueActive = false
+                Game.webcamWindowDialogueTimer = 0
+                -- Ensure duration is set
+                if not Game.webcamWindowAnimDuration or Game.webcamWindowAnimDuration <= 0 then
+                    Game.webcamWindowAnimDuration = 1.0
+                end
+                MatrixEffect.startTransition(2.0, function()
+                    -- Transition complete - matrix done, animation continues to center
+                    Game.matrixTransitionActive = false
+                end)
                 Sound.update(dt)
                 return
             end
@@ -2398,129 +3084,287 @@ function love.update(dt)
         -- Update sound system during win text display
         Sound.update(dt)
         if Game.winTextTimer <= 0 then
-            -- Win text done, show webcam screen
+            -- Win text done, start matrix transition to Chase Paxton screen
             Game.winTextActive = false
             Game.winTextTimer = 0
-            Game.levelCompleteScreenActive = true
-            Game.levelCompleteScreenTimer = 5.0  -- 5 second completion screen
-            Webcam.showComment("level_complete")
+            Game.matrixTransitionActive = true
+            -- Start webcam window animation (forward to center)
+            Game.webcamWindowAnimating = true
+            Game.webcamWindowAnimReversing = false
+            Game.webcamWindowAnimTimer = 0
+            Game.webcamWindowDialogueActive = false
+            Game.webcamWindowDialogueTimer = 0
+            Game.webcamWindowDialogueSentences = {}
+            Game.webcamWindowDialogueCurrentSentence = 1
+            Game.webcamWindowDialogueSentenceTimer = 0
+            -- Ensure duration is set
+            if not Game.webcamWindowAnimDuration or Game.webcamWindowAnimDuration <= 0 then
+                Game.webcamWindowAnimDuration = 1.0
+            end
+            MatrixEffect.startTransition(2.0, function()
+                -- Transition complete - matrix done, animation continues to center
+                Game.matrixTransitionActive = false
+            end)
         end
         return  -- Don't update game logic during win text display
     end
     
-    -- Handle level completion screen (Chase Paxton congratulation)
-    if Game.levelCompleteScreenActive then
-        Game.levelCompleteScreenTimer = Game.levelCompleteScreenTimer - dt
-        -- Update sound system during completion screen
-        Sound.update(dt)
-        -- Update portrait animation (always talking on level complete)
-        ChasePortrait.setTalking(true)
-        ChasePortrait.update(dt)
-        if Game.levelCompleteScreenTimer <= 0 then
-            -- Completion screen done, clean up any remaining sounds before transition
-            Sound.cleanup()
-            Sound.unmute()  -- Re-enable sounds for next level
-            -- Proceed to level transition
-            Game.levelCompleteScreenActive = false
-            Game.levelCompleteScreenTimer = 0
-            Game.levelTransitionActive = true
-            Game.levelTransitionTimer = 2.0  -- 2 second transition
-            Game.timeScale = 1.0  -- Reset time scale
-            
-            -- Clear all game entities immediately when transition starts
-            -- This prevents showing the last frame of the previous level
-            for i = #Game.units, 1, -1 do
-                local u = Game.units[i]
-                if u.body and not u.isDead then
-                    u.body:destroy()
+    -- Handle webcam window animation
+    if Game.webcamWindowAnimating then
+        if not Game.webcamWindowAnimReversing then
+            -- Animating forward to center
+            if not Game.webcamWindowDialogueActive then
+                -- Only update timer if dialogue hasn't started yet
+                Game.webcamWindowAnimTimer = Game.webcamWindowAnimTimer + dt
+                if Game.webcamWindowAnimTimer >= Game.webcamWindowAnimDuration then
+                    -- Reached center, start dialogue
+                    Game.webcamWindowAnimTimer = Game.webcamWindowAnimDuration
+                    Game.webcamWindowDialogueActive = true
+                    Game.webcamWindowDialogueTimer = 0
+                    -- Split message into sentences
+                    local levelCompleteMsg = ChasePaxton.getLevelCompleteMessage(Game.winCondition)
+                    Game.webcamWindowDialogueSentences = {}
+                    -- Split by sentence delimiters (. ! ?)
+                    for sentence in levelCompleteMsg.message:gmatch("([^%.%!%?]+[%.%!%?]?)") do
+                        sentence = sentence:match("^%s*(.-)%s*$")  -- Trim whitespace
+                        if sentence ~= "" then
+                            table.insert(Game.webcamWindowDialogueSentences, sentence)
+                        end
+                    end
+                    -- If no sentences found, use the whole message
+                    if #Game.webcamWindowDialogueSentences == 0 then
+                        table.insert(Game.webcamWindowDialogueSentences, levelCompleteMsg.message)
+                    end
+                    Game.webcamWindowDialogueCurrentSentence = 1
+                    Game.webcamWindowDialogueSentenceTimer = 0
+                    Webcam.showComment("level_complete")
+                    ChasePortrait.setTalking(true)
                 end
-                table.remove(Game.units, i)
             end
-            -- Stop any remaining projectile whistle sounds before destroying
-            for i = #Game.projectiles, 1, -1 do
-                local p = Game.projectiles[i]
-                if p.whistleSound then
-                    pcall(function()
-                        p.whistleSound:stop()
-                        p.whistleSound:release()
-                    end)
-                    p.whistleSound = nil
+        else
+            -- Animating reverse back to original position
+            Game.webcamWindowAnimTimer = Game.webcamWindowAnimTimer - dt
+            if Game.webcamWindowAnimTimer <= 0 then
+                -- Back to original position, animation complete
+                Game.webcamWindowAnimTimer = 0
+                Game.webcamWindowAnimating = false
+                Game.webcamWindowAnimReversing = false
+                Game.webcamWindowDialogueActive = false
+                
+                -- Clear all units from previous level during matrix wipe
+                for i = #Game.units, 1, -1 do
+                    local u = Game.units[i]
+                    if u.body and not u.isDead then
+                        u.body:destroy()
+                    end
+                    table.remove(Game.units, i)
                 end
-                if p.body then
-                    p.body:destroy()
+                
+                -- Clear explosion zones (area effects) before level transition
+                for i = #Game.explosionZones, 1, -1 do
+                    local z = Game.explosionZones[i]
+                    if z.body then
+                        z.body:destroy()
+                    end
+                    table.remove(Game.explosionZones, i)
                 end
-                table.remove(Game.projectiles, i)
-            end
-            for i = #Game.powerups, 1, -1 do
-                local p = Game.powerups[i]
-                if p.body then
-                    p.body:destroy()
+                
+                -- Clear visual effects before level transition
+                Game.effects = {}
+                
+                -- Start matrix transition to hide the level change
+                Game.matrixTransitionActive = true
+                MatrixEffect.startTransition(2.0, function()
+                    -- Transition complete - now do the actual level transition
+                    Game.level = Game.level + 1
+                    Game.levelTransitionActive = false
+                    Game.levelTransitionTimer = 0
+                    Game.gameState = "playing"
+                    Game.winCondition = nil
+                    Game.hasUnitBeenConverted = false
+                    
+                    -- Reset engagement to 100% for new level
+                    Engagement.init()
+                    
+                    -- Clear projectiles and hazards for new level
+                    for i = #Game.projectiles, 1, -1 do
+                        local p = Game.projectiles[i]
+                        if p.whistleSound then
+                            pcall(function()
+                                p.whistleSound:stop()
+                                p.whistleSound:release()
+                            end)
+                            p.whistleSound = nil
+                        end
+                        if p.body then
+                            p.body:destroy()
+                        end
+                        table.remove(Game.projectiles, i)
+                    end
+                    Game.hazards = {}
+                    
+                    -- Clear explosion zones (area effects) for new level
+                    for i = #Game.explosionZones, 1, -1 do
+                        local z = Game.explosionZones[i]
+                        if z.body then
+                            z.body:destroy()
+                        end
+                        table.remove(Game.explosionZones, i)
+                    end
+                    
+                    -- Clear visual effects for new level
+                    Game.effects = {}
+                    
+                    -- Clear button held status
+                    if Game.turret then
+                        Game.turret.isCharging = false
+                        Game.turret.chargeTimer = 0
+                        if Game.turret.chargeSound then
+                            pcall(function()
+                                Game.turret.chargeSound:stop()
+                                Game.turret.chargeSound:release()
+                            end)
+                            Game.turret.chargeSound = nil
+                        end
+                    end
+                    Game.joystickButton1Pressed = false
+                    Game.joystickButton2Pressed = false
+                    
+                    -- Clear weapon upgrades on level change
+                    Game.isUpgraded = false
+                    Constants.PUCK_LIFETIME = Constants.PUCK.LIFETIME
+                    
+                    -- Spawn new units for next level
+                    spawnUnitsForLevel()
+                    
+                    -- Trigger ready sequence for new level
+                    Game.readyActive = true
+                    Game.readyTimer = 0
+                    Game.readyPhase = 1
+                    Game.readySparks = {}
+                    Game.gameState = "ready"
+                    -- Reset banner to original position
+                    TopBanner.reset()
+                    
+                    -- Stop intro/attract mode music
+                    Sound.stopMusic()
+                    
+                    -- Switch dynamic music back to part 1 for new level
+                    if not DynamicMusic.isAutomatic() then
+                        DynamicMusic.startAutomatic()
+                    else
+                        DynamicMusic.switchToPart(1)
+                    end
+                    
+                    -- End transition
+                    Game.matrixTransitionActive = false
+                end)
+                
+                -- Proceed to level transition (but matrix will handle the visual)
+                Game.levelTransitionActive = true
+                Game.levelTransitionTimer = 2.0  -- 2 second transition
+                Game.timeScale = 1.0  -- Reset time scale
+                
+                -- Clear projectiles and hazards immediately
+                for i = #Game.projectiles, 1, -1 do
+                    local p = Game.projectiles[i]
+                    if p.whistleSound then
+                        pcall(function()
+                            p.whistleSound:stop()
+                            p.whistleSound:release()
+                        end)
+                        p.whistleSound = nil
+                    end
+                    if p.body then
+                        p.body:destroy()
+                    end
+                    table.remove(Game.projectiles, i)
                 end
-                table.remove(Game.powerups, i)
-            end
-            for i = #Game.explosionZones, 1, -1 do
-                local z = Game.explosionZones[i]
-                if z.body then
-                    z.body:destroy()
+                Game.hazards = {}
+                
+                -- Clear button held status immediately
+                if Game.turret then
+                    Game.turret.isCharging = false
+                    Game.turret.chargeTimer = 0
+                    if Game.turret.chargeSound then
+                        pcall(function()
+                            Game.turret.chargeSound:stop()
+                            Game.turret.chargeSound:release()
+                        end)
+                        Game.turret.chargeSound = nil
+                    end
                 end
-                table.remove(Game.explosionZones, i)
+                Game.joystickButton1Pressed = false
+                Game.joystickButton2Pressed = false
+                
+                -- Clean up any remaining sounds before transition
+                Sound.cleanup()
+                Sound.unmute()  -- Re-enable sounds for next level
+                -- Restart dynamic music (part 2) after cleanup - it should continue until next level
+                if DynamicMusic.isAutomatic() then
+                    DynamicMusic.startPart(2)
+                end
             end
-            Game.hazards = {}
-            Game.effects = {}
-            
-            -- Clear multiplier and rapid fire immediately when transition starts
-            Game.pointMultiplier = 1
-            Game.pointMultiplierTimer = 0
-            Game.pointMultiplierActive = false
-            Game.pointMultiplierFlashTimer = 0
-            Game.pointMultiplierTextTimer = 0
-            Game.pointMultiplierSparks = {}
-            Game.rapidFireTextTimer = 0
-            Game.rapidFireSparks = {}
-            
-            -- Clear turret rapid fire mode
-            if Game.turret then
-                Game.turret.puckModeTimer = 0
-            end
-            
-            -- Reset powerup spawn timer
-            Game.powerupSpawnTimer = 5.0
         end
-        -- Don't update game logic during completion screen (frozen)
-        return
     end
     
-    -- Handle level transition
+    -- Handle dialogue display (when window is centered)
+    if Game.webcamWindowDialogueActive then
+        Game.webcamWindowDialogueTimer = Game.webcamWindowDialogueTimer + dt
+        Game.webcamWindowDialogueSentenceTimer = Game.webcamWindowDialogueSentenceTimer + dt
+        -- Update sound system during dialogue
+        Sound.update(dt)
+        -- Update portrait animation (always talking during dialogue)
+        ChasePortrait.setTalking(true)
+        ChasePortrait.update(dt)
+        
+        -- Advance to next sentence if current sentence time is up
+        if Game.webcamWindowDialogueSentenceTimer >= Game.webcamWindowDialogueSentenceDuration then
+            Game.webcamWindowDialogueCurrentSentence = Game.webcamWindowDialogueCurrentSentence + 1
+            Game.webcamWindowDialogueSentenceTimer = 0
+            -- If we've shown all sentences, wait a bit before ending dialogue
+            if Game.webcamWindowDialogueCurrentSentence > #Game.webcamWindowDialogueSentences then
+                -- All sentences shown, wait a bit more then end
+                if Game.webcamWindowDialogueTimer >= Game.webcamWindowDialogueDuration then
+                    -- Dialogue done, start reverse animation
+                    Game.webcamWindowDialogueActive = false
+                    Game.webcamWindowDialogueTimer = 0
+                    Game.webcamWindowDialogueSentenceTimer = 0
+                    Game.webcamWindowDialogueSentences = {}
+                    Game.webcamWindowDialogueCurrentSentence = 1
+                    -- Make sure animation is still active and timer is at max for reverse
+                    if not Game.webcamWindowAnimating then
+                        Game.webcamWindowAnimating = true
+                    end
+                    Game.webcamWindowAnimReversing = true
+                    if Game.webcamWindowAnimTimer < Game.webcamWindowAnimDuration then
+                        Game.webcamWindowAnimTimer = Game.webcamWindowAnimDuration
+                    end
+                    ChasePortrait.setTalking(false)
+                end
+            end
+        end
+    end
+    
+    -- Handle matrix transition (for level restarts and transitions)
+    if Game.matrixTransitionActive then
+        MatrixEffect.update(dt)
+        -- Also update level transition timer if both are active
+        if Game.levelTransitionActive then
+            Game.levelTransitionTimer = Game.levelTransitionTimer - dt
+            if Game.levelTransitionTimer <= 0 then
+                Game.levelTransitionTimer = 0  -- Keep it at 0 until matrix transition completes
+            end
+        end
+        return  -- Don't update other game logic during matrix transition
+    end
+    
+    -- Handle level transition (matrix transition handles the visual, this just tracks timing)
     if Game.levelTransitionActive then
         Game.levelTransitionTimer = Game.levelTransitionTimer - dt
+        -- Matrix transition callback will handle the actual level change
         if Game.levelTransitionTimer <= 0 then
-            -- Transition complete, start next level
-            Game.level = Game.level + 1
-            Game.levelTransitionActive = false
-            Game.levelTransitionTimer = 0
-            Game.gameState = "playing"
-            Game.winCondition = nil
-            Game.hasUnitBeenConverted = false
-            
-            -- Reset engagement to 100% for new level
-            Engagement.init()
-            
-            -- Multiplier and rapid fire were already cleared when transition started
-            -- Entities were already cleared when transition started
-            -- Now spawn new units for next level
-            spawnUnitsForLevel()
-            
-            -- Trigger ready sequence for new level
-            Game.readyActive = true
-            Game.readyTimer = 0
-            Game.readyPhase = 1
-            Game.readySparks = {}
-            Game.gameState = "ready"
-            -- Reset banner to original position
-            TopBanner.reset()
-            
-            -- Restart music for new level
-            Sound.playMusic()
+            Game.levelTransitionTimer = 0  -- Keep it at 0 until matrix transition completes
         end
         return  -- Don't update other game logic during transition
     end
@@ -2555,6 +3399,8 @@ function love.update(dt)
         end
         Webcam.update(dt)
         EngagementPlot.update(dt)
+        -- Update dynamic music even during win sequence so it can switch to part 2
+        DynamicMusic.update(dt)
         return  -- Don't update game entities during slow-mo or non-playing states
     end
     
@@ -2579,7 +3425,7 @@ function love.update(dt)
         TopBanner.update(dt, Game.gameState, Engagement.value, Game.gameOverActive, Game.lifeLostAuditorActive)
     end
     
-    World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt); Godray.update(dt)
+    World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt); Godray.update(dt); DynamicMusic.update(dt)
     
     -- Check if engagement ran out (game over)
     -- Only check if we're actually playing and not already in a game over state
@@ -3024,6 +3870,79 @@ function drawGame()
     love.graphics.setColor(1, 1, 1, 1)
 end
 
+-- Calculate bounding box of all active windows for vignette
+local function calculateWindowBounds()
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    
+    -- Playfield frame (A.R.A.C. Control Interface)
+    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+    local borderWidth = Constants.UI.BORDER_WIDTH
+    local frameX = Constants.OFFSET_X - borderWidth
+    local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+    local frameW = Constants.PLAYFIELD_WIDTH + (borderWidth * 2)
+    local frameH = Constants.PLAYFIELD_HEIGHT + titleBarHeight + (borderWidth * 2)
+    
+    minX = math.min(minX, frameX)
+    minY = math.min(minY, frameY)
+    maxX = math.max(maxX, frameX + frameW)
+    maxY = math.max(maxY, frameY + frameH)
+    
+    -- Webcam window
+    local WEBCAM_WIDTH = 300
+    local WEBCAM_HEIGHT = 200
+    local WEBCAM_X = Constants.OFFSET_X + Constants.PLAYFIELD_WIDTH - WEBCAM_WIDTH - 20
+    local WEBCAM_Y = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + 20
+    
+    minX = math.min(minX, WEBCAM_X)
+    minY = math.min(minY, WEBCAM_Y)
+    maxX = math.max(maxX, WEBCAM_X + WEBCAM_WIDTH)
+    maxY = math.max(maxY, WEBCAM_Y + WEBCAM_HEIGHT)
+    
+    -- Engagement plot
+    local PLOT_WIDTH = Constants.UI.PLOT_WINDOW_WIDTH
+    local PLOT_HEIGHT = Constants.UI.PLOT_WINDOW_HEIGHT
+    local PLOT_X = Constants.OFFSET_X + Constants.UI.WINDOW_OFFSET_X
+    local PLOT_Y = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + Constants.UI.WINDOW_SPACING
+    
+    minX = math.min(minX, PLOT_X)
+    minY = math.min(minY, PLOT_Y)
+    maxX = math.max(maxX, PLOT_X + PLOT_WIDTH)
+    maxY = math.max(maxY, PLOT_Y + PLOT_HEIGHT)
+    
+    -- Score window
+    local SCORE_WIDTH = Constants.UI.SCORE_WINDOW_WIDTH
+    local SCORE_HEIGHT = Constants.UI.SCORE_WINDOW_HEIGHT
+    local SCORE_X = (Constants.SCREEN_WIDTH - SCORE_WIDTH) / 2
+    local SCORE_Y = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT + Constants.UI.WINDOW_SPACING
+    
+    minX = math.min(minX, SCORE_X)
+    minY = math.min(minY, SCORE_Y)
+    maxX = math.max(maxX, SCORE_X + SCORE_WIDTH)
+    maxY = math.max(maxY, SCORE_Y + SCORE_HEIGHT)
+    
+    -- Multiplier window (if active)
+    if not Game.demoMode then
+        local MULTIPLIER_WIDTH = PLOT_WIDTH
+        local MULTIPLIER_HEIGHT = Constants.UI.MULTIPLIER_WINDOW_HEIGHT
+        local MULTIPLIER_X = PLOT_X
+        local MULTIPLIER_Y = PLOT_Y + PLOT_HEIGHT + Constants.UI.WINDOW_SPACING
+        
+        minX = math.min(minX, MULTIPLIER_X)
+        minY = math.min(minY, MULTIPLIER_Y)
+        maxX = math.max(maxX, MULTIPLIER_X + MULTIPLIER_WIDTH)
+        maxY = math.max(maxY, MULTIPLIER_Y + MULTIPLIER_HEIGHT)
+    end
+    
+    -- Convert to normalized coordinates (0-1) and return as x, y, width, height
+    local boundsX = minX / Constants.SCREEN_WIDTH
+    local boundsY = minY / Constants.SCREEN_HEIGHT
+    local boundsW = (maxX - minX) / Constants.SCREEN_WIDTH
+    local boundsH = (maxY - minY) / Constants.SCREEN_HEIGHT
+    
+    return {boundsX, boundsY, boundsW, boundsH}
+end
+
 function love.draw()
     -- Calculate scaling for fullscreen mode
     local scaleX, scaleY = 1, 1
@@ -3043,8 +3962,149 @@ function love.draw()
         offsetY = 0
     end
     
+    -- Update CRT vignette window bounds based on active windows
+    if Game.crtEffect then
+        local windowBounds = calculateWindowBounds()
+        Game.crtEffect.windowBounds = windowBounds
+    end
+    
+    -- Helper function to draw plexiglass overlay (directly over CRT layer)
+    -- sceneCanvas: canvas containing the scene before plexi (for bright pixel detection)
+    local function drawPlexiOverlay(sceneCanvas)
+        if Game.plexi then
+            -- Scale up by 15%
+            local scaleFactor = 1.15
+            local plexiScaleX = (Constants.SCREEN_WIDTH / Game.plexi:getWidth()) * scaleFactor
+            local plexiScaleY = (Constants.SCREEN_HEIGHT / Game.plexi:getHeight()) * scaleFactor
+            
+            -- Draw first plexi layer (additive, 12% opacity)
+            love.graphics.setBlendMode("add")
+            love.graphics.setColor(1, 1, 1, 0.12)  -- 12% opacity
+            
+            if isFullscreen then
+                -- Draw at fullscreen resolution to match CRT output
+                local windowWidth, windowHeight = love.graphics.getDimensions()
+                love.graphics.push()
+                love.graphics.scale(scaleX, scaleY)
+                love.graphics.draw(Game.plexi, 0, 0, 0, plexiScaleX, plexiScaleY)
+                love.graphics.pop()
+            else
+                -- Draw at base resolution
+                love.graphics.draw(Game.plexi, 0, 0, 0, plexiScaleX, plexiScaleY)
+            end
+            
+            -- Now create mask from bright pixels in the captured scene
+            if Game.plexiShader and sceneCanvas then
+                -- Apply shader to create mask (with growth)
+                -- Draw mask at same resolution and position as scene was captured
+                love.graphics.setCanvas(Game.plexiMaskCanvas)
+                love.graphics.clear(0, 0, 0, 0)
+                love.graphics.setShader(Game.plexiShader)
+                Game.plexiShader:send("source", sceneCanvas)
+                Game.plexiShader:send("brightnessThreshold", 0.4)  -- Lower threshold for more bright pixels
+                Game.plexiShader:send("textureSize", {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT})
+                love.graphics.setBlendMode("alpha")
+                love.graphics.setColor(1, 1, 1, 1)
+                -- Draw scene canvas at (0, 0) to match capture position
+                love.graphics.draw(sceneCanvas, 0, 0, 0, 1, 1)
+                love.graphics.setShader()
+                
+                -- Blur the mask by 8 pixels (horizontal then vertical pass)
+                if Game.plexiMaskBlurShader then
+                    -- Horizontal blur pass
+                    love.graphics.setCanvas(Game.plexiMaskBlurTempCanvas)
+                    love.graphics.clear(0, 0, 0, 0)
+                    love.graphics.setShader(Game.plexiMaskBlurShader)
+                    Game.plexiMaskBlurShader:send("direction", {1.0, 0.0})  -- Horizontal
+                    Game.plexiMaskBlurShader:send("radius", 8.0)  -- 8 pixel blur
+                    Game.plexiMaskBlurShader:send("textureSize", {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT})
+                    love.graphics.setBlendMode("alpha")
+                    love.graphics.setColor(1, 1, 1, 1)
+                    love.graphics.draw(Game.plexiMaskCanvas, 0, 0)
+                    
+                    -- Vertical blur pass
+                    love.graphics.setCanvas(Game.plexiMaskCanvas)
+                    love.graphics.clear(0, 0, 0, 0)
+                    Game.plexiMaskBlurShader:send("direction", {0.0, 1.0})  -- Vertical
+                    love.graphics.draw(Game.plexiMaskBlurTempCanvas, 0, 0)
+                    love.graphics.setShader()
+                end
+                
+                love.graphics.setCanvas()
+                
+                -- Draw second plexi layer using mask at higher opacity
+                love.graphics.setCanvas()  -- Draw to screen
+                love.graphics.setBlendMode("add")  -- Additive blend for the second layer
+                
+                if Game.plexiApplyMaskShader then
+                    -- Use shader to apply blurred background and mask to plexi texture
+                    love.graphics.setShader(Game.plexiApplyMaskShader)
+                    Game.plexiApplyMaskShader:send("mask", Game.plexiMaskCanvas)
+                    Game.plexiApplyMaskShader:send("opacity", 1.0)  -- Full opacity
+                    -- Send screen size for coordinate conversion
+                    if isFullscreen then
+                        local windowWidth, windowHeight = love.graphics.getDimensions()
+                        Game.plexiApplyMaskShader:send("screenSize", {windowWidth, windowHeight})
+                    else
+                        Game.plexiApplyMaskShader:send("screenSize", {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT})
+                    end
+                    love.graphics.setColor(1, 1, 1, 1)
+                    
+                    -- Use exact same position, scale, and transformations as first layer
+                    if isFullscreen then
+                        local windowWidth, windowHeight = love.graphics.getDimensions()
+                        love.graphics.push()
+                        love.graphics.scale(scaleX, scaleY)
+                        -- Draw at exact same position as first layer (0, 0)
+                        love.graphics.draw(Game.plexi, 0, 0, 0, plexiScaleX, plexiScaleY)
+                        love.graphics.pop()
+                    else
+                        -- Draw at exact same position as first layer (0, 0)
+                        love.graphics.draw(Game.plexi, 0, 0, 0, plexiScaleX, plexiScaleY)
+                    end
+                    
+                    love.graphics.setShader()
+                else
+                    -- Fallback: simple multiply approach
+                    love.graphics.setColor(1, 1, 1, 0.7)
+                    if isFullscreen then
+                        local windowWidth, windowHeight = love.graphics.getDimensions()
+                        love.graphics.push()
+                        love.graphics.scale(scaleX, scaleY)
+                        love.graphics.draw(Game.plexi, 0, 0, 0, plexiScaleX, plexiScaleY)
+                        love.graphics.pop()
+                    else
+                        love.graphics.draw(Game.plexi, 0, 0, 0, plexiScaleX, plexiScaleY)
+                    end
+                end
+            end
+            
+            love.graphics.setBlendMode("alpha")
+            love.graphics.setColor(1, 1, 1, 1)
+        end
+    end
+    
     -- Helper function to apply CRT shader to any drawing function
     local function drawWithCRT(drawFunc)
+        local sceneCanvas = nil
+        
+        -- First, render scene to canvas (before CRT) - with stencil support
+        -- Capture at base resolution without transformations to match screen
+        if Game.plexiSceneCanvas then
+            love.graphics.setCanvas({Game.plexiSceneCanvas, depthstencil = Game.plexiSceneStencilCanvas})
+            love.graphics.clear(0, 0, 0, 0)
+            love.graphics.setShader()
+            love.graphics.setBlendMode("alpha")
+            love.graphics.setColor(1, 1, 1, 1)
+            
+            -- Draw at base resolution without any transformations
+            drawFunc()
+            
+            love.graphics.setCanvas()
+            sceneCanvas = Game.plexiSceneCanvas
+        end
+        
+        -- Now apply CRT and draw to screen
         if Game.crtEnabled and Game.crtChain then
             -- In fullscreen, the CRT chain was already resized when entering fullscreen
             if isFullscreen then
@@ -3077,6 +4137,9 @@ function love.draw()
             drawFunc()
             love.graphics.pop()
         end
+        
+        -- Always draw plexiglass overlay after CRT processing
+        drawPlexiOverlay(sceneCanvas)
     end
     
     -- Draw joystick test screen (from attract mode)
@@ -3093,9 +4156,19 @@ function love.draw()
         return
     end
     
+    -- Draw matrix screen (before logo)
+    if Game.matrixMode then
+        love.graphics.clear(0, 0, 0)  -- Black background
+        MatrixEffect.draw()
+        DynamicMusic.draw()  -- Draw on top of matrix screen
+        MonitorFrame.draw()
+        return
+    end
+    
     -- Draw logo screen (before attract mode)
     if Game.logoMode then
         drawWithCRT(drawLogoScreen)
+        DynamicMusic.draw()  -- Draw on top of logo screen
         MonitorFrame.draw()
         return
     end
@@ -3103,6 +4176,7 @@ function love.draw()
     -- Draw attract mode screen
     if Game.attractMode then
         drawWithCRT(AttractMode.draw)
+        DynamicMusic.draw()  -- Draw on top of attract mode
         MonitorFrame.draw()
         return
     end
@@ -3163,14 +4237,110 @@ function love.draw()
     
     -- Draw level completion screen (Chase Paxton)
     if Game.winTextActive then
-        drawWithCRT(drawWinTextScreen)
+        -- Draw win text + scanlines + matrix together, then apply CRT to the combined result
+        if Game.matrixTransitionActive then
+            drawWithCRT(function()
+                drawWinTextScreen()
+                -- Draw animated scanlines on top of win text
+                MatrixEffect.drawScanlines()
+                -- Draw matrix on top of scanlines (before CRT processes it)
+                MatrixEffect.draw()
+            end)
+        else
+            drawWithCRT(drawWinTextScreen)
+        end
         MonitorFrame.draw()
         Godray.draw()
         return
     end
     
-    if Game.levelCompleteScreenActive then
-        drawWithCRT(drawLevelCompleteScreen)
+    -- Draw animating webcam window (level complete sequence)
+    if Game.webcamWindowAnimating or Game.webcamWindowDialogueActive then
+        -- Draw everything just like normal gameplay, but with animating webcam window
+        drawWithCRT(function()
+            -- Draw background image if loaded and enabled
+            if Game.showBackgroundForeground and Game.background then
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.draw(Game.background, 0, 0, 0, 
+                    Constants.SCREEN_WIDTH / Game.background:getWidth(),
+                    Constants.SCREEN_HEIGHT / Game.background:getHeight())
+            end
+            
+            -- Draw frozen game state (same as drawGame but frozen)
+            World.draw(function()
+                -- Draw units (frozen)
+                for _, u in ipairs(Game.units) do
+                    if not u.isDead then
+                        u:draw()
+                    end
+                end
+                
+                -- Draw projectiles (frozen)
+                for _, p in ipairs(Game.projectiles) do
+                    if not p.isDead then
+                        p:draw()
+                    end
+                end
+                
+                -- Draw effects (frozen)
+                for _, e in ipairs(Game.effects) do
+                    if e.type == "explosion" and e.duration and e.duration > 0 then
+                        local t = e.timer / e.duration
+                        local alpha = 1.0 - t
+                        local radius = e.radius * (1.0 - t * 0.5)
+                        love.graphics.setColor(1, 1, 0, alpha * 0.5)
+                        love.graphics.circle("fill", e.x, e.y, radius, 32)
+                    elseif e.type == "explosion" then
+                        love.graphics.setColor(1, 1, 0, 0.5)
+                        love.graphics.circle("fill", e.x, e.y, e.radius or 50, 32)
+                    end
+                end
+                
+                -- Draw turret (frozen)
+                if Game.turret then
+                    Game.turret:draw()
+                end
+            end)
+            
+            -- Draw Windows 95 style frame around the playfield (A.R.A.C. Control Interface)
+            do
+                local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+                local borderWidth = Constants.UI.BORDER_WIDTH
+                local frameX = Constants.OFFSET_X - borderWidth
+                local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+                local frameW = Constants.PLAYFIELD_WIDTH + (borderWidth * 2)
+                local frameH = Constants.PLAYFIELD_HEIGHT + titleBarHeight + (borderWidth * 2)
+                WindowFrame.draw(frameX, frameY, frameW, frameH, "A.R.A.C. Control Interface")
+            end
+            
+            -- Draw foreground image if loaded and enabled
+            if Game.showBackgroundForeground and Game.foreground then
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.draw(Game.foreground, 0, 0, 0, 
+                    Constants.SCREEN_WIDTH / Game.foreground:getWidth(),
+                    Constants.SCREEN_HEIGHT / Game.foreground:getHeight())
+            end
+            
+            -- Draw HUD
+            drawHUD()
+            
+            -- Draw webcam window in original position (background, not animating)
+            Webcam.draw()
+            
+            -- Draw engagement plot (next to webcam)
+            EngagementPlot.draw()
+            
+            -- Draw score window (below playfield, centered)
+            drawScoreWindow()
+            
+            -- Draw multiplier window (below engagement plot) - skip in demo mode
+            if not Game.demoMode then
+                drawMultiplierWindow()
+            end
+            
+            -- Draw animating webcam window on top (the one that moves to center)
+            drawAnimatingWebcamWindow()
+        end)
         MonitorFrame.draw()
         Godray.draw()
         return
@@ -3214,6 +4384,20 @@ function love.draw()
         return
     end
     
+    -- Draw matrix transition overlay (for level transitions and restarts)
+    if Game.matrixTransitionActive then
+        -- Draw game + scanlines + matrix together, then apply CRT to the combined result
+        drawWithCRT(function()
+            drawGame()
+            -- Draw animated scanlines on top of game content
+            MatrixEffect.drawScanlines()
+            -- Draw matrix on top of scanlines (before CRT processes it)
+            MatrixEffect.draw()
+        end)
+        MonitorFrame.draw()
+        return
+    end
+    
     -- Draw ready screen (GET READY / GO!)
     if Game.readyActive then
         drawWithCRT(drawReadyScreen)
@@ -3242,6 +4426,36 @@ function love.draw()
     
     -- Draw godray effect on top of everything
     Godray.draw()
+    
+    -- Draw name entry screen (draw after godrays so rays appear on top)
+    if Game.nameEntryActive then
+        -- Draw name entry rays and text (on top of everything except text itself)
+        drawNameEntryRaysAndText()
+    end
+    
+    -- Draw debug mode indicator
+    if Game.debugMode then
+        love.graphics.setColor(1, 0, 0, 0.8)  -- Red with transparency
+        if Game.fonts.medium then
+            love.graphics.setFont(Game.fonts.medium)
+        end
+        love.graphics.print("DEBUG MODE", 10, 10)
+        love.graphics.print("F2: Instant Win | F3: Instant Lose | F4: Game Over", 10, 40)
+        love.graphics.setColor(1, 1, 1, 1)  -- Reset color
+    end
+    
+    -- Draw FPS counter at mid-bottom of screen
+    local fps = love.timer.getFPS()
+    local fpsText = "FPS: " .. fps
+    if Game.fonts.medium then
+        love.graphics.setFont(Game.fonts.medium)
+    end
+    local fpsWidth = Game.fonts.medium:getWidth(fpsText)
+    local fpsX = (Constants.SCREEN_WIDTH - fpsWidth) / 2  -- Centered horizontally
+    local fpsY = Constants.SCREEN_HEIGHT - 30  -- 30 pixels from bottom
+    love.graphics.setColor(1, 1, 1, 0.8)  -- White with slight transparency
+    love.graphics.print(fpsText, fpsX, fpsY)
+    love.graphics.setColor(1, 1, 1, 1)  -- Reset color
 end
 
 function drawScoreWindow()
@@ -3469,67 +4683,7 @@ function drawHUD()
         love.graphics.print(nextLevelMsg, (Constants.SCREEN_WIDTH - nextLevelWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
     -- Removed old game over screen messages - banner drop replaces them
     elseif Game.nameEntryActive then
-        -- Draw name entry screen (check this before game over screen)
-        love.graphics.setFont(Game.fonts.large)
-        love.graphics.setColor(1, 1, 0)
-        local titleMsg = Popups.HIGH_SCORE.TITLE
-        local titleWidth = Game.fonts.large:getWidth(titleMsg)
-        love.graphics.print(titleMsg, (Constants.SCREEN_WIDTH - titleWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 150)
-        
-        love.graphics.setFont(Game.fonts.medium)
-        love.graphics.setColor(1, 1, 1)
-        local scoreMsg = Popups.HIGH_SCORE.getScore(Game.score)
-        local scoreWidth = Game.fonts.medium:getWidth(scoreMsg)
-        love.graphics.print(scoreMsg, (Constants.SCREEN_WIDTH - scoreWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 100)
-        
-        love.graphics.setColor(0.8, 0.8, 0.8)
-        local enterMsg = Popups.HIGH_SCORE.ENTER_NAME
-        local enterWidth = Game.fonts.medium:getWidth(enterMsg)
-        love.graphics.print(enterMsg, (Constants.SCREEN_WIDTH - enterWidth) / 2, Constants.SCREEN_HEIGHT / 2 - 50)
-        
-        -- Draw name input box
-        local boxWidth = 400
-        local boxHeight = 50
-        local boxX = (Constants.SCREEN_WIDTH - boxWidth) / 2
-        local boxY = Constants.SCREEN_HEIGHT / 2
-        
-        love.graphics.setColor(0.2, 0.2, 0.2)
-        love.graphics.rectangle("fill", boxX, boxY, boxWidth, boxHeight)
-        love.graphics.setColor(1, 1, 1)
-        love.graphics.setLineWidth(2)
-        love.graphics.rectangle("line", boxX, boxY, boxWidth, boxHeight)
-        
-        -- Draw name text with arcade-style cursor
-        love.graphics.setFont(Game.fonts.large)
-        local charWidth = Game.fonts.large:getWidth("A")
-        local startX = boxX + (boxWidth - (charWidth * Game.nameEntryMaxLength)) / 2
-        local textY = boxY + (boxHeight - Game.fonts.large:getHeight()) / 2
-        
-        -- Draw each character
-        for i = 1, Game.nameEntryMaxLength do
-            local char = Game.nameEntryText:sub(i, i) or "A"
-            local charX = startX + (i - 1) * charWidth
-            
-            -- Highlight current cursor position
-            if i == Game.nameEntryCursor then
-                -- Draw blinking cursor background
-                if math.floor(love.timer.getTime() * 2) % 2 == 0 then
-                    love.graphics.setColor(1, 1, 0, 0.3)
-                    love.graphics.rectangle("fill", charX - 5, textY - 5, charWidth + 10, Game.fonts.large:getHeight() + 10)
-                end
-                love.graphics.setColor(1, 1, 0)  -- Yellow for current position
-            else
-                love.graphics.setColor(1, 1, 1)  -- White for other positions
-            end
-            
-            love.graphics.print(char, charX, textY)
-        end
-        
-        -- Instructions
-        love.graphics.setColor(0.6, 0.6, 0.6)
-        love.graphics.setFont(Game.fonts.small)
-        local hintMsg = "ARROWS: Move/Change  ENTER: Confirm"
-        local hintWidth = Game.fonts.small:getWidth(hintMsg)
-        love.graphics.print(hintMsg, (Constants.SCREEN_WIDTH - hintWidth) / 2, Constants.SCREEN_HEIGHT / 2 + 70)
+        -- Name entry screen - only terminal text is drawn (rays and text drawn separately after godrays)
+        -- All UI elements (box, title, score, instructions) removed - only green terminal text remains
     end
 end

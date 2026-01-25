@@ -235,11 +235,19 @@ function MonitorFrame.isReverseAnimationComplete()
     end
     
     local eyelidComplete = true
+    -- Check if eyelid needs to reverse (was moved up, currentY < 0)
     if state.eyelidAnimation.currentY < 0 then
         eyelidComplete = math.abs(state.eyelidAnimation.currentY) < 0.1
     end
     
-    return engagementComplete and bottomCenterPanelComplete and eyelidComplete
+    local allComplete = engagementComplete and bottomCenterPanelComplete and eyelidComplete
+    
+    -- If all animations are complete, mark reverse as done
+    if allComplete then
+        state.reverseAnimationActive = false
+    end
+    
+    return allComplete
 end
 
 -- Reset all animations (for new game)
@@ -301,13 +309,9 @@ function MonitorFrame.updateEngagementAnimations(engagementValue, dt)
             state.engagementPanelAnimations.leftMidPanelOffsetX = targetOffset
         end
         
-        -- Check if all panels have reached 0 (reverse complete)
-        if math.abs(state.engagementPanelAnimations.rightMidPanelOffsetX) < 0.1 and
-           math.abs(state.engagementPanelAnimations.topPanelOffsetY) < 0.1 and
-           math.abs(state.engagementPanelAnimations.leftMidPanelOffsetX) < 0.1 then
-            -- All engagement panels have reversed, mark as complete
-            state.reverseAnimationActive = false
-        end
+        -- Don't set reverseAnimationActive = false here - let isReverseAnimationComplete() 
+        -- check all conditions (engagement panels, BottomCenterPanel, Eyelid) before marking complete
+        -- The completion check will handle setting it to false when everything is done
         return
     end
     

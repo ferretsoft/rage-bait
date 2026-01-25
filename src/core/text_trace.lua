@@ -175,6 +175,20 @@ function TextTrace.draw()
         return
     end
     
+    -- For life lost, only draw when text is visible (same flicker logic as text)
+    if Game.lifeLostAuditorActive then
+        if not TopBanner.isLifeLostTextVisible(Game.glitchTextTimer) then
+            return
+        end
+    end
+    
+    -- For game over, only draw when text is visible (same flicker logic as text)
+    if Game.gameOverActive then
+        if not TopBanner.isGameOverTextVisible(Game.glitchTextTimer) then
+            return
+        end
+    end
+    
     -- Get center point from top banner (same as godrays) - this follows the banner
     local centerX, centerY = TopBanner.getVigilantCenter()
     
