@@ -48,6 +48,8 @@ local MatrixEffect = require("src.core.matrix_effect")
 local HighScores = require("src.core.high_scores")
 local ParticleSystem = require("src.core.particle_system")
 local DrawingHelpers = require("src.core.drawing_helpers")
+local Doomscroll = require("src.core.doomscroll")
+local ToxicSplat = require("src.core.toxic_splat")
 local BootingScreen = require("src.screens.booting_screen")
 local LogoScreen = require("src.screens.logo_screen")
 local IntroVideoScreen = require("src.screens.intro_video_screen")
@@ -691,7 +693,15 @@ function love.load()
         -- Clamp toxic zone position to playfield bounds (accounting for radius)
         local toxicX = math.max(Constants.TOXIC_RADIUS, math.min(Constants.PLAYFIELD_WIDTH - Constants.TOXIC_RADIUS, x))
         local toxicY = math.max(Constants.TOXIC_RADIUS, math.min(Constants.PLAYFIELD_HEIGHT - Constants.TOXIC_RADIUS, y))
-        table.insert(Game.hazards, {x = toxicX, y = toxicY, radius = Constants.TOXIC_RADIUS, timer = Constants.TOXIC_DURATION})
+        local r, g, b = unpack(Constants.COLORS.TOXIC)
+        local hazard = {
+            x = toxicX, 
+            y = toxicY, 
+            radius = Constants.TOXIC_RADIUS, 
+            timer = Constants.TOXIC_DURATION,
+            splat = ToxicSplat.createSplat(toxicX, toxicY, Constants.TOXIC_RADIUS, {r * 0.5, g * 0.5, b * 0.5})
+        }
+        table.insert(Game.hazards, hazard)
         Webcam.showComment("unit_killed")
     end)
     Event.on("unit_insane_exploded", function(data)
@@ -699,23 +709,22 @@ function love.load()
         -- Clamp position to playfield bounds (accounting for radius)
         local toxicX = math.max(Constants.INSANE_TOXIC_RADIUS, math.min(Constants.PLAYFIELD_WIDTH - Constants.INSANE_TOXIC_RADIUS, x))
         local toxicY = math.max(Constants.INSANE_TOXIC_RADIUS, math.min(Constants.PLAYFIELD_HEIGHT - Constants.INSANE_TOXIC_RADIUS, y))
-        -- Massive explosion effect
+        
+        -- Create orange explosion splat (fiery orange, larger scale)
+        -- Fiery orange color: {1.0, 0.4, 0.1} for base, with highlights
+        local orangeSplat = ToxicSplat.createSplat(toxicX, toxicY, Constants.INSANE_EXPLOSION_RADIUS, {0.8, 0.3, 0.1})
         table.insert(Game.effects, {
-            type = "explosion",
-            x = toxicX, y = toxicY,
-            radius = 0,
-            maxRadius = Constants.INSANE_EXPLOSION_RADIUS,
-            color = "red",  -- Red for insanity
+            type = "orange_splat",
+            x = toxicX, 
+            y = toxicY,
+            splat = orangeSplat,
             alpha = 1.0,
-            timer = 0.8,  -- Longer explosion animation
-            speechBubble = data.speechBubble  -- Preserve speech bubble for drawing
+            timer = 0.8,  -- Duration of orange explosion
+            speechBubble = data.speechBubble,  -- Preserve speech bubble for drawing
+            toxicX = toxicX,  -- Store position for green zone creation
+            toxicY = toxicY
         })
-        -- Massive toxic sludge (larger radius and longer duration)
-        table.insert(Game.hazards, {
-            x = toxicX, y = toxicY,
-            radius = Constants.INSANE_TOXIC_RADIUS,
-            timer = Constants.INSANE_TOXIC_DURATION
-        })
+        
         Game.shake = math.max(Game.shake, 2.0)  -- Strong screen shake
         Webcam.showComment("unit_killed")  -- Use same comment for now
     end)
@@ -1162,6 +1171,9 @@ end
 
 function drawJoystickTestScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+    DrawingHelpers.drawTealWallpaper()
 
     local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
     local border = Constants.UI.BORDER_WIDTH
@@ -1299,6 +1311,9 @@ end
 -- Draw intro screen with centered webcam
 function drawIntroScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+    DrawingHelpers.drawTealWallpaper()
     
     -- Intro messages (multiple steps) - Chase Paxton's onboarding
     local currentStep = math.min(Game.intro.step, #ChasePaxton.INTRO_MESSAGES)
@@ -1718,6 +1733,9 @@ function drawLifeLostAuditor()
     -- Draw frozen game state (no updates, but visible)
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
+    -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+    DrawingHelpers.drawTealWallpaper()
+    
     -- Apply shake transform to everything (background, game, windows)
     love.graphics.push()
         if Game.shake > 0 then
@@ -1755,6 +1773,9 @@ function drawLifeLostAuditor()
         
         -- Draw score window (below playfield, centered)
         drawScoreWindow()
+        
+        -- Draw doomscroll window (below score window)
+        Doomscroll.draw(Game.fonts)
         
         -- Draw multiplier window (below engagement plot) - skip in demo mode
         if not Game.modes.demo then
@@ -1780,6 +1801,9 @@ function drawGameOver()
     -- Draw frozen game state (no updates, but visible)
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
+    -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+    DrawingHelpers.drawTealWallpaper()
+    
     -- Apply shake transform to everything (background, game, windows)
     love.graphics.push()
         if Game.shake > 0 then
@@ -1817,6 +1841,9 @@ function drawGameOver()
         
         -- Draw score window (below playfield, centered)
         drawScoreWindow()
+        
+        -- Draw doomscroll window (below score window)
+        Doomscroll.draw(Game.fonts)
         
         -- Draw multiplier window (below engagement plot) - skip in demo mode
         if not Game.modes.demo then
@@ -1844,6 +1871,9 @@ function drawAuditor()
         -- Draw frozen game state (no updates, but visible)
         love.graphics.clear(Constants.COLORS.BACKGROUND)
         
+        -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+        DrawingHelpers.drawTealWallpaper()
+        
         -- Draw frozen game elements
         DrawingHelpers.drawFrozenGameState()
         
@@ -1858,6 +1888,12 @@ function drawAuditor()
     elseif Game.auditor.phase == 2 then
         local fadeProgress = Game.timers.auditor / 2.0
         local fadeAlpha = math.min(fadeProgress, 1.0)
+        
+        -- Draw teal wallpaper first (visible before fade takes over)
+        DrawingHelpers.drawTealWallpaper()
+        
+        -- Draw frozen game elements (visible before fade)
+        DrawingHelpers.drawFrozenGameState()
         
         -- Fade to black
         DrawingHelpers.drawBlackOverlay(fadeAlpha)
@@ -1930,6 +1966,9 @@ end
 -- Draw level completion screen with Chase Paxton
 function drawWinTextScreen()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+    DrawingHelpers.drawTealWallpaper()
     
     -- Draw the game frozen in the background (faded)
     if Game.turret then
@@ -2090,6 +2129,9 @@ function drawReadyScreen()
     -- Draw the normal game playfield in background (same as drawGame but without HUD)
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
+    -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+    DrawingHelpers.drawTealWallpaper()
+    
     -- Apply shake transform
     love.graphics.push()
         if Game.shake > 0 then
@@ -2107,9 +2149,16 @@ function drawReadyScreen()
         -- Draw game elements
         World.draw(function()
             for _, h in ipairs(Game.hazards) do
-                local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
-                love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
-                love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+                if h.splat then
+                    -- Use animated splat
+                    local a = (h.timer / (h.radius == Constants.INSANE_TOXIC_RADIUS and Constants.INSANE_TOXIC_DURATION or Constants.TOXIC_DURATION)) * 0.4
+                    ToxicSplat.draw(h.splat, a)
+                else
+                    -- Fallback to simple circle if splat not initialized
+                    local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+                    love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+                    love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+                end
             end
             
             if #Game.explosionZones > 0 then
@@ -2135,6 +2184,38 @@ function drawReadyScreen()
                     elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
                     else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
                     love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+                elseif e.type == "orange_splat" then
+                    -- Draw orange explosion splat with fiery orange colors
+                    if e.splat then
+                        love.graphics.push()
+                        love.graphics.translate(e.splat.x, e.splat.y)
+                        love.graphics.scale(e.splat.currentScale)
+                        
+                        -- PASS 1: Base Orange Layer
+                        love.graphics.setBlendMode("alpha")
+                        love.graphics.setColor(0.8, 0.3, 0.1, e.alpha)
+                        
+                        for _, shape in ipairs(e.splat.shapes) do
+                            love.graphics.circle("fill", shape.x, shape.y, shape.r)
+                        end
+                        
+                        -- PASS 2: Additive Highlights (Fiery Glow)
+                        love.graphics.setBlendMode("add")
+                        love.graphics.setColor(0.6, 0.4, 0.1, 0.6 * e.alpha)  -- Fiery orange glow
+                        
+                        -- Only highlight blobs/lumps, streaks are too thin to notice
+                        for _, shape in ipairs(e.splat.shapes) do
+                            if shape.type == "core" or shape.type == "lump" or (shape.type == "blob" and shape.r > 1.2) then
+                                local offX = -0.4 * shape.r * 0.3
+                                local offY = -0.4 * shape.r * 0.3
+                                -- Scale highlight down slightly
+                                love.graphics.circle("fill", shape.x + offX, shape.y + offY, shape.r * 0.7)
+                            end
+                        end
+                        
+                        love.graphics.setBlendMode("alpha")
+                        love.graphics.pop()
+                    end
                 end
             end
             
@@ -2161,6 +2242,9 @@ function drawReadyScreen()
         
         -- Draw score window (below playfield, centered)
         drawScoreWindow()
+        
+        -- Draw doomscroll window (below score window)
+        Doomscroll.draw(Game.fonts)
         
         -- Draw multiplier window (below engagement plot) - skip in demo mode
         if not Game.modes.demo then
@@ -3181,9 +3265,20 @@ function love.update(dt)
         end
     end
     
-    for i = #Game.hazards, 1, -1 do local h = Game.hazards[i]; h.timer = h.timer - dt; if h.timer <= 0 then table.remove(Game.hazards, i) end end
+    for i = #Game.hazards, 1, -1 do 
+        local h = Game.hazards[i]
+        h.timer = h.timer - dt
+        -- Update splat animation if it exists
+        if h.splat and h.splat.isAnimating then
+            ToxicSplat.update(h.splat, dt)
+        end
+        if h.timer <= 0 then table.remove(Game.hazards, i) end 
+    end
     for i = #Game.explosionZones, 1, -1 do local z = Game.explosionZones[i]; z.timer = z.timer - dt; if z.timer <= 0 then z.body:destroy(); table.remove(Game.explosionZones, i) end end
     for i = #Game.powerups, 1, -1 do local p = Game.powerups[i]; p:update(gameDt); if p.isDead then table.remove(Game.powerups, i) end end
+    
+    -- Update doomscroll feed
+    Doomscroll.update(dt, Game)
 
     Game.logicTimer = Game.logicTimer + dt
     if Game.logicTimer > 0.1 then
@@ -3322,8 +3417,32 @@ function love.update(dt)
             if e.speechBubble then
                 e.speechBubble.timer = (e.speechBubble.timer or 0) + dt
             end
+        elseif e.type == "orange_splat" then
+            -- Update orange splat animation
+            if e.splat and e.splat.isAnimating then
+                ToxicSplat.update(e.splat, dt, 5.0)  -- Faster animation for explosion
+            end
+            -- Fade out alpha over time
+            e.alpha = e.timer / 0.8  -- Fade from 1.0 to 0.0 over 0.8 seconds
+            -- Update speech bubble timer if present
+            if e.speechBubble then
+                e.speechBubble.timer = (e.speechBubble.timer or 0) + dt
+            end
+            -- When orange splat finishes, create green toxic zone
+            if e.timer <= 0 then
+                local r, g, b = unpack(Constants.COLORS.TOXIC)
+                local hazard = {
+                    x = e.toxicX, 
+                    y = e.toxicY,
+                    radius = Constants.INSANE_TOXIC_RADIUS,
+                    timer = Constants.INSANE_TOXIC_DURATION,
+                    splat = ToxicSplat.createSplat(e.toxicX, e.toxicY, Constants.INSANE_TOXIC_RADIUS, {r * 0.5, g * 0.5, b * 0.5})
+                }
+                table.insert(Game.hazards, hazard)
+                table.remove(Game.effects, i)
+            end
         end
-        if e.timer <= 0 then table.remove(Game.effects, i) end
+        if e.type ~= "orange_splat" and e.timer <= 0 then table.remove(Game.effects, i) end
     end
 end
 
@@ -3360,6 +3479,9 @@ end
 function drawGame()
     love.graphics.clear(Constants.COLORS.BACKGROUND)
     
+    -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+    DrawingHelpers.drawTealWallpaper()
+    
     -- Apply shake transform to everything (background, game, foreground, HUD)
     love.graphics.push()
         if Game.shake > 0 then
@@ -3376,9 +3498,16 @@ function drawGame()
     
     World.draw(function()
         for _, h in ipairs(Game.hazards) do
-            local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
-            love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
-            love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+            if h.splat then
+                -- Use animated splat
+                local a = (h.timer / (h.radius == Constants.INSANE_TOXIC_RADIUS and Constants.INSANE_TOXIC_DURATION or Constants.TOXIC_DURATION)) * 0.4
+                ToxicSplat.draw(h.splat, a)
+            else
+                -- Fallback to simple circle if splat not initialized
+                local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
+                love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
+                love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
+            end
         end
         
         if #Game.explosionZones > 0 then
@@ -3404,6 +3533,88 @@ function drawGame()
                 elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
                 else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
                 love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
+                
+                -- Draw speech bubble if present (for insane units)
+                if e.speechBubble and e.speechBubble.text then
+                    local bubbleX = e.x
+                    local bubbleY = e.y - Constants.UNIT_RADIUS - 40
+                    local padding = 10
+                    local font = Game.fonts.speechBubble
+                    
+                    local textWidth = font:getWidth(e.speechBubble.text)
+                    local textHeight = font:getHeight()
+                    local bubbleWidth = textWidth + padding * 2
+                    local bubbleHeight = textHeight + padding * 2
+                    
+                    -- Fade out with explosion (timer is updated in update loop)
+                    local bubbleAlpha = math.max(e.alpha, 0.5)  -- Keep it visible even during explosion
+                    if e.speechBubble and e.speechBubble.timer and e.speechBubble.duration then
+                        if e.speechBubble.timer > e.speechBubble.duration * 0.7 then
+                            bubbleAlpha = bubbleAlpha * (1.0 - ((e.speechBubble.timer - e.speechBubble.duration * 0.7) / (e.speechBubble.duration * 0.3)))
+                        end
+                    end
+                    
+                    -- Draw speech bubble background (more opaque)
+                    love.graphics.setColor(0, 0, 0, bubbleAlpha * 0.9)
+                    love.graphics.rectangle("fill", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+                    
+                    -- Draw speech bubble border (brighter)
+                    love.graphics.setColor(0.8, 0.8, 0.8, bubbleAlpha)
+                    love.graphics.setLineWidth(2)
+                    love.graphics.rectangle("line", bubbleX - bubbleWidth / 2, bubbleY - bubbleHeight, bubbleWidth, bubbleHeight, 4)
+                    
+                    -- Draw speech bubble tail
+                    love.graphics.setColor(0, 0, 0, bubbleAlpha * 0.9)
+                    love.graphics.polygon("fill", 
+                        bubbleX - 10, bubbleY - 6,
+                        bubbleX + 10, bubbleY - 6,
+                        bubbleX, bubbleY + 6
+                    )
+                    love.graphics.setColor(0.8, 0.8, 0.8, bubbleAlpha)
+                    love.graphics.setLineWidth(2)
+                    love.graphics.polygon("line", 
+                        bubbleX - 10, bubbleY - 6,
+                        bubbleX + 10, bubbleY - 6,
+                        bubbleX, bubbleY + 6
+                    )
+                    
+                    -- Draw text (brighter)
+                    love.graphics.setColor(1, 0.5, 0.5, bubbleAlpha)
+                    love.graphics.setFont(font)
+                    love.graphics.print(e.speechBubble.text, bubbleX - textWidth / 2, bubbleY - bubbleHeight + padding)
+                end
+            elseif e.type == "orange_splat" then
+                -- Draw orange explosion splat with fiery orange colors
+                if e.splat then
+                    love.graphics.push()
+                    love.graphics.translate(e.splat.x, e.splat.y)
+                    love.graphics.scale(e.splat.currentScale)
+                    
+                    -- PASS 1: Base Orange Layer
+                    love.graphics.setBlendMode("alpha")
+                    love.graphics.setColor(0.8, 0.3, 0.1, e.alpha)
+                    
+                    for _, shape in ipairs(e.splat.shapes) do
+                        love.graphics.circle("fill", shape.x, shape.y, shape.r)
+                    end
+                    
+                    -- PASS 2: Additive Highlights (Fiery Glow)
+                    love.graphics.setBlendMode("add")
+                    love.graphics.setColor(0.6, 0.4, 0.1, 0.6 * e.alpha)  -- Fiery orange glow
+                    
+                    -- Only highlight blobs/lumps, streaks are too thin to notice
+                    for _, shape in ipairs(e.splat.shapes) do
+                        if shape.type == "core" or shape.type == "lump" or (shape.type == "blob" and shape.r > 1.2) then
+                            local offX = -0.4 * shape.r * 0.3
+                            local offY = -0.4 * shape.r * 0.3
+                            -- Scale highlight down slightly
+                            love.graphics.circle("fill", shape.x + offX, shape.y + offY, shape.r * 0.7)
+                        end
+                    end
+                    
+                    love.graphics.setBlendMode("alpha")
+                    love.graphics.pop()
+                end
                 
                 -- Draw speech bubble if present (for insane units)
                 if e.speechBubble and e.speechBubble.text then
@@ -3509,6 +3720,9 @@ function drawGame()
     
     -- Draw score window (below playfield, centered)
     drawScoreWindow()
+    
+    -- Draw doomscroll window (below score window)
+    Doomscroll.draw(Game.fonts)
     
     -- Draw multiplier window (below engagement plot) - skip in demo mode
     if not Game.modes.demo then
@@ -3908,6 +4122,9 @@ function love.draw()
     if Game.webcamWindow.animating or Game.webcamWindow.dialogueActive then
         -- Draw everything just like normal gameplay, but with animating webcam window
         drawWithCRT(function()
+            -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+            DrawingHelpers.drawTealWallpaper()
+            
             -- Draw background image if loaded and enabled
             if Game.showBackgroundForeground and Game.assets.background then
                 love.graphics.setColor(1, 1, 1, 1)
@@ -3982,6 +4199,9 @@ function love.draw()
             
             -- Draw score window (below playfield, centered)
             drawScoreWindow()
+            
+            -- Draw doomscroll window (below score window)
+            Doomscroll.draw(Game.fonts)
             
             -- Draw multiplier window (below engagement plot) - skip in demo mode
             if not Game.modes.demo then
@@ -4130,6 +4350,7 @@ function drawScoreWindow()
     local scoreWidth = Game.fonts.large:getWidth(scoreText)
     love.graphics.print(scoreText, SCORE_X + (SCORE_WIDTH - scoreWidth) / 2, SCORE_Y + titleBarHeight + borderWidth + 15)
 end
+
 
 function drawMultiplierWindow()
     -- Multiplier window dimensions and position (below engagement plot)

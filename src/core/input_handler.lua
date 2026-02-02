@@ -32,8 +32,8 @@ end
 local function updateNameEntryChar()
     local nameChars = {}
     for i = 1, Game.nameEntry.maxLength do
-        local idx = Game.nameEntryCharIndex[i] or 1
-        nameChars[i] = Game.nameEntryCharSet:sub(idx, idx)
+        local idx = Game.nameEntry.charIndex[i] or 1
+        nameChars[i] = Game.nameEntry.charSet:sub(idx, idx)
     end
     Game.nameEntry.text = table.concat(nameChars)
 end
@@ -152,9 +152,9 @@ function InputHandler.handleKeyPressed(key)
     
     -- Handle name entry (arcade style)
     if Game.modes.nameEntry then
-        local charSet = Game.nameEntryCharSet
+        local charSet = Game.nameEntry.charSet
         local cursor = Game.nameEntry.cursor
-        local charIndex = Game.nameEntryCharIndex[cursor] or 1
+        local charIndex = Game.nameEntry.charIndex[cursor] or 1
         
         if key == "left" then
             -- Move cursor left
@@ -168,7 +168,7 @@ function InputHandler.handleKeyPressed(key)
             if charIndex > #charSet then
                 charIndex = 1  -- Wrap around
             end
-            Game.nameEntryCharIndex[cursor] = charIndex
+            Game.nameEntry.charIndex[cursor] = charIndex
             updateNameEntryChar()
         elseif key == "down" then
             -- Change character down
@@ -176,7 +176,7 @@ function InputHandler.handleKeyPressed(key)
             if charIndex < 1 then
                 charIndex = #charSet  -- Wrap around
             end
-            Game.nameEntryCharIndex[cursor] = charIndex
+            Game.nameEntry.charIndex[cursor] = charIndex
             updateNameEntryChar()
         elseif key == "return" or key == "enter" then
             -- Submit name
@@ -529,9 +529,9 @@ end
 function InputHandler.handleJoystickAxis(joystick, axis, value)
     -- Handle name entry with joystick axes (DPad/analog stick)
     if Game.modes.nameEntry then
-        local charSet = Game.nameEntryCharSet
+        local charSet = Game.nameEntry.charSet
         local cursor = Game.nameEntry.cursor
-        local charIndex = Game.nameEntryCharIndex[cursor] or 1
+        local charIndex = Game.nameEntry.charIndex[cursor] or 1
         
         -- Use deadzone to prevent drift
         local deadzone = 0.5
@@ -544,7 +544,7 @@ function InputHandler.handleJoystickAxis(joystick, axis, value)
                 if charIndex > #charSet then
                     charIndex = 1  -- Wrap around
                 end
-                Game.nameEntryCharIndex[cursor] = charIndex
+                Game.nameEntry.charIndex[cursor] = charIndex
                 updateNameEntryChar()
                 return true
             elseif value > deadzone then
@@ -553,7 +553,7 @@ function InputHandler.handleJoystickAxis(joystick, axis, value)
                 if charIndex < 1 then
                     charIndex = #charSet  -- Wrap around
                 end
-                Game.nameEntryCharIndex[cursor] = charIndex
+                Game.nameEntry.charIndex[cursor] = charIndex
                 updateNameEntryChar()
                 return true
             end
@@ -567,9 +567,9 @@ end
 function InputHandler.handleJoystickHat(joystick, hat, direction)
     -- Handle name entry with joystick hat (DPad)
     if Game.modes.nameEntry then
-        local charSet = Game.nameEntryCharSet
+        local charSet = Game.nameEntry.charSet
         local cursor = Game.nameEntry.cursor
-        local charIndex = Game.nameEntryCharIndex[cursor] or 1
+        local charIndex = Game.nameEntry.charIndex[cursor] or 1
         
         if direction == "u" or direction == "lu" or direction == "ru" then
             -- Up: change character up
@@ -577,7 +577,7 @@ function InputHandler.handleJoystickHat(joystick, hat, direction)
             if charIndex > #charSet then
                 charIndex = 1  -- Wrap around
             end
-            Game.nameEntryCharIndex[cursor] = charIndex
+            Game.nameEntry.charIndex[cursor] = charIndex
             updateNameEntryChar()
             return true
         elseif direction == "d" or direction == "ld" or direction == "rd" then
@@ -586,7 +586,7 @@ function InputHandler.handleJoystickHat(joystick, hat, direction)
             if charIndex < 1 then
                 charIndex = #charSet  -- Wrap around
             end
-            Game.nameEntryCharIndex[cursor] = charIndex
+            Game.nameEntry.charIndex[cursor] = charIndex
             updateNameEntryChar()
             return true
         end

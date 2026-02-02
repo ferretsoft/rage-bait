@@ -82,7 +82,7 @@ function Unit:update(dt, allUnits, hazards, explosionZones, turret)
         end
         
         -- Enraged units don't flock - they search for and attack enemy units
-        self:updateEnraged(dt, allUnits)
+        self:updateEnraged(dt, allUnits, turret)
     else
         -- NEUTRAL / PASSIVE BEHAVIOR
         local isAttracted = false
@@ -175,7 +175,100 @@ function Unit:avoidHazards(dt, hazards)
     end
 end
 
-function Unit:updateEnraged(dt, allUnits)
+-- Helper function to check if a line segment intersects a circle
+function Unit:lineIntersectsCircle(x1, y1, x2, y2, cx, cy, radius)
+    -- Vector from line start to end
+    local dx = x2 - x1
+    local dy = y2 - y1
+    -- Vector from line start to circle center
+    local fx = x1 - cx
+    local fy = y1 - cy
+    
+    local a = dx * dx + dy * dy
+    
+    -- Handle edge case: line segment has zero length
+    if a < 0.0001 then
+        -- Point is at start/end, check if it's inside circle
+        local distSq = fx * fx + fy * fy
+        return distSq <= radius * radius
+    end
+    
+    local b = 2 * (fx * dx + fy * dy)
+    local c = fx * fx + fy * fy - radius * radius
+    
+    local discriminant = b * b - 4 * a * c
+    
+    if discriminant < 0 then
+        return false  -- No intersection
+    end
+    
+    -- Check if intersection point is within line segment
+    local sqrtDisc = math.sqrt(discriminant)
+    local t1 = (-b - sqrtDisc) / (2 * a)
+    local t2 = (-b + sqrtDisc) / (2 * a)
+    
+    -- If either intersection is within [0, 1], line segment intersects circle
+    return (t1 >= 0 and t1 <= 1) or (t2 >= 0 and t2 <= 1)
+end
+
+-- Calculate a waypoint around the platform to reach the target
+function Unit:calculateWaypointAroundPlatform(myX, myY, targetX, targetY, turret)
+    if not turret or not turret.webBody then
+        return targetX, targetY  -- No platform, go directly to target
+    end
+    
+    local platformX = turret.x
+    local platformY = turret.webY
+    local barrierRadius = turret.barrierRadius or (turret.webRadius + 80)
+    
+    -- Check if direct path is blocked
+    if not self:lineIntersectsCircle(myX, myY, targetX, targetY, platformX, platformY, barrierRadius) then
+        return targetX, targetY  -- Path is clear, go directly
+    end
+    
+    -- Path is blocked, calculate waypoint around platform
+    -- Calculate angle from platform center to unit and to target
+    local angleToUnit = math.atan2(myY - platformY, myX - platformX)
+    local angleToTarget = math.atan2(targetY - platformY, targetX - platformX)
+    
+    -- Calculate the angle difference (wrapped to -π to π)
+    local angleDiff = angleToTarget - angleToUnit
+    while angleDiff > math.pi do angleDiff = angleDiff - 2 * math.pi end
+    while angleDiff < -math.pi do angleDiff = angleDiff + 2 * math.pi end
+    
+    -- Calculate both possible paths and choose the shorter one
+    -- Path 1: go clockwise (right, positive angle)
+    local path1Angle = math.abs(angleDiff)
+    -- Path 2: go counterclockwise (left, negative angle)
+    local path2Angle = 2 * math.pi - math.abs(angleDiff)
+    
+    local goRight = path1Angle < path2Angle
+    
+    -- Calculate waypoint: place it at 90 degrees from unit position in chosen direction
+    -- This creates a tangent point that guides the unit around the platform
+    local waypointAngle
+    if goRight then
+        -- Go clockwise (right side) - add 90 degrees
+        waypointAngle = angleToUnit + math.pi / 2
+    else
+        -- Go counterclockwise (left side) - subtract 90 degrees
+        waypointAngle = angleToUnit - math.pi / 2
+    end
+    
+    -- Place waypoint at a safe distance outside the barrier
+    -- Use a distance that ensures the unit will clear the barrier
+    local waypointDist = barrierRadius + 60  -- 60 pixels outside barrier for safety
+    local waypointX = platformX + math.cos(waypointAngle) * waypointDist
+    local waypointY = platformY + math.sin(waypointAngle) * waypointDist
+    
+    -- Clamp waypoint to playfield bounds to prevent units from going off-screen
+    waypointX = math.max(50, math.min(Constants.PLAYFIELD_WIDTH - 50, waypointX))
+    waypointY = math.max(50, math.min(Constants.PLAYFIELD_HEIGHT - 50, waypointY))
+    
+    return waypointX, waypointY
+end
+
+function Unit:updateEnraged(dt, allUnits, turret)
     -- Enraged units don't flock - they break away to search for and attack enemy units
     -- Red units search for blue, blue units search for red
     if not self.target or self.target.isDead then
@@ -185,8 +278,12 @@ function Unit:updateEnraged(dt, allUnits)
     if self.target then
         local myX, myY = self.body:getPosition()
         local tX, tY = self.target.body:getPosition()
-        local dx = tX - myX
-        local dy = tY - myY
+        
+        -- Check if we need to path around the platform
+        local seekX, seekY = self:calculateWaypointAroundPlatform(myX, myY, tX, tY, turret)
+        
+        local dx = seekX - myX
+        local dy = seekY - myY
         local dist = math.sqrt(dx^2 + dy^2)
         
         if dist > 0 then
@@ -201,12 +298,16 @@ function Unit:updateEnraged(dt, allUnits)
             end
             
             -- If close to enemy, boost velocity directly for ramming attacks
-            if dist < 100 then
-                -- Close range: boost velocity for direct ramming
+            -- Use actual target distance for close-range check, not waypoint distance
+            local targetDist = math.sqrt((tX - myX)^2 + (tY - myY)^2)
+            if targetDist < 100 then
+                -- Close range: boost velocity for direct ramming (toward actual target, not waypoint)
+                local targetDirX = (tX - myX) / targetDist
+                local targetDirY = (tY - myY) / targetDist
                 local currentVx, currentVy = self.body:getLinearVelocity()
                 local boostSpeed = 300  -- Additional speed boost when close
-                local newVx = currentVx + dirX * boostSpeed * dt
-                local newVy = currentVy + dirY * boostSpeed * dt
+                local newVx = currentVx + targetDirX * boostSpeed * dt
+                local newVy = currentVy + targetDirY * boostSpeed * dt
                 -- Clamp max speed to prevent excessive velocity
                 local maxSpeed = 500
                 local speed = math.sqrt(newVx^2 + newVy^2)
@@ -216,7 +317,7 @@ function Unit:updateEnraged(dt, allUnits)
                 end
                 self.body:setLinearVelocity(newVx, newVy)
             else
-                -- Far range: use force to seek
+                -- Far range: use force to seek (toward waypoint if pathfinding, or target if clear)
                 self.body:applyForce(dirX * force, dirY * force)
             end
         end

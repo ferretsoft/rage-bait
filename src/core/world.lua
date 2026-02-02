@@ -43,6 +43,10 @@ end
 
 function World.draw(drawFunc)
     love.graphics.push()
+    
+    -- Set scissor to clip content to playfield boundaries (scissor is in screen space)
+    love.graphics.setScissor(Constants.OFFSET_X, Constants.OFFSET_Y, Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
+    
     love.graphics.translate(Constants.OFFSET_X, Constants.OFFSET_Y)
     
     -- Draw playfield frame
@@ -51,6 +55,10 @@ function World.draw(drawFunc)
     love.graphics.rectangle("line", 0, 0, Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
     
     drawFunc()
+    
+    -- Reset scissor after drawing
+    love.graphics.setScissor()
+    
     love.graphics.pop()
 end
 

@@ -30,23 +30,20 @@ end
 function PowerUp:update(dt)
     if self.isDead then return end
     
-    -- Clamp powerup position to playfield bounds
     local x, y = self.body:getPosition()
-    local clampedX = math.max(Constants.POWERUP_RADIUS, math.min(Constants.PLAYFIELD_WIDTH - Constants.POWERUP_RADIUS, x))
-    local clampedY = math.max(Constants.POWERUP_RADIUS, math.min(Constants.PLAYFIELD_HEIGHT - Constants.POWERUP_RADIUS, y))
     
-    -- Only update position if it was clamped
-    if clampedX ~= x or clampedY ~= y then
-        self.body:setPosition(clampedX, clampedY)
+    -- Clamp X position to playfield bounds (side walls)
+    local margin = 20
+    local clampedX = math.max(margin, math.min(Constants.PLAYFIELD_WIDTH - margin, x))
+    if clampedX ~= x then
+        self.body:setPosition(clampedX, y)
         -- Stop horizontal movement if hitting side walls
-        if clampedX ~= x then
-            local vx, vy = self.body:getLinearVelocity()
-            self.body:setLinearVelocity(0, vy)
-        end
+        local vx, vy = self.body:getLinearVelocity()
+        self.body:setLinearVelocity(0, vy)
     end
     
-    -- Destroy if it falls off screen
-    if y > Constants.PLAYFIELD_HEIGHT + 50 then
+    -- Destroy if it hits or passes the lower playfield edge
+    if y >= Constants.PLAYFIELD_HEIGHT then
         self.isDead = true
         self.body:destroy()
     end

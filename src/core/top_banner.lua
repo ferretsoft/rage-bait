@@ -3,6 +3,7 @@
 
 local Constants = require("src.constants")
 local DrawLayers = require("src.core.draw_layers")
+local Auditor = require("src.core.auditor")
 
 local TopBanner = {}
 
@@ -117,7 +118,8 @@ function TopBanner.startReverseAnimation()
     state.velocity = 0
     -- Switch back to original draw order (draw before monitor frame)
     state.gameOverDrawOnTop = false
-    state.gameOverCropDisabled = false
+    -- Keep crop disabled during reverse so banner is visible while moving up
+    state.gameOverCropDisabled = true
     -- Reset text animation state for reverse
     state.textAnimationStartY = nil
     state.textAnimationActive = false
@@ -753,7 +755,7 @@ function TopBanner.drawGameOverText(glitchTextTimer, glitchTextWriteProgress, te
     
     local textX, textY = getBannerTextPosition()
     if not textX then return end
-    local text = "YIELD NOT SATISFACTORY - LIQUIDATING ASSET"
+    local text = Auditor.GAME_OVER_TEXT
     drawGlitchyTerminalText(text, textX, textY, 32, glitchTextTimer, glitchTextWriteProgress, terminalFont)
 end
 
@@ -803,7 +805,7 @@ function TopBanner.drawLifeLostText(glitchTextTimer, glitchTextWriteProgress, te
     
     local textX, textY = getBannerTextPosition()
     if not textX then return end
-    local text = "LOW PERFORMANCE DETECTED - INITIALIZE REASSIGNMENT"
+    local text = Auditor.LIFE_LOST_TEXT
     
     drawGlitchyTerminalText(text, textX, textY, 32, glitchTextTimer, glitchTextWriteProgress, terminalFont)
 end

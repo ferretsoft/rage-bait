@@ -207,11 +207,13 @@ function TextTrace.draw()
     end
     
     -- Get the text and font from Game
+    local Auditor = require("src.core.auditor")
+    
     local text = ""
     if Game.modes.lifeLostAuditor then
-        text = "LOW PERFORMANCE DETECTED - INITIALIZE REASSIGNMENT"
+        text = Auditor.LIFE_LOST_TEXT
     elseif Game.modes.gameOver then
-        text = "YIELD NOT SATISFACTORY - LIQUIDATING ASSET"
+        text = Auditor.GAME_OVER_TEXT
     end
     
     if not text or not Game.fonts or not Game.fonts.terminal then

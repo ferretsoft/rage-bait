@@ -8,15 +8,19 @@ local MonitorFrame = require("src.core.monitor_frame")
 
 -- Draw attract mode screen
 function AttractMode.draw()
-    -- Draw splash screen as background
+    -- Clear screen
+    love.graphics.clear(Constants.COLORS.BACKGROUND)
+    
+    -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
+    local DrawingHelpers = require("src.core.drawing_helpers")
+    DrawingHelpers.drawTealWallpaper()
+    
+    -- Draw splash screen as background (on top of wallpaper)
     if Game.assets.splash then
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.draw(Game.assets.splash, 0, 0, 0, 
             Constants.SCREEN_WIDTH / Game.assets.splash:getWidth(),
             Constants.SCREEN_HEIGHT / Game.assets.splash:getHeight())
-    else
-        -- Fallback to background color if splash image not loaded
-        love.graphics.clear(Constants.COLORS.BACKGROUND)
     end
     
     -- High Scores (moved down 50px more, increased font size)
