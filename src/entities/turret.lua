@@ -133,6 +133,69 @@ function Turret.new()
         self.barrelLength = 60 * 2
     end
 
+    -- Load leg sprites from vectorspider assets
+    -- circleleg = thigh (upper leg), arrowleg = lower leg
+    do
+        -- Legs
+        local okThigh, thighImg = pcall(love.graphics.newImage, "assets/vectorspider/Vectorspider_v005_8_cirleleg.png")
+        if okThigh and thighImg then
+            self.legThighSprite = thighImg
+            self.legThighW = thighImg:getWidth()
+            self.legThighH = thighImg:getHeight()
+        else
+            self.legThighSprite = nil
+            self.legThighW = nil
+            self.legThighH = nil
+        end
+
+        local okShin, shinImg = pcall(love.graphics.newImage, "assets/vectorspider/Vectorspider_v005_8_arrowleg.png")
+        if okShin and shinImg then
+            self.legShinSprite = shinImg
+            self.legShinW = shinImg:getWidth()
+            self.legShinH = shinImg:getHeight()
+        else
+            self.legShinSprite = nil
+            self.legShinW = nil
+            self.legShinH = nil
+        end
+
+        -- Head
+        local okHead, headImg = pcall(love.graphics.newImage, "assets/vectorspider/head.png")
+        if okHead and headImg then
+            self.headSprite = headImg
+            self.headW = headImg:getWidth()
+            self.headH = headImg:getHeight()
+        else
+            self.headSprite = nil
+            self.headW = nil
+            self.headH = nil
+        end
+
+        -- Mandibles
+        local okMandible, mandibleImg = pcall(love.graphics.newImage, "assets/vectorspider/mandible.png")
+        if okMandible and mandibleImg then
+            self.mandibleSprite = mandibleImg
+            self.mandibleW = mandibleImg:getWidth()
+            self.mandibleH = mandibleImg:getHeight()
+        else
+            self.mandibleSprite = nil
+            self.mandibleW = nil
+            self.mandibleH = nil
+        end
+
+        -- Abdomen
+        local okAbdomen, abdomenImg = pcall(love.graphics.newImage, "assets/vectorspider/Vectorspider_v005_ABDOMEN.png")
+        if okAbdomen and abdomenImg then
+            self.abdomenSprite = abdomenImg
+            self.abdomenW = abdomenImg:getWidth()
+            self.abdomenH = abdomenImg:getHeight()
+        else
+            self.abdomenSprite = nil
+            self.abdomenW = nil
+            self.abdomenH = nil
+        end
+    end
+
     self.isCharging = false
     self.chargeTimer = 0
     self.chargeColor = "red"
@@ -475,50 +538,7 @@ function Turret:firePuck(color, projectiles)
 end
 
 function Turret:draw()
-    -- Draw spider web platform under the spider (centered at base position, not visual position)
-    local platformRadius = self.webRadius  -- 160 (doubled)
-    local centerX = self.x  -- Use base position, not visual position
-    local centerY = self.webY  -- Use fixed web Y position
-    
-    -- Web shadow
-    love.graphics.setColor(0, 0, 0, 0.2)
-    love.graphics.circle("fill", centerX, centerY + 3, platformRadius)
-    
-    -- Web base (semi-transparent white/gray)
-    love.graphics.setColor(0.9, 0.9, 0.85, 0.6)
-    love.graphics.circle("fill", centerX, centerY, platformRadius)
-    
-    -- Draw radial lines (spokes of the web)
-    love.graphics.setColor(0.7, 0.7, 0.65, 0.8)
-    love.graphics.setLineWidth(2)
-    local numSpokes = 16
-    for i = 0, numSpokes - 1 do
-        local angle = (i / numSpokes) * math.pi * 2
-        local endX = centerX + math.cos(angle) * platformRadius
-        local endY = centerY + math.sin(angle) * platformRadius
-        love.graphics.line(centerX, centerY, endX, endY)
-    end
-    
-    -- Draw spiral pattern (concentric circles with gaps)
-    love.graphics.setColor(0.6, 0.6, 0.55, 0.7)
-    love.graphics.setLineWidth(1.5)
-    local numRings = 6
-    for i = 1, numRings do
-        local ringRadius = (platformRadius / numRings) * i
-        love.graphics.circle("line", centerX, centerY, ringRadius)
-    end
-    
-    -- Web border
-    love.graphics.setColor(0.5, 0.5, 0.45, 0.9)
-    love.graphics.setLineWidth(3)
-    love.graphics.circle("line", centerX, centerY, platformRadius)
-    
-    -- Center hub (where spider sits)
-    love.graphics.setColor(0.3, 0.3, 0.25, 0.8)
-    love.graphics.circle("fill", centerX, centerY, 25)
-    love.graphics.setColor(0.2, 0.2, 0.15, 0.9)
-    love.graphics.setLineWidth(2)
-    love.graphics.circle("line", centerX, centerY, 25)
+    -- Web platform removed
     
     -- Calculate barrel end position for effects
     local visualSlide = -self.lean * ANIM_CONF.LEAN_VISUAL_TILT
@@ -553,6 +573,11 @@ function Turret:draw()
         local targetX = self.visualX + math.cos(self.visualAngle) * currentDist
         local targetY = self.visualY + math.sin(self.visualAngle) * currentDist
         
+        -- Clamp reticule to playfield bounds
+        local margin = 20  -- Margin from edges
+        targetX = math.max(margin, math.min(Constants.PLAYFIELD_WIDTH - margin, targetX))
+        targetY = math.max(margin, math.min(Constants.PLAYFIELD_HEIGHT - margin, targetY))
+        
         if self.chargeColor == "red" then love.graphics.setColor(1, 0.2, 0.2, 0.8)
         else love.graphics.setColor(0.2, 0.2, 1, 0.8) end
         
@@ -569,62 +594,219 @@ function Turret:draw()
         end
     end
 
-    -- LEGS (new animation)
-    for i, leg in ipairs(self.legs) do
-        love.graphics.setLineWidth(4)
-        local c = 0.4
-        if leg.isStepping then c = 0.55 end
-        love.graphics.setColor(0,0,0,0.3)
-        love.graphics.line(leg.hipX, leg.hipY+5, leg.kneeX, leg.kneeY+5)
-        love.graphics.setColor(c, c, c)
-        love.graphics.line(leg.hipX, leg.hipY, leg.kneeX, leg.kneeY)
-        love.graphics.setColor(c*0.8, c*0.8, c*0.8)
-        love.graphics.line(leg.kneeX, leg.kneeY, leg.footX, leg.footY)
-        love.graphics.setColor(0.1, 0.1, 0.1)
-        love.graphics.circle("fill", leg.kneeX, leg.kneeY, 4)
-        love.graphics.circle("fill", leg.footX, leg.footY, 5)
+    -- LEGS
+    if self.legThighSprite and self.legShinSprite then
+        -- Sprite-based legs using vectorspider assets
+        for _, leg in ipairs(self.legs) do
+            -- Thigh (circleleg): from hip to knee
+            local dx1 = leg.kneeX - leg.hipX
+            local dy1 = leg.kneeY - leg.hipY
+            local len1 = math.sqrt(dx1 * dx1 + dy1 * dy1)
+            if len1 > 0 then
+                local angle1 = math.atan2(dy1, dx1)
+                local scale1 = len1 / self.legThighH
+
+                love.graphics.push()
+                -- Place origin at hip; sprite's top-center at hip, extending toward knee
+                love.graphics.translate(leg.hipX, leg.hipY)
+                -- Unrotated sprite extends downward (+Y); align that with hip->knee
+                love.graphics.rotate(angle1 - math.pi / 2)
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.draw(self.legThighSprite, 0, 0, 0, scale1, scale1,
+                    self.legThighW / 2, 0)
+                love.graphics.pop()
+            end
+
+            -- Lower leg (arrowleg): from knee to foot
+            local dx2 = leg.footX - leg.kneeX
+            local dy2 = leg.footY - leg.kneeY
+            local len2 = math.sqrt(dx2 * dx2 + dy2 * dy2)
+            if len2 > 0 then
+                local angle2 = math.atan2(dy2, dx2)
+                local scale2 = len2 / self.legShinH
+
+                love.graphics.push()
+                -- Place origin at knee; sprite's top-center at knee, extending toward foot
+                love.graphics.translate(leg.kneeX, leg.kneeY)
+                love.graphics.rotate(angle2 - math.pi / 2)
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.draw(self.legShinSprite, 0, 0, 0, scale2, scale2,
+                    self.legShinW / 2, 0)
+                love.graphics.pop()
+            end
+        end
+    else
+        -- Fallback: original procedural leg drawing
+        for _, leg in ipairs(self.legs) do
+            love.graphics.setLineWidth(4)
+            local c = 0.4
+            if leg.isStepping then c = 0.55 end
+            love.graphics.setColor(0,0,0,0.3)
+            love.graphics.line(leg.hipX, leg.hipY+5, leg.kneeX, leg.kneeY+5)
+            love.graphics.setColor(c, c, c)
+            love.graphics.line(leg.hipX, leg.hipY, leg.kneeX, leg.kneeY)
+            love.graphics.setColor(c*0.8, c*0.8, c*0.8)
+            love.graphics.line(leg.kneeX, leg.kneeY, leg.footX, leg.footY)
+            love.graphics.setColor(0.1, 0.1, 0.1)
+            love.graphics.circle("fill", leg.kneeX, leg.kneeY, 4)
+            love.graphics.circle("fill", leg.footX, leg.footY, 5)
+        end
     end
 
     -- TURRET BODY (new animation)
+    -- Draw mandibles: calculate final screen position after rotation, draw in screen space
+    if self.mandibleSprite then
+        -- Mandibles should be offset screen north and screen east from head center
+        -- Head center in screen space: (visualX, visualY)
+        -- Mandible offset in screen space: (eastOffset, -northOffset)
+        -- To rotate this point around head center by visualAngle:
+        -- 1. Translate to origin: (eastOffset, -northOffset)
+        -- 2. Rotate by visualAngle
+        -- 3. Translate back: add to (visualX, visualY)
+        local northOffset = 0  -- Screen north offset
+        local eastOffset = 10   -- Screen east offset (positive = east)
+        local cosA = math.cos(self.visualAngle)
+        local sinA = math.sin(self.visualAngle)
+        -- Rotate (eastOffset, -northOffset) by visualAngle
+        local rotatedX = eastOffset * cosA - (-northOffset) * sinA  -- = eastOffset*cos(θ) + northOffset*sin(θ)
+        local rotatedY = eastOffset * sinA + (-northOffset) * cosA  -- = eastOffset*sin(θ) - northOffset*cos(θ)
+        -- Add barrel recoil in forward direction (same as barrels)
+        local visualSlide = -self.lean * ANIM_CONF.LEAN_VISUAL_TILT
+        local recoilOffsetX = (visualSlide - self.barrelkick) * cosA
+        local recoilOffsetY = (visualSlide - self.barrelkick) * sinA
+        -- Add to head center
+        local mandibleX = self.visualX + rotatedX + recoilOffsetX
+        local mandibleY = self.visualY + rotatedY + recoilOffsetY
+        
+        love.graphics.push()
+        love.graphics.translate(mandibleX, mandibleY)
+        love.graphics.rotate(self.visualAngle)
+        
+        -- Draw glow effect when charging - outline glow around mandibles
+        if self.isCharging then
+            local glowAlpha = 0.3 + math.sin(love.timer.getTime() * 10) * 0.15  -- Pulsing glow
+            local baseRadius = ANIM_CONF.BODY_RADIUS
+            local targetSize = baseRadius * 2
+            local sx = targetSize / self.mandibleW
+            local sy = targetSize / self.mandibleH
+            local baseScale = math.min(sx, sy)
+            
+            if self.chargeColor == "red" then
+                love.graphics.setColor(1, 0.2, 0.2, glowAlpha)
+            else
+                love.graphics.setColor(0.2, 0.2, 1, glowAlpha)
+            end
+            
+            -- Draw mandible sprite multiple times with increasing scale for outline glow
+            love.graphics.setBlendMode("add")
+            -- Outer glow layers (smaller scale increments for subtle effect)
+            love.graphics.draw(self.mandibleSprite, 0, 0, math.pi / 2, baseScale * 1.08, baseScale * 1.08,
+                self.mandibleW / 2, self.mandibleH / 2)
+            love.graphics.draw(self.mandibleSprite, 0, 0, math.pi / 2, baseScale * 1.05, baseScale * 1.05,
+                self.mandibleW / 2, self.mandibleH / 2)
+            love.graphics.setBlendMode("alpha")
+        end
+        
+        love.graphics.setColor(1, 1, 1, 1)
+        local baseRadius = ANIM_CONF.BODY_RADIUS
+        local targetSize = baseRadius * 2
+        local sx = targetSize / self.mandibleW
+        local sy = targetSize / self.mandibleH
+        local scale = math.min(sx, sy)
+        love.graphics.draw(self.mandibleSprite, 0, 0, math.pi / 2, scale, scale,
+            self.mandibleW / 2, self.mandibleH / 2)
+        love.graphics.pop()
+    end
+    
     love.graphics.push()
     love.graphics.translate(self.visualX, self.visualY)
     love.graphics.rotate(self.visualAngle)
     
     local abdomenScale = 1.0 - (self.lean * ANIM_CONF.ABDOMEN_SCALE_REDUCTION)
+    local abdomenScaleMultiplier = 1.6 -- Scale up abdomen
+    local abdomenSouthOffsetScreen = 0  -- Move abdomen south in screen space (downward, positive Y)
+    
+    -- Transform screen south (0, +offset) to rotated coordinate space
+    -- Screen south vector (0, +offset) rotated by -visualAngle:
+    local cosA = math.cos(-self.visualAngle)
+    local sinA = math.sin(-self.visualAngle)
+    local abdomenSouthOffsetX = 0 * cosA - abdomenSouthOffsetScreen * sinA  -- = -offset*sin(-θ) = offset*sin(θ)
+    local abdomenSouthOffsetY = 0 * sinA + abdomenSouthOffsetScreen * cosA    -- = offset*cos(-θ) = offset*cos(θ)
 
     -- Draw abdomen
-    love.graphics.setColor(0.25, 0.25, 0.35)
-    local scaledW = ANIM_CONF.ABDOMEN_WIDTH * abdomenScale
-    local scaledH = ANIM_CONF.ABDOMEN_HEIGHT * abdomenScale
-    love.graphics.ellipse("fill", ANIM_CONF.ABDOMEN_OFFSET, 0, scaledW, scaledH)
-    love.graphics.setColor(0, 0, 0)
-    love.graphics.setLineWidth(2)
-    love.graphics.ellipse("line", ANIM_CONF.ABDOMEN_OFFSET, 0, scaledW, scaledH)
+    local scaledW = ANIM_CONF.ABDOMEN_WIDTH * abdomenScale * abdomenScaleMultiplier
+    local scaledH = ANIM_CONF.ABDOMEN_HEIGHT * abdomenScale * abdomenScaleMultiplier
+    
+    -- Draw glow effect when charging
+    if self.isCharging then
+        local glowAlpha = 0.4 + math.sin(love.timer.getTime() * 10) * 0.2  -- Pulsing glow
+        local glowSize = 1.3  -- Glow extends 30% beyond abdomen
+        
+        if self.chargeColor == "red" then
+            love.graphics.setColor(1, 0.2, 0.2, glowAlpha)
+        else
+            love.graphics.setColor(0.2, 0.2, 1, glowAlpha)
+        end
+        
+        -- Draw glow using abdomen sprite scaled up
+        if self.abdomenSprite then
+            love.graphics.setBlendMode("add")
+            local sx = (scaledW * glowSize) / self.abdomenW
+            local sy = (scaledH * glowSize) / self.abdomenH
+            love.graphics.draw(self.abdomenSprite, ANIM_CONF.ABDOMEN_OFFSET + abdomenSouthOffsetX, abdomenSouthOffsetY, math.pi / 2, sx, sy,
+                self.abdomenW / 2, self.abdomenH / 2)
+            local sx2 = (scaledW * 1.15) / self.abdomenW
+            local sy2 = (scaledH * 1.15) / self.abdomenH
+            love.graphics.draw(self.abdomenSprite, ANIM_CONF.ABDOMEN_OFFSET + abdomenSouthOffsetX, abdomenSouthOffsetY, math.pi / 2, sx2, sy2,
+                self.abdomenW / 2, self.abdomenH / 2)
+            love.graphics.setBlendMode("alpha")
+        else
+            -- Fallback: original ellipse glow
+            love.graphics.setBlendMode("add")
+            love.graphics.ellipse("fill", ANIM_CONF.ABDOMEN_OFFSET, 0, scaledW * glowSize, scaledH * glowSize)
+            love.graphics.ellipse("fill", ANIM_CONF.ABDOMEN_OFFSET, 0, scaledW * 1.15, scaledH * 1.15)
+            love.graphics.setBlendMode("alpha")
+        end
+    end
+    
+    -- Draw abdomen sprite
+    if self.abdomenSprite then
+        love.graphics.setColor(1, 1, 1, 1)
+        local sx = scaledW / self.abdomenW
+        local sy = scaledH / self.abdomenH
+        love.graphics.draw(self.abdomenSprite, ANIM_CONF.ABDOMEN_OFFSET + abdomenSouthOffsetX, abdomenSouthOffsetY, math.pi / 2, sx, sy,
+            self.abdomenW / 2, self.abdomenH / 2)
+    else
+        -- Fallback: original procedural abdomen
+        love.graphics.setColor(0.25, 0.25, 0.35)
+        love.graphics.ellipse("fill", ANIM_CONF.ABDOMEN_OFFSET, 0, scaledW, scaledH)
+        love.graphics.setColor(0, 0, 0)
+        love.graphics.setLineWidth(2)
+        love.graphics.ellipse("line", ANIM_CONF.ABDOMEN_OFFSET, 0, scaledW, scaledH)
+    end
 
-    -- Draw main body
-    love.graphics.setColor(0.3, 0.3, 0.4)
-    love.graphics.circle("fill", 0, 0, ANIM_CONF.BODY_RADIUS)
-    love.graphics.setColor(0,0,0)
-    love.graphics.setLineWidth(2)
-    love.graphics.circle("line", 0, 0, ANIM_CONF.BODY_RADIUS)
+    -- Draw main body / head
+    if self.headSprite then
+        -- Use head.png from vectorspider; scale it to roughly match BODY_RADIUS
+        love.graphics.setColor(1, 1, 1, 1)
+        local baseRadius = ANIM_CONF.BODY_RADIUS
+        local targetSize = baseRadius * 2
+        local sx = targetSize / self.headW
+        local sy = targetSize / self.headH
+        local scale = math.min(sx, sy)
+        -- Rotate head 90 degrees clockwise relative to the body, then 180 degrees (total 270°)
+        love.graphics.draw(self.headSprite, 0, 0, math.pi / 2, scale, scale, self.headW / 2, self.headH / 2)
+    else
+        -- Fallback: original circular body
+        love.graphics.setColor(0.3, 0.3, 0.4)
+        love.graphics.circle("fill", 0, 0, ANIM_CONF.BODY_RADIUS)
+        love.graphics.setColor(0,0,0)
+        love.graphics.setLineWidth(2)
+        love.graphics.circle("line", 0, 0, ANIM_CONF.BODY_RADIUS)
+    end
     
-    love.graphics.translate(visualSlide, 0)
-    love.graphics.setColor(0.4, 0.4, 0.5)
-    love.graphics.circle("fill", 0, 0, ANIM_CONF.BODY_RADIUS * 0.7)
-    love.graphics.setColor(0,0,0)
-    love.graphics.circle("line", 0, 0, ANIM_CONF.BODY_RADIUS * 0.7)
-    
-    -- Draw barrels with recoil
-    love.graphics.translate(-self.barrelkick, 0)
-    
-    local barrelLen = 35 - (self.lean * ANIM_CONF.BARREL_SHORTEN)
-    love.graphics.setColor(0.7, 0.2, 0.2)
-    love.graphics.rectangle("fill", 10, -12, barrelLen, 8)
-    love.graphics.rectangle("fill", 10, 4, barrelLen, 8)
-    love.graphics.setColor(0,0,0)
-    love.graphics.rectangle("line", 10, -12, barrelLen, 8)
-    love.graphics.rectangle("line", 10, 4, barrelLen, 8)
-    
+    -- Turret inner body + barrels removed for now
+
     love.graphics.pop()
     
     -- PUCK MODE INDICATOR (preserved)
@@ -641,11 +823,6 @@ function Turret:draw()
         love.graphics.circle("fill", bx, by, 25 * 2)
     end
 
-    if self.isCharging then
-        local r, g, b = (self.chargeColor == "red") and {1, 0, 0} or {0, 0, 1}
-        love.graphics.setColor(r[1], r[2], r[3], 0.8)
-        love.graphics.circle("fill", bx, by, 8 * 2)
-    end
 end
 
 return Turret

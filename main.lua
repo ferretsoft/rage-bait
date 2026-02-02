@@ -1,4 +1,20 @@
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        local Constants = require("src.constants")
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        -- Check for export-spider command-line argument at the top level
+for i, arg in ipairs(arg) do
+    if arg == "--export-spider" then
+        -- Load and run the export script (it will define its own love.load/draw)
+        local chunk, err = loadfile("export_spider_graphics.lua")
+        if chunk then
+            chunk()
+            -- Exit early - don't load the rest of main.lua
+            return
+        else
+            print("Error loading export script: " .. tostring(err))
+            os.exit(1)
+        end
+    end
+end
+
+local Constants = require("src.constants")
 local Event = require("src.core.event")
 local Engagement = require("src.core.engagement")
 local World = require("src.core.world")
@@ -31,6 +47,7 @@ local DynamicMusic = require("src.core.dynamic_music")
 local MatrixEffect = require("src.core.matrix_effect")
 local HighScores = require("src.core.high_scores")
 local ParticleSystem = require("src.core.particle_system")
+local DrawingHelpers = require("src.core.drawing_helpers")
 local BootingScreen = require("src.screens.booting_screen")
 local LogoScreen = require("src.screens.logo_screen")
 local IntroVideoScreen = require("src.screens.intro_video_screen")
@@ -637,22 +654,27 @@ function love.load()
     Event.on("bomb_exploded", function(data)
         Time.slowDown(0.1, 0.5); Game.shake = 1.0
         
+        -- Clamp explosion zone position to playfield bounds (accounting for radius)
+        local zoneX = math.max(data.radius, math.min(Constants.PLAYFIELD_WIDTH - data.radius, data.x))
+        local zoneY = math.max(data.radius, math.min(Constants.PLAYFIELD_HEIGHT - data.radius, data.y))
+        
         -- [NOTE] The radius comes from data.radius, which is set by Constants.EXPLOSION_RADIUS
         -- This ensures the size is constant regardless of throw distance.
-        table.insert(Game.effects, {type = "explosion", x = data.x, y = data.y, radius = 0, maxRadius = data.radius, color = data.color, alpha = 1.0, timer = 0.5})
+        table.insert(Game.effects, {type = "explosion", x = zoneX, y = zoneY, radius = 0, maxRadius = data.radius, color = data.color, alpha = 1.0, timer = 0.5})
         
         local blocked = false
         for _, z in ipairs(Game.explosionZones) do
-            local dx = data.x - z.x; local dy = data.y - z.y
+            local dx = zoneX - z.x; local dy = zoneY - z.y
             if (dx*dx + dy*dy) < (z.radius * z.radius) then if z.color ~= data.color then blocked = true break end end
         end
         if blocked then return end
         if #Game.explosionZones >= 5 then local oldZ = table.remove(Game.explosionZones, 1); if oldZ.body then oldZ.body:destroy() end end
-        local body = love.physics.newBody(World.physics, data.x, data.y, "static")
+        
+        local body = love.physics.newBody(World.physics, zoneX, zoneY, "static")
         local shape = love.physics.newCircleShape(data.radius)
         local fixture = love.physics.newFixture(body, shape)
         fixture:setCategory(Constants.PHYSICS.ZONE); fixture:setUserData({ type = "zone", color = data.color })
-        table.insert(Game.explosionZones, {x = data.x, y = data.y, radius = data.radius, color = data.color, timer = Constants.EXPLOSION_DURATION, body = body})
+        table.insert(Game.explosionZones, {x = zoneX, y = zoneY, radius = data.radius, color = data.color, timer = Constants.EXPLOSION_DURATION, body = body})
     end)
     Event.on("unit_killed", function(data)
         Game.score = Game.score + (Constants.SCORE_KILL * Game.pointMultiplier.value); Engagement.add(Constants.ENGAGEMENT_REFILL_KILL); Game.shake = math.max(Game.shake, 0.2)
@@ -666,15 +688,21 @@ function love.load()
                 return  -- Can't get position, skip
             end
         end
-        table.insert(Game.hazards, {x = x, y = y, radius = Constants.TOXIC_RADIUS, timer = Constants.TOXIC_DURATION})
+        -- Clamp toxic zone position to playfield bounds (accounting for radius)
+        local toxicX = math.max(Constants.TOXIC_RADIUS, math.min(Constants.PLAYFIELD_WIDTH - Constants.TOXIC_RADIUS, x))
+        local toxicY = math.max(Constants.TOXIC_RADIUS, math.min(Constants.PLAYFIELD_HEIGHT - Constants.TOXIC_RADIUS, y))
+        table.insert(Game.hazards, {x = toxicX, y = toxicY, radius = Constants.TOXIC_RADIUS, timer = Constants.TOXIC_DURATION})
         Webcam.showComment("unit_killed")
     end)
     Event.on("unit_insane_exploded", function(data)
         local x, y = data.x, data.y  -- Use position from event data (captured before body destruction)
+        -- Clamp position to playfield bounds (accounting for radius)
+        local toxicX = math.max(Constants.INSANE_TOXIC_RADIUS, math.min(Constants.PLAYFIELD_WIDTH - Constants.INSANE_TOXIC_RADIUS, x))
+        local toxicY = math.max(Constants.INSANE_TOXIC_RADIUS, math.min(Constants.PLAYFIELD_HEIGHT - Constants.INSANE_TOXIC_RADIUS, y))
         -- Massive explosion effect
         table.insert(Game.effects, {
             type = "explosion",
-            x = x, y = y,
+            x = toxicX, y = toxicY,
             radius = 0,
             maxRadius = Constants.INSANE_EXPLOSION_RADIUS,
             color = "red",  -- Red for insanity
@@ -684,7 +712,7 @@ function love.load()
         })
         -- Massive toxic sludge (larger radius and longer duration)
         table.insert(Game.hazards, {
-            x = x, y = y,
+            x = toxicX, y = toxicY,
             radius = Constants.INSANE_TOXIC_RADIUS,
             timer = Constants.INSANE_TOXIC_DURATION
         })
@@ -1109,56 +1137,7 @@ end
 
 -- Draw joystick test / input diagnostics screen
 -- Draw glitchy terminal text with write-on effect
--- Helper function to draw frozen game state (used in game over, life lost, ready screens)
-local function drawFrozenGameState()
-    World.draw(function()
-        for _, h in ipairs(Game.hazards) do
-            local r,g,b = unpack(Constants.COLORS.TOXIC); local a = (h.timer/Constants.TOXIC_DURATION)*0.4
-            love.graphics.setColor(r,g,b,a); love.graphics.circle("fill", h.x, h.y, h.radius)
-            love.graphics.setColor(r,g,b,a+0.2); love.graphics.setLineWidth(2); love.graphics.circle("line", h.x, h.y, h.radius)
-        end
-        
-        for _, u in ipairs(Game.units) do u:draw() end
-        for _, p in ipairs(Game.projectiles) do p:draw() end
-        for _, pup in ipairs(Game.powerups) do pup:draw() end
-        
-        for _, e in ipairs(Game.effects) do
-            if e.type == "explosion" then
-                love.graphics.setLineWidth(3)
-                if e.color == "gold" then love.graphics.setColor(1, 0.8, 0.2, e.alpha)
-                elseif e.color == "red" then love.graphics.setColor(1, 0.2, 0.2, e.alpha)
-                else love.graphics.setColor(0.2, 0.2, 1, e.alpha) end
-                love.graphics.circle("line", e.x, e.y, e.radius, 64); love.graphics.setColor(1, 1, 1, e.alpha * 0.2); love.graphics.circle("fill", e.x, e.y, e.radius, 64)
-            end
-        end
-        
-        if Game.turret then Game.turret:draw() end
-    end)
-end
-
--- Helper function to draw black overlay with fade
-local function drawBlackOverlay(alpha)
-    love.graphics.setColor(0, 0, 0, alpha)
-    love.graphics.rectangle("fill", 0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
-end
-
--- Helper function to draw window content background (transparent black)
-local function drawWindowContentBackground(x, y, width, height, titleBarHeight, borderWidth)
-    love.graphics.setColor(0, 0, 0, 0.7)
-    love.graphics.rectangle("fill", x + borderWidth, y + borderWidth + titleBarHeight, 
-        width - (borderWidth * 2), height - (borderWidth * 2) - titleBarHeight)
-end
-
--- Helper function to calculate pulsing value (0 to 1)
-local function calculatePulse(speed, offset)
-    offset = offset or 0
-    return (math.sin((love.timer.getTime() + offset) * speed) + 1) / 2
-end
-
--- Helper function to get screen center coordinates
-local function getScreenCenter()
-    return Constants.SCREEN_WIDTH / 2, Constants.SCREEN_HEIGHT / 2
-end
+-- Drawing helper functions now use DrawingHelpers module
 
 -- Helper function to clear button held status
 local function clearButtonHeldStatus()
@@ -1177,34 +1156,7 @@ local function clearButtonHeldStatus()
     Game.joystick.button2Pressed = false
 end
 
--- Helper function to calculate plexi scale factors
-local function calculatePlexiScale()
-    if not Game.plexi then return 1, 1 end
-    local plexiScaleX = (Constants.SCREEN_WIDTH / Game.plexi:getWidth()) * Constants.UI.PLEXI_SCALE_FACTOR
-    local plexiScaleY = (Constants.SCREEN_HEIGHT / Game.plexi:getHeight()) * Constants.UI.PLEXI_SCALE_FACTOR
-    return plexiScaleX, plexiScaleY
-end
-
--- Helper function to draw text with outline
-local function drawTextWithOutline(text, x, y, colorR, colorG, colorB, colorA, outlineWidth, outlineAlpha)
-    outlineWidth = outlineWidth or 4
-    outlineAlpha = outlineAlpha or 0.8
-    
-    -- Draw outline
-    love.graphics.setLineWidth(outlineWidth)
-    love.graphics.setColor(0, 0, 0, colorA * outlineAlpha)
-    for dx = -2, 2 do
-        for dy = -2, 2 do
-            if dx ~= 0 or dy ~= 0 then
-                love.graphics.print(text, x + dx, y + dy)
-            end
-        end
-    end
-    
-    -- Draw main text
-    love.graphics.setColor(colorR, colorG, colorB, colorA)
-    love.graphics.print(text, x, y)
-end
+-- Plexi scale and text outline functions now use DrawingHelpers module
 
 -- drawGlitchyTerminalText has been moved to TopBanner module
 
@@ -1371,7 +1323,7 @@ function drawIntroScreen()
     local borderWidth = Constants.UI.BORDER_WIDTH
     
     -- Draw transparent black background for content area
-    drawWindowContentBackground(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, titleBarHeight, borderWidth)
+    DrawingHelpers.drawWindowContentBackground(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, titleBarHeight, borderWidth)
     
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
@@ -1781,7 +1733,7 @@ function drawLifeLostAuditor()
         end
         
         -- Draw frozen game elements
-        drawFrozenGameState()
+        DrawingHelpers.drawFrozenGameState()
         
         -- Draw Windows 95 style frame around the playfield (A.R.A.C. Control Interface)
         do
@@ -1814,7 +1766,7 @@ function drawLifeLostAuditor()
         -- Draw black overlay during life lost (behind banner, in front of game)
         local greyFade = TopBanner.getGameOverGreyFade()
         if TopBanner.isGameOverDropActive() and greyFade > 0 then
-            drawBlackOverlay(greyFade)
+            DrawingHelpers.drawBlackOverlay(greyFade)
         end
     
     -- Draw terminal text for life lost
@@ -1843,7 +1795,7 @@ function drawGameOver()
         end
         
         -- Draw frozen game elements
-        drawFrozenGameState()
+        DrawingHelpers.drawFrozenGameState()
         
         -- Draw Windows 95 style frame around the playfield (A.R.A.C. Control Interface)
         do
@@ -1876,7 +1828,7 @@ function drawGameOver()
     -- Draw black overlay during game over (behind banner, in front of game)
     local greyFade = TopBanner.getGameOverGreyFade()
     if TopBanner.isGameOverDropActive() and greyFade > 0 then
-        drawBlackOverlay(greyFade)
+        DrawingHelpers.drawBlackOverlay(greyFade)
     end
     
     -- Draw terminal text for game over
@@ -1893,7 +1845,7 @@ function drawAuditor()
         love.graphics.clear(Constants.COLORS.BACKGROUND)
         
         -- Draw frozen game elements
-        drawFrozenGameState()
+        DrawingHelpers.drawFrozenGameState()
         
         -- Show webcam with CRITICAL_ERROR
         love.graphics.setColor(1, 0, 0, 1)
@@ -1908,7 +1860,7 @@ function drawAuditor()
         local fadeAlpha = math.min(fadeProgress, 1.0)
         
         -- Fade to black
-        drawBlackOverlay(fadeAlpha)
+        DrawingHelpers.drawBlackOverlay(fadeAlpha)
         
         -- Show THE AUDITOR (hooded figure with red camera lens)
         if fadeAlpha >= 0.5 then
@@ -1919,7 +1871,7 @@ function drawAuditor()
     -- Phase 3: Show verdict text
     elseif Game.auditor.phase == 3 then
         -- Black background
-        drawBlackOverlay(1.0)
+        DrawingHelpers.drawBlackOverlay(1.0)
         
         -- Draw THE AUDITOR
         drawAuditorFigure(1.0)
@@ -1939,7 +1891,7 @@ function drawAuditor()
         
     -- Phase 4: Crash to black
     elseif Game.auditor.phase == 4 then
-        drawBlackOverlay(1.0)
+        DrawingHelpers.drawBlackOverlay(1.0)
     end
 end
 
@@ -2089,7 +2041,7 @@ function drawAnimatingWebcamWindow()
     local borderWidth = Constants.UI.BORDER_WIDTH
     
     -- Draw transparent black background for content area
-    drawWindowContentBackground(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, titleBarHeight, borderWidth)
+    DrawingHelpers.drawWindowContentBackground(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, titleBarHeight, borderWidth)
     
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(WEBCAM_X, WEBCAM_Y, WEBCAM_WIDTH, WEBCAM_HEIGHT, "Chase Paxton")
@@ -2222,7 +2174,7 @@ function drawReadyScreen()
         Game.fonts.multiplierGiant = love.graphics.newFont(Constants.UI.FONT_MULTIPLIER_GIANT)
     end
     
-    local centerX, centerY = getScreenCenter()
+    local centerX, centerY = DrawingHelpers.getScreenCenter()
     
     if Game.ready.phase == 1 then
         -- Phase 1: Fade out black overlay (show frozen game)
@@ -2235,7 +2187,7 @@ function drawReadyScreen()
         love.graphics.setFont(Game.fonts.multiplierGiant)
         
         -- Pulsing color effect
-        local pulse = calculatePulse(4)
+        local pulse = DrawingHelpers.calculatePulse(4)
         local r = 0.2 + pulse * 0.8
         local g = 0.8 + pulse * 0.2
         local b = 0.2 + pulse * 0.8
@@ -2244,7 +2196,7 @@ function drawReadyScreen()
         local textWidth = Game.fonts.multiplierGiant:getWidth(text)
         local textHeight = Game.fonts.multiplierGiant:getHeight()
         
-        drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
+        DrawingHelpers.drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
         
         -- Draw sparks
         ParticleSystem.draw(Game.ready.sparks)
@@ -2256,7 +2208,7 @@ function drawReadyScreen()
         love.graphics.setFont(Game.fonts.multiplierGiant)
         
         -- Pulsing color effect (more intense)
-        local pulse = calculatePulse(6)
+        local pulse = DrawingHelpers.calculatePulse(6)
         local r = 0.8 + pulse * 0.2
         local g = 0.2 + pulse * 0.8
         local b = 0.2 + pulse * 0.8
@@ -2264,9 +2216,9 @@ function drawReadyScreen()
         local text = "GO!"
         local textWidth = Game.fonts.multiplierGiant:getWidth(text)
         local textHeight = Game.fonts.multiplierGiant:getHeight()
-        local centerX, centerY = getScreenCenter()
+        local centerX, centerY = DrawingHelpers.getScreenCenter()
         
-        drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
+        DrawingHelpers.drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
         
         -- Draw sparks
         ParticleSystem.draw(Game.ready.sparks)
@@ -3073,8 +3025,10 @@ function love.update(dt)
         if Game.powerupSpawnTimer <= 0 then
             Game.powerupSpawnTimer = math.random(15, 25)
             local px = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
+            -- Clamp powerup X position to playfield bounds (accounting for radius)
+            local clampedX = math.max(Constants.POWERUP_RADIUS, math.min(Constants.PLAYFIELD_WIDTH - Constants.POWERUP_RADIUS, px))
             -- Only spawn puck powerups (bumpers removed)
-            table.insert(Game.powerups, PowerUp.new(px, -50, "puck"))
+            table.insert(Game.powerups, PowerUp.new(clampedX, -50, "puck"))
         end
     end
 
@@ -3528,7 +3482,7 @@ function drawGame()
     -- Draw black overlay during game over (behind banner, in front of game)
     local greyFade = TopBanner.getGameOverGreyFade()
     if TopBanner.isGameOverDropActive() and greyFade > 0 then
-        drawBlackOverlay(greyFade)
+        DrawingHelpers.drawBlackOverlay(greyFade)
     end
     
     -- Draw terminal text for game over
@@ -3671,7 +3625,7 @@ function love.draw()
     local function drawPlexiOverlay(sceneCanvas)
         if Game.plexi then
             -- Calculate plexi scale (15% larger)
-            local plexiScaleX, plexiScaleY = calculatePlexiScale()
+            local plexiScaleX, plexiScaleY = DrawingHelpers.calculatePlexiScale()
             
                 -- Draw first plexi layer (additive)
                 love.graphics.setBlendMode("add")
@@ -4164,7 +4118,7 @@ function drawScoreWindow()
     local borderWidth = Constants.UI.BORDER_WIDTH
     
     -- Draw transparent black background for content area
-    drawWindowContentBackground(SCORE_X, SCORE_Y, SCORE_WIDTH, SCORE_HEIGHT, titleBarHeight, borderWidth)
+    DrawingHelpers.drawWindowContentBackground(SCORE_X, SCORE_Y, SCORE_WIDTH, SCORE_HEIGHT, titleBarHeight, borderWidth)
     
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(SCORE_X, SCORE_Y, SCORE_WIDTH, SCORE_HEIGHT, "Score")
@@ -4192,7 +4146,7 @@ function drawMultiplierWindow()
     local borderWidth = Constants.UI.BORDER_WIDTH
     
     -- Draw transparent black background for content area
-    drawWindowContentBackground(MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT, titleBarHeight, borderWidth)
+    DrawingHelpers.drawWindowContentBackground(MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT, titleBarHeight, borderWidth)
     
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(MULTIPLIER_X, MULTIPLIER_Y, MULTIPLIER_WIDTH, MULTIPLIER_HEIGHT, "Multiplier")
@@ -4243,7 +4197,7 @@ function drawHUD()
     
     -- Draw point multiplier announcement (giant flashing "2X" with sparks) - skip in demo mode
     if Game.pointMultiplier.valueActive and not Game.modes.demo then
-        local centerX, centerY = getScreenCenter()
+        local centerX, centerY = DrawingHelpers.getScreenCenter()
         centerY = centerY - 100
         
         -- Draw spark particles

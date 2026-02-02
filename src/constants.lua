@@ -179,7 +179,7 @@ Constants.COLORS = {
     GREY = {0.7, 0.7, 0.7, 1},
     RED = {1, 0.2, 0.2, 1},
     BLUE = {0.2, 0.2, 1, 1},
-    BACKGROUND = {0.1, 0.1, 0.12, 1},
+    BACKGROUND = {0, 0, 0, 1},  -- Black background
     TOXIC = {0.2, 0.8, 0.2},
     GOLD = {1, 0.8, 0.2, 1}
 }
