@@ -420,7 +420,13 @@ function love.load()
     Game.fonts.medium = love.graphics.newFont(Constants.UI.FONT_MEDIUM)
     Game.fonts.large = love.graphics.newFont(Constants.UI.FONT_LARGE)
     Game.fonts.speechBubble = love.graphics.newFont(Constants.UI.FONT_SPEECH_BUBBLE)
-    Game.fonts.announcementGiant = love.graphics.newFont(Constants.UI.FONT_ANNOUNCEMENT_GIANT)
+    -- Load DOS font for announcement text (RAPID FIRE, multipliers)
+    local success, dosFont = pcall(love.graphics.newFont, "assets/ModernDOS9x16.ttf", Constants.UI.FONT_ANNOUNCEMENT_GIANT)
+    if success and dosFont then
+        Game.fonts.announcementGiant = dosFont
+    else
+        Game.fonts.announcementGiant = love.graphics.newFont(Constants.UI.FONT_ANNOUNCEMENT_GIANT)
+    end
     -- Try to load a monospace font, fallback to default if not available
     local success, font = pcall(love.graphics.newFont, "assets/NotoColorEmoji.ttf", 32)
     if success and font then
@@ -1750,6 +1756,9 @@ function drawLifeLostAuditor()
                 Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
         end
         
+        -- Draw grid on playfield (affected by shake)
+        DrawingHelpers.drawPlayfieldGrid()
+        
         -- Draw frozen game elements
         DrawingHelpers.drawFrozenGameState()
         
@@ -1817,6 +1826,9 @@ function drawGameOver()
                 Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
                 Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
         end
+        
+        -- Draw grid on playfield (affected by shake)
+        DrawingHelpers.drawPlayfieldGrid()
         
         -- Draw frozen game elements
         DrawingHelpers.drawFrozenGameState()
@@ -1970,10 +1982,24 @@ function drawWinTextScreen()
     -- Draw teal wallpaper (like Windows desktop) - covers entire screen except playfield
     DrawingHelpers.drawTealWallpaper()
     
-    -- Draw the game frozen in the background (faded)
-    if Game.turret then
-        local function drawGameFrozen()
-            World.draw(function()
+    -- Apply shake transform (if any)
+    love.graphics.push()
+        if Game.shake and Game.shake > 0 then
+            local s = Game.shake * Game.shake * 15; love.graphics.translate(love.math.random(-s, s), love.math.random(-s, s))
+        end
+        
+        -- Draw background image if loaded and enabled
+        if Game.showBackgroundForeground and Game.assets.background then
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(Game.assets.background, 0, 0, 0, 
+                Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
+                Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
+        end
+        
+        -- Draw the game frozen in the background (faded)
+        if Game.turret then
+            local function drawGameFrozen()
+                World.draw(function()
                 -- Draw units (frozen)
                 for _, u in ipairs(Game.units) do
                     if not u.isDead then
@@ -2025,7 +2051,12 @@ function drawWinTextScreen()
             love.graphics.rectangle("fill", Constants.OFFSET_X, Constants.OFFSET_Y, 
                 Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
         end
+        
+        -- Draw grid on playfield (after overlays so it's visible on top)
+        DrawingHelpers.drawPlayfieldGrid()
     end
+    
+    love.graphics.pop()
     
     -- Win text removed - Chase Paxton handles this in his dialogue
     
@@ -2146,6 +2177,9 @@ function drawReadyScreen()
                 Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
         end
         
+        -- Draw grid on playfield (affected by shake)
+        DrawingHelpers.drawPlayfieldGrid()
+        
         -- Draw game elements
         World.draw(function()
             for _, h in ipairs(Game.hazards) do
@@ -2253,9 +2287,14 @@ function drawReadyScreen()
         
     love.graphics.pop()
     
-    -- Create giant font if not cached
+    -- Create giant font if not cached (use DOS font)
     if not Game.fonts.multiplierGiant then
-        Game.fonts.multiplierGiant = love.graphics.newFont(Constants.UI.FONT_MULTIPLIER_GIANT)
+        local success, dosFont = pcall(love.graphics.newFont, "assets/ModernDOS9x16.ttf", Constants.UI.FONT_MULTIPLIER_GIANT)
+        if success and dosFont then
+            Game.fonts.multiplierGiant = dosFont
+        else
+            Game.fonts.multiplierGiant = love.graphics.newFont(Constants.UI.FONT_MULTIPLIER_GIANT)
+        end
     end
     
     local centerX, centerY = DrawingHelpers.getScreenCenter()
@@ -3495,6 +3534,9 @@ function drawGame()
             Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
             Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
     end
+    
+    -- Draw grid on playfield (affected by shake)
+    DrawingHelpers.drawPlayfieldGrid()
     
     World.draw(function()
         for _, h in ipairs(Game.hazards) do
