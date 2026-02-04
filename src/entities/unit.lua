@@ -410,9 +410,11 @@ function Unit:checkIsolation(dt, allUnits)
         -- Show speech bubble and play warning sound when timer reaches half (when shaking starts)
         local halfTime = Constants.ISOLATION_INSANE_TIME / 2
         if oldTimer < halfTime and self.isolationTimer >= halfTime then
-            -- Play warning sound (alert beep)
-            Sound.playTone(600, 0.2, 0.7, 1.0)  -- Medium pitch, 0.2s duration
-            Sound.playTone(800, 0.15, 0.7, 1.2)  -- Higher pitch for urgency
+            -- Play warning sound (more attention-grabbing motif in F pentatonic)
+            -- Slightly louder and three-note pattern: D5 -> G5 -> D5
+            Sound.playTone(587.33, 0.18, 0.85, 1.0)  -- D5
+            Sound.playTone(784.00, 0.14, 0.85, 1.2)  -- G5
+            Sound.playTone(587.33, 0.22, 0.9, 0.95)  -- D5 again, a bit longer
             
             -- Show a random nihilism quote when shaking starts
             if not self.speechBubble then

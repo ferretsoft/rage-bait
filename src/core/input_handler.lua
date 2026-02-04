@@ -289,17 +289,16 @@ function InputHandler.handleKeyPressed(key)
             -- Exit fullscreen: restore windowed mode on primary display
             love.window.setFullscreen(false)
             love.window.setMode(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
-            -- Recreate CRT chain for windowed mode
+            -- CRT chain stays at base resolution
             if Game.crtChain then
-                -- Resize the chain (this recreates the buffer canvases)
-                -- The glow effect will now automatically recreate its internal canvas
                 Game.crtChain.resize(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
-                
-                -- Update CRT effect screen size
                 if Game.crtEffect and Game.crtEffect.screenSize then
                     Game.crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
                 end
             end
+            Game.fullscreenCompositeStencilCanvas = nil
+            Game.fullscreenCompositeCanvas = nil
+            Game.fullscreenTraceCanvas = nil
         else
             -- Enter fullscreen using the monitor's full native resolution
             local width, height
@@ -320,17 +319,19 @@ function InputHandler.handleKeyPressed(key)
                     fullscreentype = "exclusive"  -- Use exclusive fullscreen for native resolution
                 })
             end
-            -- Recreate CRT chain for fullscreen resolution
+            -- Keep CRT chain at base resolution (1080x1920) so game + overlays render correctly;
+            -- we composite to a canvas and scale that to the screen instead.
             if Game.crtChain then
-                -- Resize the chain (this recreates the buffer canvases)
-                -- The glow effect will now automatically recreate its internal canvas
-                Game.crtChain.resize(width, height)
-                
-                -- Update CRT effect screen size - keep at original for proper scanline spacing
+                Game.crtChain.resize(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
                 if Game.crtEffect and Game.crtEffect.screenSize then
                     Game.crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
                 end
             end
+            -- Fullscreen composite: render at 1080x1920 then scale to fill screen (stencil for explosion zones)
+            Game.fullscreenCompositeStencilCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT, {format = "stencil8"})
+            Game.fullscreenCompositeCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
+            -- Trace overlay: 1080x1920 so TextTrace draws at base res, then we scale it (fixes fullscreen overshoot)
+            Game.fullscreenTraceCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT, {format = "rgba8"})
         end
         return true
     end

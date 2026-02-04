@@ -257,6 +257,22 @@ function DynamicMusic.switchToPart(partNum)
     end
 end
 
+-- Get BPM (for external sync e.g. swarm tones)
+function DynamicMusic.getBPM()
+    return state.BPM
+end
+
+-- Get current playback position in seconds (nil if not playing)
+function DynamicMusic.getPlaybackPosition()
+    if state.currentPart and state.parts[state.currentPart] and #state.parts[state.currentPart] > 0 then
+        local firstSource = state.parts[state.currentPart][1]
+        if firstSource:isPlaying() then
+            return firstSource:tell("seconds")
+        end
+    end
+    return nil
+end
+
 -- Cycle sync mode
 function DynamicMusic.cycleSyncMode()
     state.syncModeIndex = (state.syncModeIndex % #state.syncModes) + 1

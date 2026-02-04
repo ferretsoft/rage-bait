@@ -101,22 +101,23 @@ local function renderTextToCanvas(text, textX, textY, terminalFont, glitchTextTi
     local charsToShow = math.floor(glitchTextWriteProgress * #text)
     local displayText = text:sub(1, charsToShow)
     
-    -- Subtle glitch: only corrupt 3% of characters (much less glitchy)
+    -- Subtle glitch: only corrupt 3% of characters. Reseed only when tick changes (performance).
     local glitchChars = {"█", "▓", "▒"}
-    local corruptedText = ""
-    
-    -- Use timer-based seed for consistent corruption per frame
-    math.randomseed(math.floor(glitchTextTimer * 100))
-    
+    local seed = math.floor(glitchTextTimer * 100)
+    if TextTrace._lastGlitchSeed ~= seed then
+        TextTrace._lastGlitchSeed = seed
+        math.randomseed(seed)
+    end
+    local corruptedParts = {}
     for i = 1, #displayText do
         local char = displayText:sub(i, i)
-        -- Randomly corrupt some characters (much less frequent)
-        if math.random() < 0.03 then  -- 3% chance of corruption
-            corruptedText = corruptedText .. glitchChars[math.random(#glitchChars)]
+        if math.random() < 0.03 then
+            corruptedParts[#corruptedParts + 1] = glitchChars[math.random(#glitchChars)]
         else
-            corruptedText = corruptedText .. char
+            corruptedParts[#corruptedParts + 1] = char
         end
     end
+    local corruptedText = table.concat(corruptedParts)
     
     -- Pulsing effect (alpha pulses smoothly)
     local pulse = (math.sin(glitchTextTimer * 3) + 1) / 2  -- 0 to 1
@@ -165,7 +166,9 @@ local function renderTextToCanvas(text, textX, textY, terminalFont, glitchTextTi
 end
 
 -- Draw text trace lines
-function TextTrace.draw()
+-- opts: optional table; opts.useAlphaBlend = true when drawing to an offscreen canvas (so canvas has alpha and shows when blitted)
+function TextTrace.draw(opts)
+    opts = opts or {}
     -- Only draw during life lost or game over
     if not Game then
         return
@@ -243,8 +246,12 @@ function TextTrace.draw()
     local oldColor = {love.graphics.getColor()}
     local oldLineWidth = love.graphics.getLineWidth()
     
-    -- Draw thin lines from text pixels to center
-    love.graphics.setBlendMode("add")  -- Additive blend for glow effect
+    -- When drawing to offscreen canvas (fullscreen), use alpha blend so the canvas has alpha and is visible when blitted
+    if opts.useAlphaBlend then
+        love.graphics.setBlendMode("alpha")
+    else
+        love.graphics.setBlendMode("add")  -- Additive blend for glow effect
+    end
     love.graphics.setColor(state.lineColor[1], state.lineColor[2], state.lineColor[3], finalOpacity)
     love.graphics.setLineWidth(state.rayWidth)
     
@@ -281,9 +288,8 @@ function TextTrace.draw()
                 local screenY = y
                 
                 -- Calculate brightness from the sampled pixel (use green channel as it's green text)
-                -- Use half the brightness of the sampled text pixel
                 local pixelBrightness = g * a  -- Green channel multiplied by alpha
-                local lineBrightness = pixelBrightness * 0.5  -- Half brightness
+                local lineBrightness = pixelBrightness * 0.85  -- Brighter (was 0.5)
                 
                 -- Set color with half brightness
                 love.graphics.setColor(

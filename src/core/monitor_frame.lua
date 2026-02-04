@@ -3,8 +3,11 @@
 
 local Constants = require("src.constants")
 local DrawLayers = require("src.core.draw_layers")
+local DrawingHelpers = require("src.core.drawing_helpers")
 
 local MonitorFrame = {}
+
+local MAINFRAME_NORMAL_MAX_LIGHTS = 32
 
 -- Configuration: Enable/disable BottomCenterPanel crop at y=174
 -- Set to false to disable cropping
@@ -22,6 +25,7 @@ local state = {
         leftMidUnderPanel = nil,
         leftMidUnderPanelHighlights = nil,
         mainFrame = nil,
+        mainFrameNormal = nil,
         bottomCenterPanel = nil,
         leftMidPanel = nil,
         rightMidPanel = nil,
@@ -57,6 +61,7 @@ local state = {
     },
     reverseAnimationActive = false,  -- True when reversing engagement animations before reset
     panelsSetToMaximum = false,  -- Track if panels have been set to maximum (for game over)
+    mainFrameNormalShader = nil,
     bottomCenterPanelReverseStarted = false,  -- Track if BottomCenterPanel reverse was explicitly started
 }
 
@@ -119,6 +124,17 @@ function MonitorFrame.load()
         state.images.mainFrame = img7
     else
         print("Warning: Could not load MainFrame: assets/monitorframe/MainFrame.png")
+    end
+    
+    -- 7b. MainFrame normal map (Metric3D) and shader for playfield lights
+    local success7b, img7b = pcall(love.graphics.newImage, "assets/monitorframe/MainFrame_normal.png")
+    if success7b then
+        state.images.mainFrameNormal = img7b
+    end
+    local shaderCode = love.filesystem.read("shaders/mainframe_normal.fs")
+    if shaderCode then
+        local ok, sh = pcall(love.graphics.newShader, shaderCode)
+        if ok then state.mainFrameNormalShader = sh end
     end
     
     -- 8. BottomCenterPanel
@@ -425,6 +441,41 @@ function MonitorFrame.update(dt)
     end
 end
 
+-- Internal helper: Draw MainFrame normal map lit by playfield (same alpha treatment as overlord). Call after drawing base MainFrame.
+local function drawMainFrameNormalMap(frameX, frameY)
+    if not state.images.mainFrameNormal or not state.mainFrameNormalShader or not Game then return end
+    DrawingHelpers.ensurePlayfieldLightsFilled()
+    local count, lx, ly, lr, lg, lb, la, lrad = DrawingHelpers.getPlayfieldLightData()
+    if not count or count <= 0 or not lx or not lrad then return end
+    local n = math.min(count, MAINFRAME_NORMAL_MAX_LIGHTS)
+    local posList, colorList = {}, {}
+    for i = 1, n do
+        posList[i] = { lx[i] or 0, ly[i] or 0, lrad[i] or 40, 0 }
+        colorList[i] = { lr[i] or 0.5, lg[i] or 0.5, lb[i] or 0.5, la[i] or 0.6 }
+    end
+    for i = n + 1, MAINFRAME_NORMAL_MAX_LIGHTS do
+        posList[i] = { 0, 0, 1, 0 }
+        colorList[i] = { 0, 0, 0, 0 }
+    end
+    local oldShader = love.graphics.getShader()
+    local oldBlend = love.graphics.getBlendMode()
+    love.graphics.setShader(state.mainFrameNormalShader)
+    love.graphics.setBlendMode("add", "alphamultiply")
+    state.mainFrameNormalShader:send("maskTexture", state.images.mainFrame)
+    state.mainFrameNormalShader:send("useLumaAlpha", 0)  -- MainFrame: mask by alpha channel
+    state.mainFrameNormalShader:send("brightness", 1.0)
+    state.mainFrameNormalShader:send("useSceneLight", 0)
+    state.mainFrameNormalShader:send("sceneTexture", state.images.mainFrame)
+    state.mainFrameNormalShader:send("sceneSize", { 1, 1 })
+    state.mainFrameNormalShader:send("lightCount", n)
+    state.mainFrameNormalShader:send("lightPosRadius", unpack(posList))
+    state.mainFrameNormalShader:send("lightColor", unpack(colorList))
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(state.images.mainFrameNormal, frameX, frameY)
+    love.graphics.setBlendMode(oldBlend)
+    love.graphics.setShader(oldShader)
+end
+
 -- Internal helper: Draw a single layer
 local function drawLayer(layerName)
     local frameX = 0
@@ -446,6 +497,7 @@ local function drawLayer(layerName)
         love.graphics.draw(state.images.leftMidUnderPanelHighlights, frameX, frameY)
     elseif layerName == "mainFrame" and state.images.mainFrame then
         love.graphics.draw(state.images.mainFrame, frameX, frameY)
+        drawMainFrameNormalMap(frameX, frameY)
     elseif layerName == "bottomCenterPanel" and state.images.bottomCenterPanel then
         local bottomCenterPanelY = frameY + state.bottomCenterPanelAnimation.currentY
         
@@ -547,11 +599,13 @@ function MonitorFrame.registerLayers()
         end, "LeftMidUnderPanel_highlights")
     end
     
-    -- 7. MainFrame
+    -- 7. MainFrame (base + normal map lit by playfield lights, same alpha treatment as overlord)
     if state.images.mainFrame then
         DrawLayers.register(Constants.Z_DEPTH.MAIN_FRAME, function()
+            local frameX, frameY = 0, 0
             love.graphics.setColor(1, 1, 1, 1)
             love.graphics.draw(state.images.mainFrame, frameX, frameY)
+            drawMainFrameNormalMap(frameX, frameY)
         end, "MainFrame")
     end
     
@@ -693,6 +747,7 @@ function MonitorFrame.draw()
     -- 7. MainFrame
     if state.images.mainFrame then
         love.graphics.draw(state.images.mainFrame, frameX, frameY)
+        drawMainFrameNormalMap(frameX, frameY)
     end
     
     -- During reverse animation: draw BottomCenterPanel and EyeLid just under MainFrame
@@ -850,6 +905,7 @@ function MonitorFrame.drawAnimatedPanelsOnTop()
     -- 7. MainFrame
     if state.images.mainFrame then
         love.graphics.draw(state.images.mainFrame, frameX, frameY)
+        drawMainFrameNormalMap(frameX, frameY)
     end
     
     -- Draw animated panels on top of banner (same order as in draw())

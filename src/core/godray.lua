@@ -1,6 +1,8 @@
 -- src/core/godray.lua
 -- Godray effect that follows the center of the top banner vigilant layer
--- Simple shader-based implementation
+-- Simple shader-based implementation (lensflare + blur + glow, stronger as engagement drops)
+-- Disabled: not visible in fullscreen and saves GPU (no ray/blur/glow passes). Set to true to re-enable.
+local GODRAY_ENABLED = false
 
 local Constants = require("src.constants")
 local TopBanner = require("src.core.top_banner")
@@ -26,6 +28,7 @@ local state = {
     canvas = nil,  -- Canvas to draw rays to before applying blur
     glowCanvas = nil,  -- Canvas for glow pass
     compositeCanvas = nil,  -- Final composite canvas for all godray elements
+    tempBlurCanvas = nil,  -- Reused for vertical blur pass (avoids per-frame allocation)
 }
 
 -- Initialize godray (load shader and create canvas)
@@ -63,6 +66,9 @@ function Godray.load()
         format = "rgba8"
     })
     state.compositeCanvas:setFilter("linear", "linear")
+    -- Temp canvas for vertical blur pass (reused every frame to avoid framedrops)
+    state.tempBlurCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT, {format = "rgba8"})
+    state.tempBlurCanvas:setFilter("linear", "linear")
 end
 
 -- Update godray animation
@@ -72,6 +78,9 @@ end
 
 -- Draw godray effect
 function Godray.draw()
+    if not GODRAY_ENABLED then
+        return
+    end
     -- Only draw during gameplay
     if Engagement.value == nil then
         return
@@ -190,9 +199,8 @@ function Godray.draw()
     
     -- Vertical blur pass (blur the already horizontally blurred result)
     -- We need to blur glowCanvas (horizontal blur) vertically, but can't draw to itself
-    -- Use a temp canvas to avoid overwriting the main rays in canvas
-    local tempBlurCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT, {format = "rgba8"})
-    love.graphics.setCanvas(tempBlurCanvas)
+    -- Use cached temp canvas to avoid per-frame allocation (framedrop fix)
+    love.graphics.setCanvas(state.tempBlurCanvas)
     love.graphics.clear(0, 0, 0, 0)
     love.graphics.setShader()  -- No shader, just copy
     love.graphics.setBlendMode("alpha")
@@ -205,8 +213,7 @@ function Godray.draw()
     love.graphics.setShader(state.glowShader)
     state.glowShader:send("direction", {0.0, 1.0})  -- Vertical
     -- radius and textureSize are already set
-    love.graphics.draw(tempBlurCanvas, 0, 0)  -- Blur the horizontal blur result
-    tempBlurCanvas:release()
+    love.graphics.draw(state.tempBlurCanvas, 0, 0)  -- Blur the horizontal blur result
     
     -- Note: canvas still has the main rays (saved at line 170), so we don't need to restore them
     

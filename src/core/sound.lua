@@ -2,11 +2,15 @@
 -- Sound generator and manager for game events
 
 local Sound = {}
-local activeSounds = {}  -- Track active sound sources
+local activeSounds = {}  -- Track active sound sources (oldest at index 1)
 local loopingSounds = {}  -- Track looping sound sources separately
 local musicSource = nil  -- Background music source
 local masterVolume = 1.0
 local soundsMuted = false  -- Flag to prevent new sounds from playing
+
+-- LÖVE has a limit on simultaneous sources (~64). Keep under cap so new sounds (e.g. swarm tones) always play.
+local MAX_ACTIVE_SOUNDS = 52
+local TARGET_ACTIVE_BEFORE_PLAY = 56  -- Cull until active count is below this before adding (if getActiveSourceCount available)
 
 -- Sound configuration
 local SOUND_CONFIG = {
@@ -46,6 +50,51 @@ local function generateTone(frequency, duration, sampleRate)
         samples[i] = value * envelope
     end
     
+    return samples
+end
+
+-- Swarm tone variants: blue = rounder (sine + soft 2nd harmonic), enraged = aggressive (harmonics + punchy envelope)
+local function generateToneBlue(frequency, duration, sampleRate)
+    sampleRate = sampleRate or SOUND_CONFIG.SAMPLE_RATE
+    local samples = {}
+    local numSamples = math.floor(duration * sampleRate)
+    for i = 1, numSamples do
+        local t = (i - 1) / sampleRate
+        local s1 = math.sin(2 * math.pi * frequency * t)
+        local s2 = math.sin(2 * math.pi * frequency * 2 * t)
+        local value = s1 + 0.22 * s2
+        local envelope = 1.0 - (t / duration)
+        envelope = math.max(0, math.min(1, envelope))
+        samples[i] = (value / 1.22) * envelope
+    end
+    return samples
+end
+
+local function generateToneEnraged(frequency, duration, sampleRate, useFifth)
+    sampleRate = sampleRate or SOUND_CONFIG.SAMPLE_RATE
+    local samples = {}
+    local numSamples = math.floor(duration * sampleRate)
+    local fifthFreq = frequency * 1.5  -- perfect fifth above
+    local enableFifth = (useFifth ~= false)
+    for i = 1, numSamples do
+        local t = (i - 1) / sampleRate
+        -- Sawtooth for base (always) and its fifth (optional)
+        local phase1 = (t * frequency) % 1
+        local saw1 = 2 * phase1 - 1
+        local value = saw1
+        if enableFifth then
+            local phase2 = (t * fifthFreq) % 1
+            local saw2 = 2 * phase2 - 1
+            value = value + 0.8 * saw2
+        end
+        -- Aggressive envelope: fast attack, quicker decay than linear
+        local x = t / duration
+        local envelope = 1.0 - x * x
+        envelope = math.max(0, math.min(1, envelope))
+        -- Small noise for extra grit
+        local noise = (math.random() * 2 - 1) * 0.04 * envelope
+        samples[i] = (value / (enableFifth and 1.8 or 1.2)) * envelope + noise
+    end
     return samples
 end
 
@@ -126,9 +175,50 @@ local function createSourceFromSamples(samples, sampleRate)
     return source
 end
 
+-- Helper: Create a stereo source from mono samples with pan (-1 = left, 0 = center, 1 = right)
+local function createSourceFromSamplesStereo(samples, sampleRate, pan)
+    sampleRate = sampleRate or SOUND_CONFIG.SAMPLE_RATE
+    pan = math.max(-1, math.min(1, pan or 0))
+    local numSamples = #samples
+    local soundData = love.sound.newSoundData(numSamples, sampleRate, 16, 2)
+    -- Equal-power panning
+    local angle = (pan + 1) * (math.pi / 4)
+    local leftGain = math.cos(angle)
+    local rightGain = math.sin(angle)
+    for i = 1, numSamples do
+        local v = samples[i]
+        soundData:setSample(i - 1, 1, v * leftGain)
+        soundData:setSample(i - 1, 2, v * rightGain)
+    end
+    local source = love.audio.newSource(soundData, "static")
+    return source
+end
+
+local function releaseOldestActive()
+    if #activeSounds == 0 then return false end
+    local s = activeSounds[1]
+    table.remove(activeSounds, 1)
+    pcall(function() s.source:stop(); s.source:release() end)
+    return true
+end
+
+local function makeRoomForSources(need)
+    need = need or 1
+    local getCount = love.audio.getActiveSourceCount
+    if type(getCount) ~= "function" then getCount = nil end
+    while #activeSounds > 0 do
+        if getCount then
+            local n = getCount()
+            if n + need <= TARGET_ACTIVE_BEFORE_PLAY then break end
+        end
+        if not releaseOldestActive() then break end
+    end
+end
+
 -- Play a procedural sound
 function Sound.playTone(frequency, duration, volume, pitch)
     if soundsMuted then return nil end
+    makeRoomForSources(1)
     volume = volume or 1.0
     pitch = pitch or 1.0
     local samples = generateTone(frequency, duration)
@@ -143,6 +233,35 @@ function Sound.playTone(frequency, duration, volume, pitch)
         duration = duration
     })
     
+    return source
+end
+
+-- Play swarm tone with timbre: "red" (sine), "blue" (rounder), "enraged" (aggressive), with optional stereo pan (-1..1)
+-- For enraged tones, useFifth controls whether the perfect fifth is added.
+function Sound.playSwarmTone(frequency, duration, volume, pitch, kind, pan, useFifth)
+    if soundsMuted then return nil end
+    makeRoomForSources(2)
+    volume = volume or 1.0
+    pitch = pitch or 1.0
+    kind = kind or "red"
+    local samples
+    if kind == "blue" then
+        samples = generateToneBlue(frequency, duration)
+    elseif kind == "enraged" then
+        samples = generateToneEnraged(frequency, duration, SOUND_CONFIG.SAMPLE_RATE, useFifth)
+    else
+        samples = generateTone(frequency, duration)
+    end
+    local source
+    if pan and pan ~= 0 then
+        source = createSourceFromSamplesStereo(samples, SOUND_CONFIG.SAMPLE_RATE, pan)
+    else
+        source = createSourceFromSamples(samples, SOUND_CONFIG.SAMPLE_RATE)
+    end
+    source:setVolume(volume * SOUND_CONFIG.SFX_VOLUME * masterVolume)
+    source:setPitch(pitch)
+    source:play()
+    table.insert(activeSounds, { source = source, duration = duration })
     return source
 end
 
@@ -232,9 +351,41 @@ function Sound.playVibrate(volume, pitch, loop)
     end
 end
 
+-- Voice line queue: only one TTS line plays at a time; others are queued.
+local voiceLineQueue = {}
+local currentVoiceSource = nil
+
+-- Play a pre-generated TTS line (e.g. from scripts/generate_auditor_voice.ps1).
+-- Queued: only one line plays at a time; further calls enqueue.
+-- Key is the filename without extension: CRITICAL_ERROR, LIFE_LOST, LIFE_LOST_TEXT, GAME_OVER_TEXT, VERDICT_1, VERDICT_2,
+-- DEFINE_YOURSELF, WELCOME_TO_RAGE_BAIT, GET_READY, PLEASE_INCREASE_ENGAGEMENT, POWER_UP_ACQUIRED, BONUS_MULTIPLIER, HOSTILITY_SPIKE.
+function Sound.playAuditorLine(key)
+    if not key or key == "" then return nil end
+    local path = "assets/voice/" .. key .. ".wav"
+    if not love.filesystem.getInfo(path, "file") then
+        return nil
+    end
+    table.insert(voiceLineQueue, key)
+    return true
+end
+
+-- Start the next queued voice line (called from Sound.update when current finishes).
+local function playNextVoiceLine()
+    if #voiceLineQueue == 0 then return end
+    local key = table.remove(voiceLineQueue, 1)
+    local path = "assets/voice/" .. key .. ".wav"
+    local success, source = pcall(love.audio.newSource, path, "static")
+    if not success or not source then return end
+    source:setVolume(1.0 * SOUND_CONFIG.SFX_VOLUME * masterVolume)
+    source:setPitch(1.0)
+    source:play()
+    currentVoiceSource = source
+end
+
 -- Play a sound from a file (if you want to use pre-recorded sounds)
 function Sound.playFile(path, volume, pitch, loop)
     if soundsMuted then return nil end
+    makeRoomForSources(1)
     volume = volume or 1.0
     pitch = pitch or 1.0
     loop = loop or false
@@ -270,8 +421,9 @@ function Sound.firePuck(color)
         local file = SOUND_CONFIG.SOUND_PATH .. "fire_puck_" .. color .. ".ogg"
         Sound.playFile(file, 0.6, 1.0, false)
     else
-        -- Short, sharp tone for puck firing
-        local freq = color == "red" and 400 or 350
+        -- Short, sharp tone for puck firing (quantized to F major pentatonic)
+        -- Red: G4 (~392 Hz), Blue: F4 (~349 Hz)
+        local freq = color == "red" and 392.00 or 349.23
         Sound.playTone(freq, 0.05, 0.6, 1.0)
     end
 end
@@ -281,8 +433,9 @@ function Sound.fireBomb(color)
         local file = SOUND_CONFIG.SOUND_PATH .. "fire_bomb_" .. color .. ".ogg"
         Sound.playFile(file, 0.7, 0.8, false)
     else
-        -- Deeper, longer tone for bomb charging/release
-        local freq = color == "red" and 200 or 180
+        -- Deeper, longer tone for bomb charging/release (quantized to F major pentatonic)
+        -- Red: G3 (~196 Hz), Blue: F3 (~174.61 Hz)
+        local freq = color == "red" and 196.00 or 174.61
         Sound.playTone(freq, 0.1, 0.7, 0.8)
     end
 end
@@ -292,9 +445,9 @@ function Sound.bombExplode(color)
         local file = SOUND_CONFIG.SOUND_PATH .. "bomb_explode_" .. color .. ".ogg"
         Sound.playFile(file, 0.8, 1.0, false)
     else
-        -- Explosive sound: noise burst with low frequency
+        -- Explosive sound: noise burst with low, in-scale rumble (D2 ~73.42 Hz)
         Sound.playNoise(0.2, 0.8, 0.5)
-        Sound.playTone(80, 0.3, 0.6, 0.7)  -- Low rumble
+        Sound.playTone(73.42, 0.3, 0.6, 0.7)  -- Low rumble on D
     end
 end
 
@@ -302,8 +455,8 @@ function Sound.unitHit()
     if SOUND_CONFIG.MODE == "prerecorded" then
         Sound.playFile(SOUND_CONFIG.SOUND_PATH .. "unit_hit.ogg", 0.5, 1.2, false)
     else
-        -- Quick impact sound
-        Sound.playTone(300, 0.03, 0.5, 1.2)
+        -- Quick impact sound (D4 ~293.66 Hz)
+        Sound.playTone(293.66, 0.03, 0.5, 1.2)
     end
 end
 
@@ -311,8 +464,8 @@ function Sound.unitKilled()
     if SOUND_CONFIG.MODE == "prerecorded" then
         Sound.playFile(SOUND_CONFIG.SOUND_PATH .. "unit_killed.ogg", 0.6, 0.5, false)
     else
-        -- Death sound: descending tone
-        Sound.playTone(200, 0.2, 0.6, 0.5)
+        -- Death sound: descending tone starting on G3 (~196 Hz)
+        Sound.playTone(196.00, 0.2, 0.6, 0.5)
     end
 end
 
@@ -320,8 +473,8 @@ function Sound.powerupCollect(powerupType)
     if SOUND_CONFIG.MODE == "prerecorded" then
         Sound.playFile(SOUND_CONFIG.SOUND_PATH .. "powerup_" .. powerupType .. ".ogg", 0.7, 1.5, false)
     else
-        -- Collect sound: ascending tone
-        Sound.playTone(600, 0.15, 0.7, 1.5)
+        -- Collect sound: ascending tone (D5 ~587.33 Hz)
+        Sound.playTone(587.33, 0.15, 0.7, 1.5)
     end
 end
 
@@ -329,8 +482,8 @@ function Sound.bumperActivate()
     if SOUND_CONFIG.MODE == "prerecorded" then
         Sound.playFile(SOUND_CONFIG.SOUND_PATH .. "bumper_activate.ogg", 0.6, 1.0, false)
     else
-        -- Bumper activation: metallic ping
-        Sound.playTone(800, 0.1, 0.6, 1.0)
+        -- Bumper activation: metallic ping (G5 ~784 Hz)
+        Sound.playTone(784.00, 0.1, 0.6, 1.0)
     end
 end
 
@@ -338,8 +491,8 @@ function Sound.bumperHit()
     if SOUND_CONFIG.MODE == "prerecorded" then
         Sound.playFile(SOUND_CONFIG.SOUND_PATH .. "bumper_hit.ogg", 0.5, 1.0, false)
     else
-        -- Bumper hit: sharp click
-        Sound.playTone(1000, 0.05, 0.5, 1.0)
+        -- Bumper hit: sharp click (C6 ~1046.50 Hz)
+        Sound.playTone(1046.50, 0.05, 0.5, 1.0)
     end
 end
 
@@ -350,18 +503,29 @@ function Sound.playFanfare()
     if SOUND_CONFIG.MODE == "prerecorded" then
         Sound.playFile(SOUND_CONFIG.SOUND_PATH .. "fanfare.ogg", 0.8, 1.0, false)
     else
-        -- Procedural fanfare: ascending notes in a major chord
-        -- C major chord: C (523Hz), E (659Hz), G (784Hz), C (1047Hz)
-        -- Play notes in quick succession for a celebratory sound
-        Sound.playTone(523, 0.2, 0.6, 1.0)  -- C
-        Sound.playTone(659, 0.2, 0.6, 1.0)  -- E
-        Sound.playTone(784, 0.2, 0.6, 1.0)  -- G
-        Sound.playTone(1047, 0.3, 0.8, 1.0) -- High C (longer, louder)
+        -- Procedural fanfare: ascending notes in F major pentatonic (F, A, C, D)
+        -- F4 (~349 Hz), A4 (~440 Hz), C5 (~523.25 Hz), D5 (~587.33 Hz)
+        Sound.playTone(349.23, 0.2, 0.6, 1.0)   -- F
+        Sound.playTone(440.00, 0.2, 0.6, 1.0)   -- A
+        Sound.playTone(523.25, 0.2, 0.6, 1.0)   -- C
+        Sound.playTone(587.33, 0.3, 0.8, 1.0)   -- D (longer, louder)
     end
 end
 
--- Update function to clean up finished sounds
+-- Update function to clean up finished sounds and cap total for polyphony
 function Sound.update(dt)
+    -- Voice queue: when current line finishes, play next
+    if currentVoiceSource then
+        if not currentVoiceSource:isPlaying() then
+            currentVoiceSource:stop()
+            currentVoiceSource:release()
+            currentVoiceSource = nil
+            playNextVoiceLine()
+        end
+    else
+        playNextVoiceLine()
+    end
+
     for i = #activeSounds, 1, -1 do
         local sound = activeSounds[i]
         if not sound.source:isPlaying() then
@@ -369,6 +533,10 @@ function Sound.update(dt)
             sound.source:release()
             table.remove(activeSounds, i)
         end
+    end
+    -- Cap total so we don't accumulate and hit engine limit (keeps swarm tones audible)
+    while #activeSounds > MAX_ACTIVE_SOUNDS do
+        releaseOldestActive()
     end
 end
 
@@ -408,6 +576,13 @@ function Sound.cleanup()
     -- Stop music
     Sound.stopMusic()
     
+    -- Clear voice line queue and stop current voice
+    voiceLineQueue = {}
+    if currentVoiceSource then
+        pcall(function() currentVoiceSource:stop(); currentVoiceSource:release() end)
+        currentVoiceSource = nil
+    end
+    
     -- First, aggressively stop ALL audio sources immediately
     love.audio.stop()
     
@@ -440,6 +615,11 @@ function Sound.mute()
     soundsMuted = true
     -- Stop music
     Sound.stopMusic()
+    voiceLineQueue = {}
+    if currentVoiceSource then
+        pcall(function() currentVoiceSource:stop(); currentVoiceSource:release() end)
+        currentVoiceSource = nil
+    end
     -- Stop all active sounds
     love.audio.stop()
     -- Clear active sounds list

@@ -28,6 +28,7 @@ return function(moonshine)
     extern number chromaIntensity;
     extern vec2 screenSize;
     extern number vignetteIntensity;
+    extern number gamma;  // < 1 = darker (lower gamma look)
     extern vec4 windowBounds;  // x, y, width, height in normalized coordinates (0-1)
 
     vec4 effect(vec4 color, Image tex, vec2 uv, vec2 px) {
@@ -70,11 +71,13 @@ return function(moonshine)
       // Calculate distance from the box (0 if inside, positive if outside)
       number distFromBox = max(max(distLeft, distRight), max(distTop, distBottom));
       
-      // Apply vignette - stronger at corners (further from box)
-      // Use smoothstep to create smooth falloff
-      number vignette = 1.0 - smoothstep(0.0, 0.4, distFromBox) * vignetteIntensity;
+      // Apply vignette - reaches further into frame (ramp 0..0.5 so darkening extends toward center)
+      number vignette = 1.0 - smoothstep(0.0, 0.5, distFromBox) * vignetteIntensity;
       
       col.rgb *= vignette;
+      
+      // Lower gamma = darker (CRT look)
+      col.rgb = pow(col.rgb, vec3(gamma));
       
       return col;
     }
@@ -117,6 +120,8 @@ return function(moonshine)
 
   setters.vignetteIntensity = function(v) shader:send("vignetteIntensity", v) end
   
+  setters.gamma = function(v) shader:send("gamma", v) end
+  
   setters.windowBounds = function(v)
     if type(v) == "table" and #v == 4 then
       shader:send("windowBounds", v)
@@ -133,6 +138,7 @@ return function(moonshine)
     chromaIntensity = 0.5,
     screenSize = {love.graphics.getWidth(), love.graphics.getHeight()},
     vignetteIntensity = 0.0,
+    gamma = 1.0,
     windowBounds = {0.5, 0.5, 0.0, 0.0},  -- Center, no size by default
   }
 

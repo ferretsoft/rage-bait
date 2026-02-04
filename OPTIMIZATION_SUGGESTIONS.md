@@ -1,5 +1,11 @@
 # Code Optimization Suggestions
 
+## Framedrop fixes applied (recent)
+
+- **Godray**: `tempBlurCanvas` is now created once in `Godray.load()` and reused every frame instead of `love.graphics.newCanvas()` each draw (avoids allocation when Godray is enabled).
+- **DrawingHelpers.drawPlayfieldGrid**: Reuses module-level `_areaEffects` and `_feetPositions`; cleared and refilled each frame instead of allocating new tables (reduces GC pressure during gameplay).
+- **Name entry rays**: Single shared canvas for the full name string + one ImageData per frame instead of one canvas + one ImageData per character (3→1 canvas, 3→1 ImageData when name entry is active). Canvas is cached in `Game.nameEntryRayCanvas` and released when leaving name entry.
+
 ## High Priority (Performance Impact)
 
 ### 1. **Replace `table.remove()` in loops with swap-and-pop pattern**

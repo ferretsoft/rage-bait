@@ -25,7 +25,7 @@ local state = {
     layerAlpha = {0.3, 0.5, 0.8, 1.0},  -- Alpha for each layer (dimmer = further away, 1.0 = very close)
     layerFontSize = {18, 21, 24, 32},  -- Font sizes for each layer (smaller = further away, 32 = very close)
     layerColumnDensity = {1.0, 1.0, 1.0, 0.5},  -- Column density multiplier per layer (0.5 = fewer columns for close layer)
-    motionBlurTrails = 5,  -- Number of trailing copies for motion blur
+    motionBlurTrails = 3,  -- Number of trailing copies for motion blur (reduced for performance)
     motionBlurFade = 0.3,  -- Opacity fade per trail (0.3 = each trail is 30% of previous)
     transitionActive = false,  -- Whether matrix is being used as a transition
     transitionDuration = 1.0,  -- Duration of transition in seconds
@@ -36,6 +36,7 @@ local state = {
     scanlineSpeed = 200,  -- Base speed of scanlines moving down (pixels per second)
     scanlineAlpha = 0.6,  -- Alpha of scanlines
     scanlineRandomSeed = 0,  -- Seed for random scanline generation
+    scanlineLastSeed = nil,  -- Cache to avoid math.randomseed every frame
 }
 
 function MatrixEffect.load()
@@ -123,13 +124,17 @@ function MatrixEffect.update(dt)
                     -- Add spacing between characters
                     local charSpacing = layer.charHeight * state.charSpacing
                     
+                -- previousY: fixed-size ring buffer for motion blur (avoids table.insert at 1 + table.remove)
+                local prevY = {}
+                for _ = 1, state.motionBlurTrails do prevY[#prevY + 1] = -i * charSpacing end
                 table.insert(column.chars, {
                     char = char,
                     y = -i * charSpacing,  -- Start above screen with spacing
                     brightness = 1.0 - (i / length) * 0.7,  -- Brighter at head, dimmer at tail
                     age = 0,
-                    previousY = {},  -- Store previous positions for motion blur
-                    previousTime = 0,  -- Track time for motion blur
+                    previousY = prevY,  -- Ring buffer: indices 1..motionBlurTrails, writeIdx cycles
+                    writeIdx = 1,
+                    previousTime = 0,
                 })
                 end
                 
@@ -137,21 +142,20 @@ function MatrixEffect.update(dt)
                 column.spawnTimer = (1.0 / state.spawnRate) + math.random() * 4.0
             end
             
-            -- Update existing characters
-            for i = #column.chars, 1, -1 do
+            -- Update existing characters (swap-and-pop for removal to avoid O(n) table.remove)
+            local n = #column.chars
+            local i = 1
+            while i <= n do
                 local char = column.chars[i]
                 
-                -- Store previous position for motion blur (keep last N positions)
+                -- Ring buffer: store current y then advance write index
                 if not char.previousY then
                     char.previousY = {}
-                    char.previousTime = 0
+                    for _ = 1, state.motionBlurTrails do char.previousY[#char.previousY + 1] = char.y end
+                    char.writeIdx = 1
                 end
-                
-                -- Store current position in history
-                table.insert(char.previousY, 1, char.y)
-                if #char.previousY > state.motionBlurTrails then
-                    table.remove(char.previousY)
-                end
+                char.previousY[char.writeIdx] = char.y
+                char.writeIdx = (char.writeIdx % state.motionBlurTrails) + 1
                 
                 -- Use column-specific fall speed (already adjusted for layer depth)
                 char.y = char.y + column.fallSpeed * dt
@@ -159,19 +163,23 @@ function MatrixEffect.update(dt)
                 char.previousTime = char.previousTime + dt
                 
                 -- Fade out as it ages (with slight randomness)
-                local fadeRate = state.fadeSpeed * (0.8 + math.random() * 0.4)  -- 20% variation
+                local fadeRate = state.fadeSpeed * (0.8 + math.random() * 0.4)
                 char.brightness = char.brightness - fadeRate * dt
                 char.brightness = math.max(0, char.brightness)
                 
                 -- Randomly change character occasionally (5% chance per frame)
                 if math.random() < 0.05 then
-                    local charIndex = math.random(1, #state.charPool)
-                    char.char = state.charPool:sub(charIndex, charIndex)
+                    local idx = math.random(1, #state.charPool)
+                    char.char = state.charPool:sub(idx, idx)
                 end
                 
-                -- Remove if off screen or fully faded
+                -- Remove if off screen or fully faded (swap with last, don't advance i)
                 if char.y > Constants.SCREEN_HEIGHT + layer.charHeight or char.brightness <= 0 then
-                    table.remove(column.chars, i)
+                    column.chars[i] = column.chars[n]
+                    column.chars[n] = nil
+                    n = n - 1
+                else
+                    i = i + 1
                 end
             end
         end
@@ -192,13 +200,14 @@ function MatrixEffect.draw()
         -- Draw each column in this layer
         for _, column in ipairs(layer.columns) do
             for _, char in ipairs(column.chars) do
-                -- Draw motion blur trails (from oldest to newest)
-                if char.previousY and #char.previousY > 0 then
-                    for trailIndex = #char.previousY, 1, -1 do
-                        local trailY = char.previousY[trailIndex]
-                        local trailAlpha = math.pow(state.motionBlurFade, trailIndex)  -- Exponential fade
-                        local green = 0.2 + char.brightness * 0.8  -- Range from 0.2 to 1.0
-                        local finalAlpha = char.brightness * layer.alpha * trailAlpha  -- Apply layer alpha and trail fade
+                -- Draw motion blur trails from ring buffer (oldest to newest)
+                if char.previousY and char.writeIdx and state.motionBlurTrails > 0 then
+                    for k = 0, state.motionBlurTrails - 1 do
+                        local idx = (char.writeIdx + k - 1) % state.motionBlurTrails + 1
+                        local trailY = char.previousY[idx]
+                        local trailAlpha = math.pow(state.motionBlurFade, state.motionBlurTrails - k)
+                        local green = 0.2 + char.brightness * 0.8
+                        local finalAlpha = char.brightness * layer.alpha * trailAlpha
                         love.graphics.setColor(0, green, 0, finalAlpha)
                         love.graphics.print(char.char, column.x, trailY)
                     end
@@ -235,6 +244,7 @@ function MatrixEffect.startTransition(duration, callback)
     state.transitionDuration = duration or 1.0
     state.transitionTimer = 0
     state.transitionCallback = callback
+    state.scanlineLastSeed = nil  -- Force reseed on first draw
     -- Random seed for scanline randomness (different each transition)
     state.scanlineRandomSeed = math.random(10000)
     -- Reset matrix to start fresh
@@ -267,8 +277,12 @@ function MatrixEffect.drawScanlines()
     
     local oldColor = {love.graphics.getColor()}
     
-    -- Use timer-based seed for consistent randomness per frame
-    math.randomseed(math.floor(state.timer * 100) + state.scanlineRandomSeed)
+    -- Only reseed when timer tick changes (avoids expensive math.randomseed every frame)
+    local seed = math.floor(state.timer * 100) + state.scanlineRandomSeed
+    if state.scanlineLastSeed ~= seed then
+        state.scanlineLastSeed = seed
+        math.randomseed(seed)
+    end
     
     -- Draw scanlines with randomness
     local y = -state.scanlineHeight * 2

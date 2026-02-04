@@ -19,6 +19,9 @@ local state = {
     vigilant = nil,
     activated = nil,
     dormant = nil,
+    normalMap = nil,      -- Overlord head normal map for welding light
+    normalMapBanner = nil, -- Full banner normal map
+    weldingShader = nil,
     
     -- Animation state
     vigilantAlpha = 0,
@@ -47,6 +50,7 @@ local state = {
     reverseAnimationSpeed = 2.0,  -- Double speed for reverse
     textAnimationStartY = nil,  -- Starting Y position for text animation (ray center)
     textAnimationActive = false,  -- Whether text Y animation is active
+    lastGlitchSeed = nil,  -- Cache to avoid math.randomseed every frame (performance)
 }
 
 -- Load banner images
@@ -85,6 +89,26 @@ function TopBanner.load()
     else
         state.dormant = nil
         print("Warning: Could not load dormant banner: assets/OverlordTopBanner/Dormant.png")
+    end
+    
+    -- Load overlord head normal map and full banner normal map for welding light
+    local success5, img5 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/normalmapoverlord.png")
+    if success5 then
+        state.normalMap = img5
+    else
+        state.normalMap = nil
+    end
+    local success6, img6 = pcall(love.graphics.newImage, "assets/OverlordTopBanner/normalmapbanner.png")
+    if success6 then
+        state.normalMapBanner = img6
+    else
+        state.normalMapBanner = nil
+    end
+    local weldCode = love.filesystem.read("shaders/overlord_welding.fs")
+    if weldCode then
+        state.weldingShader = love.graphics.newShader(weldCode)
+    else
+        state.weldingShader = nil
     end
 end
 
@@ -517,6 +541,52 @@ function TopBanner.draw()
         love.graphics.draw(state.vigilant, bannerX, bannerY, 0, scale, scale)
     end
     
+    -- Green welding light when lose text is projected: banner then head on top (head uses head alpha)
+    local showWelding = state.gameOverDrop and state.yOffset > 0 and not state.reverseAnimationActive
+    if not state.weldingShader or not showWelding then
+        -- skip
+    else
+        local oldShader = love.graphics.getShader()
+        local oldBlend = love.graphics.getBlendMode()
+        love.graphics.setShader(state.weldingShader)
+        love.graphics.setBlendMode("add", "alphamultiply")
+        local t = love.timer.getTime()
+        state.weldingShader:send("time", t)
+        -- Light from center below (Y down = below, no X = centered)
+        state.weldingShader:send("lightDir", { 0, 1, 0.25 })
+        state.weldingShader:send("lightColor", {0.22, 0.5, 0.28})
+        state.weldingShader:send("intensity", 0.72)
+        state.weldingShader:send("ambient", 0.0)
+        state.weldingShader:send("baseWash", 0.0)
+        state.weldingShader:send("specPower", 18.0)
+        state.weldingShader:send("specStrength", 0.26)
+        love.graphics.setColor(1, 1, 1, 1)
+        -- 1) Banner normal map: light only where base has alpha, and exclude head (Vigilant) so head is not lit by banner map
+        if state.normalMapBanner and state.base then
+            state.weldingShader:send("maskTexture", state.base)
+            state.weldingShader:send("excludeTexture", state.vigilant or state.base)
+            state.weldingShader:send("useExclude", state.vigilant and 1 or 0)
+            love.graphics.draw(state.normalMapBanner, bannerX, bannerY, 0, scale, scale)
+        end
+        -- 2) Head normal map: light only where Vigilant has alpha. Zero ambient so not washed out.
+        if state.normalMap and state.vigilant then
+            state.weldingShader:send("maskTexture", state.vigilant)
+            state.weldingShader:send("excludeTexture", state.vigilant)
+            state.weldingShader:send("useExclude", 0)
+            state.weldingShader:send("ambient", 0.0)
+            state.weldingShader:send("baseWash", 0.0)
+            state.weldingShader:send("intensity", 0.88)
+            state.weldingShader:send("specStrength", 0.26)
+            local vW, vH = state.vigilant:getDimensions()
+            local nW, nH = state.normalMap:getDimensions()
+            local headSx = scale * vW / nW
+            local headSy = scale * vH / nH
+            love.graphics.draw(state.normalMap, bannerX, bannerY, 0, headSx, headSy)
+        end
+        love.graphics.setBlendMode(oldBlend)
+        love.graphics.setShader(oldShader)
+    end
+    
     -- Reset scissor after drawing head layers (if it was enabled)
     if ENABLE_HEAD_CROP and not state.gameOverCropDisabled then
         love.graphics.setScissor()
@@ -631,10 +701,14 @@ local function drawGlitchyTerminalChar(char, x, y, glitchTextTimer, terminalFont
     
     love.graphics.setFont(terminalFont)
     
-    -- Apply glitch corruption (3% chance)
+    -- Apply glitch corruption (3% chance). Reseed only when tick changes (performance).
     local glitchChars = {"█", "▓", "▒"}
     local displayChar = char
-    math.randomseed(math.floor(glitchTextTimer * 100))
+    local seed = math.floor(glitchTextTimer * 100)
+    if state.lastGlitchSeed ~= seed then
+        state.lastGlitchSeed = seed
+        math.randomseed(seed)
+    end
     if math.random() < 0.03 then
         displayChar = glitchChars[math.random(#glitchChars)]
     end
@@ -665,7 +739,8 @@ local function drawGlitchyTerminalChar(char, x, y, glitchTextTimer, terminalFont
 end
 
 -- Internal function to draw glitchy terminal text
-local function drawGlitchyTerminalText(text, x, y, fontSize, glitchTextTimer, glitchTextWriteProgress, terminalFont)
+-- useWhite: optional, when true use white instead of green (avoids green flicker on fullscreen lose)
+local function drawGlitchyTerminalText(text, x, y, fontSize, glitchTextTimer, glitchTextWriteProgress, terminalFont, useWhite)
     if not terminalFont then return end
     
     love.graphics.setFont(terminalFont)
@@ -674,22 +749,23 @@ local function drawGlitchyTerminalText(text, x, y, fontSize, glitchTextTimer, gl
     local charsToShow = math.floor(glitchTextWriteProgress * #text)
     local displayText = text:sub(1, charsToShow)
     
-    -- Subtle glitch: only corrupt 3% of characters (much less glitchy)
+    -- Subtle glitch: only corrupt 3% of characters. Reseed only when tick changes (performance).
     local glitchChars = {"█", "▓", "▒"}
-    local corruptedText = ""
-    
-    -- Use timer-based seed for consistent corruption per frame
-    math.randomseed(math.floor(glitchTextTimer * 100))
-    
+    local seed = math.floor(glitchTextTimer * 100)
+    if state.lastGlitchSeed ~= seed then
+        state.lastGlitchSeed = seed
+        math.randomseed(seed)
+    end
+    local corruptedParts = {}
     for i = 1, #displayText do
         local char = displayText:sub(i, i)
-        -- Randomly corrupt some characters (much less frequent)
-        if math.random() < 0.03 then  -- 3% chance of corruption
-            corruptedText = corruptedText .. glitchChars[math.random(#glitchChars)]
+        if math.random() < 0.03 then
+            corruptedParts[#corruptedParts + 1] = glitchChars[math.random(#glitchChars)]
         else
-            corruptedText = corruptedText .. char
+            corruptedParts[#corruptedParts + 1] = char
         end
     end
+    local corruptedText = table.concat(corruptedParts)
     
     -- Pulsing effect (alpha pulses smoothly)
     local pulse = (math.sin(glitchTextTimer * 3) + 1) / 2  -- 0 to 1
@@ -716,8 +792,12 @@ local function drawGlitchyTerminalText(text, x, y, fontSize, glitchTextTimer, gl
     love.graphics.scale(baseScale, baseScale)
     love.graphics.translate(-fullTextWidth / 2, 0)
     
-    -- Main text with green terminal color, pulsing alpha
-    love.graphics.setColor(0, 1, 0, alpha)  -- Green terminal text with pulsing alpha
+    -- Main text: green terminal color, or white when useWhite (avoids fullscreen green flicker)
+    if useWhite then
+        love.graphics.setColor(1, 1, 1, alpha)
+    else
+        love.graphics.setColor(0, 1, 0, alpha)  -- Green terminal text with pulsing alpha
+    end
     love.graphics.print(corruptedText, 0, 0)
     
     -- Subtle red glitch overlay (much less frequent)
@@ -750,13 +830,13 @@ function TopBanner.isGameOverTextVisible(glitchTextTimer)
     return flickerPhase < 0.6
 end
 
-function TopBanner.drawGameOverText(glitchTextTimer, glitchTextWriteProgress, terminalFont)
+function TopBanner.drawGameOverText(glitchTextTimer, glitchTextWriteProgress, terminalFont, useWhite)
     if not TopBanner.isGameOverTextVisible(glitchTextTimer) then return end
     
     local textX, textY = getBannerTextPosition()
     if not textX then return end
     local text = Auditor.GAME_OVER_TEXT
-    drawGlitchyTerminalText(text, textX, textY, 32, glitchTextTimer, glitchTextWriteProgress, terminalFont)
+    drawGlitchyTerminalText(text, textX, textY, 32, glitchTextTimer, glitchTextWriteProgress, terminalFont, useWhite)
 end
 
 -- Check if life lost text should be visible (for use by TextTrace)
@@ -800,14 +880,14 @@ function TopBanner.isNameEntryTextVisible(glitchTextTimer)
 end
 
 -- Draw terminal text for life lost
-function TopBanner.drawLifeLostText(glitchTextTimer, glitchTextWriteProgress, terminalFont)
+function TopBanner.drawLifeLostText(glitchTextTimer, glitchTextWriteProgress, terminalFont, useWhite)
     if not TopBanner.isLifeLostTextVisible(glitchTextTimer) then return end
     
     local textX, textY = getBannerTextPosition()
     if not textX then return end
     local text = Auditor.LIFE_LOST_TEXT
     
-    drawGlitchyTerminalText(text, textX, textY, 32, glitchTextTimer, glitchTextWriteProgress, terminalFont)
+    drawGlitchyTerminalText(text, textX, textY, 32, glitchTextTimer, glitchTextWriteProgress, terminalFont, useWhite)
 end
 
 -- Get text position for text trace (export the internal function)

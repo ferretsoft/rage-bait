@@ -44,11 +44,13 @@ local DrawLayers = require("src.core.draw_layers")
 local Godray = require("src.core.godray")
 local TextTrace = require("src.core.text_trace")
 local DynamicMusic = require("src.core.dynamic_music")
+local SwarmTones = require("src.core.swarm_tones")
 local MatrixEffect = require("src.core.matrix_effect")
 local HighScores = require("src.core.high_scores")
 local ParticleSystem = require("src.core.particle_system")
 local DrawingHelpers = require("src.core.drawing_helpers")
 local Doomscroll = require("src.core.doomscroll")
+local CorporateEmails = require("src.core.corporate_emails")
 local ToxicSplat = require("src.core.toxic_splat")
 local BootingScreen = require("src.screens.booting_screen")
 local LogoScreen = require("src.screens.logo_screen")
@@ -296,6 +298,7 @@ local function collectPowerUp(powerup)
             
             -- Sound effect
             Sound.powerupCollect("puck")
+            Sound.playAuditorLine("POWER_UP_ACQUIRED")
             Webcam.showComment("powerup_collected")
         end
     end
@@ -512,6 +515,21 @@ function love.load()
         print("Warning: Could not load plexi apply mask shader")
     end
     
+    -- Plexi normal map (Metric3D, same procedure as MainFrame: playfield lights)
+    local success7b, img7b = pcall(love.graphics.newImage, "assets/plexi_normal.png")
+    if success7b then
+        Game.plexiNormal = img7b
+    else
+        Game.plexiNormal = nil
+    end
+    local plexiNormalShaderCode = love.filesystem.read("shaders/mainframe_normal.fs")
+    if plexiNormalShaderCode then
+        local ok, sh = pcall(love.graphics.newShader, plexiNormalShaderCode)
+        if ok then Game.plexiNormalShader = sh else Game.plexiNormalShader = nil end
+    else
+        Game.plexiNormalShader = nil
+    end
+    
     -- Create canvas for capturing scene before plexi overlay (with stencil support)
     Game.plexiSceneStencilCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT, {format = 'stencil8'})
     Game.plexiSceneCanvas = love.graphics.newCanvas(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT)
@@ -589,6 +607,9 @@ function love.load()
     Game.hasUnitBeenConverted = false;
     Game.gameState = "playing";
     Game.winCondition = nil;
+    for _, z in ipairs(Game.explosionZones or {}) do
+        if z and z.body then z.body:destroy() end
+    end
     Game.hazards = {}; Game.explosionZones = {}; Game.units = {}; Game.projectiles = {}; Game.effects = {}; Game.powerups = {}
     
     -- Initialize Moonshine CRT effect
@@ -623,8 +644,9 @@ function love.load()
     -- screenSize: Screen dimensions (needed for scanlines)
     crtEffect.screenSize = {Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT}
     
-    -- Vignette intensity (increased for stronger effect)
-    crtEffect.vignetteIntensity = 0.8
+    -- Vignette (reaches further in) and gamma
+    crtEffect.vignetteIntensity = 1.1
+    crtEffect.gamma = 1.12
     
     -- Window bounds will be calculated dynamically in love.draw()
     crtEffect.windowBounds = {0.5, 0.5, 0.0, 0.0}  -- Default center, no size
@@ -676,7 +698,14 @@ function love.load()
             if (dx*dx + dy*dy) < (z.radius * z.radius) then if z.color ~= data.color then blocked = true break end end
         end
         if blocked then return end
-        if #Game.explosionZones >= 5 then local oldZ = table.remove(Game.explosionZones, 1); if oldZ.body then oldZ.body:destroy() end end
+        -- Cap explosion zones: swap first with last and pop (O(1) instead of table.remove(t,1) O(n))
+        if #Game.explosionZones >= 5 then
+            local ez = Game.explosionZones
+            local oldZ = ez[1]
+            ez[1] = ez[#ez]
+            ez[#ez] = nil
+            if oldZ.body then oldZ.body:destroy() end
+        end
         
         local body = love.physics.newBody(World.physics, zoneX, zoneY, "static")
         local shape = love.physics.newCircleShape(data.radius)
@@ -753,6 +782,7 @@ function startGame()
     Game.nameEntry.text = ""
     Game.nameEntry.cursor = 1
     Game.nameEntry.charIndex = {}
+    if Game.nameEntryRayCanvas then Game.nameEntryRayCanvas:release() Game.nameEntryRayCanvas = nil end
     
     -- Reset joystick button states
     Game.joystick.button1Pressed = false
@@ -797,6 +827,7 @@ function startGameplay()
     
     -- Start dynamic music (part 1, bar mode)
     DynamicMusic.startAutomatic()
+    SwarmTones.reset()
     
     -- Reset monitor frame animations for new game
     MonitorFrame.resetEyelidAnimation()
@@ -845,6 +876,7 @@ function startGameplay()
     Game.nameEntry.text = ""
     Game.nameEntry.cursor = 1
     Game.nameEntry.charIndex = {}
+    if Game.nameEntryRayCanvas then Game.nameEntryRayCanvas:release() Game.nameEntryRayCanvas = nil end
     Game.pointMultiplier.value = 1
     Game.timers.pointMultiplier = 0
     Game.pointMultiplier.valueActive = false
@@ -854,12 +886,18 @@ function startGameplay()
     Game.timers.rapidFireText = 0
     Game.rapidFire.sparks = {}
     Game.previousEngagementAtMax = false
+    Game.voiceLastIncreaseEngagementTime = nil
+    Game.previousEnragedCount = 0
     Game.hazards = {}
+    for _, z in ipairs(Game.explosionZones or {}) do
+        if z and z.body then z.body:destroy() end
+    end
     Game.explosionZones = {}
     Game.units = {}
     Game.projectiles = {}
     Game.effects = {}
     Game.powerups = {}
+    DrawingHelpers.resetGridState()  -- Fresh grid state for new level
     
     -- Spawn initial units
     spawnUnitsForLevel()
@@ -984,9 +1022,11 @@ function handleGameOver(condition)
         Game.lifeLostAuditor.phase = 1  -- Start with system freeze
         Game.gameState = "life_lost_auditor"
         Sound.cleanup()  -- Stop all sounds for the auditor sequence
+        Sound.unmute()   -- Allow auditor TTS to play
         DynamicMusic.stopAutomatic()  -- Stop automatic music
         -- Trigger banner drop animation (drop 120px from current position)
         TopBanner.triggerDrop(Constants.TIMING.LIFE_LOST_BANNER_DROP)
+        Sound.playAuditorLine("LIFE_LOST_TEXT")
         return
     end
     
@@ -997,6 +1037,7 @@ function handleGameOver(condition)
         -- Trigger banner drop (same as life lost)
         TopBanner.triggerDrop(Constants.TIMING.GAME_OVER_BANNER_DROP)
         DynamicMusic.stopAutomatic()  -- Stop automatic music
+        Sound.playAuditorLine("GAME_OVER_TEXT")
         Sound.playIntroMusic()  -- Play intro music (same as attract mode)
         return
     end
@@ -1012,6 +1053,7 @@ function handleGameOver(condition)
     TopBanner.triggerDrop(Constants.TIMING.GAME_OVER_BANNER_DROP)
     Game.visualEffects.glitchTextWriteProgress = 0  -- Reset write-on effect
     DynamicMusic.stopAutomatic()  -- Stop automatic music
+    Sound.playAuditorLine("GAME_OVER_TEXT")
     Sound.playIntroMusic()  -- Play intro music (same as attract mode)
 end
 
@@ -1067,6 +1109,7 @@ function restartLevel()
         
         -- Clear all game entities
         EntityManager.clearAll(false)  -- Don't destroy turret on restart
+        DrawingHelpers.resetGridState()  -- Clear grid lights so next level doesn't show old area-effect lights
         
         -- Clear weapon upgrades on level restart
         clearWeaponUpgrades()
@@ -1080,6 +1123,7 @@ function restartLevel()
     
     -- Clear entities immediately (before transition starts)
     EntityManager.clearAll(false)  -- Don't destroy turret on restart
+    DrawingHelpers.resetGridState()  -- Clear grid lights so win→next level doesn't leave lights on forever
 end
 
 -- Return to attract mode
@@ -1126,6 +1170,7 @@ function returnToAttractMode()
     Game.nameEntry.text = ""
     Game.nameEntry.cursor = 1
     Game.nameEntry.charIndex = {}
+    if Game.nameEntryRayCanvas then Game.nameEntryRayCanvas:release() Game.nameEntryRayCanvas = nil end
     Game.gameState = "attract"
     Game.winCondition = nil
     
@@ -1148,6 +1193,7 @@ function returnToAttractMode()
     
     -- Clear all game entities (including turret)
     EntityManager.clearAll(true)  -- Destroy turret on game over
+    DrawingHelpers.resetGridState()  -- Clear grid lights after game over
 end
 
 -- Draw joystick test / input diagnostics screen
@@ -1223,8 +1269,7 @@ function drawJoystickTestScreen()
 
     contentY = contentY + 60
     
-    -- Draw monitor frame (always visible)
-    MonitorFrame.draw()
+    -- Monitor frame is drawn by love.draw after drawWithCRT (with fullscreen scale if needed)
 
     -- Joystick information
     local joysticks = love.joystick.getJoysticks()
@@ -1457,14 +1502,17 @@ function drawNameEntryRaysAndText()
     
     local charData = {}
     
+    -- Reseed once per frame for glitch (avoids expensive math.randomseed per character)
+    local glitchSeed = math.floor(glitchTextTimer * 100)
+    if glitchSeed ~= (Game._lastNameEntryGlitchSeed) then
+        Game._lastNameEntryGlitchSeed = glitchSeed
+        math.randomseed(glitchSeed)
+    end
+    local glitchChars = {"█", "▓", "▒"}
     for i = 1, Game.nameEntry.maxLength do
         local char = Game.nameEntry.text:sub(i, i) or "A"
         local charX = startX + (i - 1) * charWidth
-        
-        -- Apply glitch corruption (3% chance) - same as terminal text
         local displayChar = char
-        math.randomseed(math.floor(glitchTextTimer * 100) + i)  -- Per-character seed
-        local glitchChars = {"█", "▓", "▒"}
         if math.random() < 0.03 then
             displayChar = glitchChars[math.random(#glitchChars)]
         end
@@ -1503,97 +1551,62 @@ function drawNameEntryRaysAndText()
     love.graphics.setBlendMode("add")  -- Same as TextTrace
     love.graphics.setLineWidth(rayWidth)  -- Same as TextTrace
     
-    -- Draw rays for each character (per-character flicker)
-    for _, data in ipairs(charData) do
-        -- Only draw rays when this character is visible
-        if not data.isVisible then
-            goto continue_char
-        end
-        -- Render character to canvas to sample pixels (same approach as TextTrace)
-        local padding = 10
-        local canvasWidth = charWidth + padding * 2
-        local canvasHeight = terminalFont:getHeight() + padding * 2
-        local charCanvas = love.graphics.newCanvas(canvasWidth, canvasHeight)
-        charCanvas:setFilter("nearest", "nearest")  -- Nearest for pixel-perfect sampling (like TextTrace)
-        
-        local oldCanvas = love.graphics.getCanvas()
-        local oldShader = love.graphics.getShader()
-        local oldBlendModeCanvas = love.graphics.getBlendMode()
-        
-        love.graphics.setCanvas(charCanvas)
-        love.graphics.setShader()  -- No shader
-        love.graphics.setBlendMode("alpha")  -- Normal alpha blending
-        love.graphics.clear(0, 0, 0, 0)
-        
-        -- Render character in green (same as terminal text)
-        love.graphics.setColor(0, 1, 0, 1)  -- Green text, full opacity
-        love.graphics.setFont(terminalFont)
-        love.graphics.print(data.char, padding, padding)
-        
-        love.graphics.setCanvas(oldCanvas)
-        love.graphics.setShader(oldShader)
-        love.graphics.setBlendMode(oldBlendModeCanvas)
-        
-        -- Get ImageData from canvas (must restore canvas first)
-        local imageData = charCanvas:newImageData()
-        charCanvas:release()
-        
-        -- Sample pixels and draw rays (exactly like TextTrace)
-        local width = imageData:getWidth()
-        local height = imageData:getHeight()
-        
-        local pixelsFound = 0
-        
-        -- Sample more densely to ensure we find pixels (check every pixel, not just every 8th)
-        -- But still draw lines at the sample rate to match TextTrace density
-        for y = 0, height - 1, 1 do
-            for x = 0, width - 1, 1 do
-                local r, g, b, a = imageData:getPixel(x, y)
-                
-                -- If pixel has alpha (is part of text), draw a line to center (same threshold as TextTrace)
-                if a > 0.1 then  -- Same threshold as TextTrace
-                    -- Only draw a line if this pixel aligns with our sample rate
-                    if (x % pixelSampleRate == 0) and (y % pixelSampleRate == 0) then
-                        pixelsFound = pixelsFound + 1
-                        -- Convert canvas coordinates to screen coordinates
-                        local screenX = data.x - padding + x
-                        local screenY = data.y - padding + y
-                        
-                        -- Calculate brightness from the sampled pixel (exactly like TextTrace)
-                        local pixelBrightness = g * a  -- Green channel multiplied by alpha (same as TextTrace)
-                        local lineBrightness = pixelBrightness * 0.5  -- Half brightness (same as TextTrace)
-                        
-                        -- Set color with half brightness (exactly like TextTrace)
-                        love.graphics.setColor(
-                            lineColor[1] * lineBrightness,
-                            lineColor[2] * lineBrightness,
-                            lineColor[3] * lineBrightness,
-                            finalOpacity  -- Same as TextTrace
-                        )
-                        
-                        -- Draw thin line from this pixel to center (same as TextTrace)
-                        love.graphics.line(screenX, screenY, centerX, centerY)
-                    end
+    -- Single canvas for full name string (avoids 3 canvas + 3 ImageData per frame → fewer framedrops)
+    local padding = 10
+    local fontHeight = terminalFont:getHeight()
+    local canvasWidth = totalWidth + padding * 2
+    local canvasHeight = fontHeight + padding * 2
+    if not Game.nameEntryRayCanvas or Game.nameEntryRayCanvas:getWidth() ~= canvasWidth or Game.nameEntryRayCanvas:getHeight() ~= canvasHeight then
+        if Game.nameEntryRayCanvas then Game.nameEntryRayCanvas:release() end
+        Game.nameEntryRayCanvas = love.graphics.newCanvas(canvasWidth, canvasHeight)
+        Game.nameEntryRayCanvas:setFilter("nearest", "nearest")
+    end
+    local nameCanvas = Game.nameEntryRayCanvas
+    local oldCanvas = love.graphics.getCanvas()
+    local oldShader = love.graphics.getShader()
+    local oldBlendModeCanvas = love.graphics.getBlendMode()
+    love.graphics.setCanvas(nameCanvas)
+    love.graphics.setShader()
+    love.graphics.setBlendMode("alpha")
+    love.graphics.clear(0, 0, 0, 0)
+    love.graphics.setColor(0, 1, 0, 1)
+    love.graphics.setFont(terminalFont)
+    for i, data in ipairs(charData) do
+        love.graphics.print(data.char, padding + (i - 1) * charWidth, padding)
+    end
+    love.graphics.setCanvas(oldCanvas)
+    love.graphics.setShader(oldShader)
+    love.graphics.setBlendMode(oldBlendModeCanvas)
+    local imageData = nameCanvas:newImageData()
+    local width = imageData:getWidth()
+    local height = imageData:getHeight()
+    local maxLen = Game.nameEntry.maxLength
+    local pixelsFoundForChar = {}
+    for y = 0, height - 1, 1 do
+        for x = 0, width - 1, 1 do
+            local r, g, b, a = imageData:getPixel(x, y)
+            if a > 0.1 and (x % pixelSampleRate == 0) and (y % pixelSampleRate == 0) then
+                local charIndex = 1 + math.floor((x - padding) / charWidth)
+                if charIndex >= 1 and charIndex <= maxLen and charData[charIndex].isVisible then
+                    pixelsFoundForChar[charIndex] = (pixelsFoundForChar[charIndex] or 0) + 1
+                    local screenX = startX + x - padding
+                    local screenY = textY + y - padding
+                    local pixelBrightness = g * a
+                    local lineBrightness = pixelBrightness * 0.5
+                    love.graphics.setColor(lineColor[1] * lineBrightness, lineColor[2] * lineBrightness, lineColor[3] * lineBrightness, finalOpacity)
+                    love.graphics.line(screenX, screenY, centerX, centerY)
                 end
             end
         end
-        
-        -- Fallback: if no pixels found, draw a line from character center (ensures rays are always visible)
-        if pixelsFound == 0 then
+    end
+    imageData:release()
+    for i, data in ipairs(charData) do
+        if data.isVisible and (pixelsFoundForChar[i] or 0) == 0 then
             local charCenterX = data.x + charWidth / 2
-            local charCenterY = data.y + terminalFont:getHeight() / 2
-            -- Use half brightness to match text trace style
-            love.graphics.setColor(
-                lineColor[1] * 0.5,
-                lineColor[2] * 0.5,
-                lineColor[3] * 0.5,
-                finalOpacity
-            )
+            local charCenterY = data.y + fontHeight / 2
+            love.graphics.setColor(lineColor[1] * 0.5, lineColor[2] * 0.5, lineColor[3] * 0.5, finalOpacity)
             love.graphics.line(charCenterX, charCenterY, centerX, centerY)
         end
-        
-        imageData:release()
-        ::continue_char::
     end
     
     -- Draw "Define your identifier, Asset" text above the top banner (same style as name entry)
@@ -1756,8 +1769,8 @@ function drawLifeLostAuditor()
                 Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
         end
         
-        -- Draw grid on playfield (affected by shake)
-        DrawingHelpers.drawPlayfieldGrid()
+        -- Draw grid (base lines only, no area lights) to avoid green flicker on lose screen
+        DrawingHelpers.drawPlayfieldGrid(true)
         
         -- Draw frozen game elements
         DrawingHelpers.drawFrozenGameState()
@@ -1785,6 +1798,7 @@ function drawLifeLostAuditor()
         
         -- Draw doomscroll window (below score window)
         Doomscroll.draw(Game.fonts)
+        CorporateEmails.draw(Game.fonts)
         
         -- Draw multiplier window (below engagement plot) - skip in demo mode
         if not Game.modes.demo then
@@ -1799,10 +1813,7 @@ function drawLifeLostAuditor()
             DrawingHelpers.drawBlackOverlay(greyFade)
         end
     
-    -- Draw terminal text for life lost
-    if Game.modes.lifeLostAuditor then
-        TopBanner.drawLifeLostText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
-    end
+    -- Terminal text for life lost is drawn after CRT (in overlay section) so glow doesn't spread green
 end
 
 -- Draw game over screen (same as life lost but with different text)
@@ -1827,8 +1838,8 @@ function drawGameOver()
                 Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
         end
         
-        -- Draw grid on playfield (affected by shake)
-        DrawingHelpers.drawPlayfieldGrid()
+        -- Draw grid (base lines only, no area lights) to avoid green flicker on lose screen
+        DrawingHelpers.drawPlayfieldGrid(true)
         
         -- Draw frozen game elements
         DrawingHelpers.drawFrozenGameState()
@@ -1856,6 +1867,7 @@ function drawGameOver()
         
         -- Draw doomscroll window (below score window)
         Doomscroll.draw(Game.fonts)
+        CorporateEmails.draw(Game.fonts)
         
         -- Draw multiplier window (below engagement plot) - skip in demo mode
         if not Game.modes.demo then
@@ -1870,10 +1882,7 @@ function drawGameOver()
         DrawingHelpers.drawBlackOverlay(greyFade)
     end
     
-    -- Draw terminal text for game over
-    if Game.modes.gameOver then
-        TopBanner.drawGameOverText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
-    end
+    -- Terminal text for game over is drawn after CRT (in overlay section) so glow doesn't spread green
 end
 
 -- Draw THE AUDITOR game over sequence
@@ -1996,65 +2005,11 @@ function drawWinTextScreen()
                 Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
         end
         
-        -- Draw the game frozen in the background (faded)
-        if Game.turret then
-            local function drawGameFrozen()
-                World.draw(function()
-                -- Draw units (frozen)
-                for _, u in ipairs(Game.units) do
-                    if not u.isDead then
-                        u:draw()
-                    end
-                end
-                
-                -- Draw projectiles (frozen)
-                for _, p in ipairs(Game.projectiles) do
-                    if not p.isDead then
-                        p:draw()
-                    end
-                end
-                
-                -- Draw effects (frozen)
-                for _, e in ipairs(Game.effects) do
-                    if e.type == "explosion" and e.duration and e.duration > 0 then
-                        local t = e.timer / e.duration
-                        local alpha = 1.0 - t
-                        local radius = e.radius * (1.0 - t * 0.5)
-                        love.graphics.setColor(1, 1, 0, alpha * 0.5)
-                        love.graphics.circle("fill", e.x, e.y, radius, 32)
-                    elseif e.type == "explosion" then
-                        -- Fallback if duration is missing - just draw at current state
-                        love.graphics.setColor(1, 1, 0, 0.5)
-                        love.graphics.circle("fill", e.x, e.y, e.radius or 50, 32)
-                    end
-                end
-                
-                -- Draw turret (frozen)
-                if Game.turret then
-                    Game.turret:draw()
-                end
-            end)
-        end
-        
-        love.graphics.setColor(1, 1, 1, 0.3)  -- Fade the game
-        drawGameFrozen()
-        
-        -- Add color tint overlay based on win condition
-        if Game.winCondition == "blue_only" then
-            -- Blue tint overlay
-            love.graphics.setColor(0.2, 0.4, 1.0, 0.4)  -- Blue with transparency
-            love.graphics.rectangle("fill", Constants.OFFSET_X, Constants.OFFSET_Y, 
-                Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
-        elseif Game.winCondition == "red_only" then
-            -- Red tint overlay
-            love.graphics.setColor(1.0, 0.2, 0.2, 0.4)  -- Red with transparency
-            love.graphics.rectangle("fill", Constants.OFFSET_X, Constants.OFFSET_Y, 
-                Constants.PLAYFIELD_WIDTH, Constants.PLAYFIELD_HEIGHT)
-        end
-        
-        -- Draw grid on playfield (after overlays so it's visible on top)
+        -- Draw grid on playfield (same as life lost / game over - grid stays visible)
         DrawingHelpers.drawPlayfieldGrid()
-    end
+        
+        -- Draw frozen playfield as-is (hazards, explosion zones, units, projectiles, effects, turret) - correct colors, no tint
+        DrawingHelpers.drawFrozenGameState()
     
     love.graphics.pop()
     
@@ -2196,14 +2151,21 @@ function drawReadyScreen()
             end
             
             if #Game.explosionZones > 0 then
-                love.graphics.clear(false, true, false) 
+                -- Reset stencil to 0 without clearing color (clear(false,true,false) clears to green!)
+                love.graphics.stencil(function()
+                    love.graphics.rectangle("fill", -50, -50, Constants.PLAYFIELD_WIDTH + 100, Constants.PLAYFIELD_HEIGHT + 100)
+                end, "replace", 0)
                 for _, z in ipairs(Game.explosionZones) do
-                    love.graphics.setStencilTest("equal", 0)
-                    if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3) else love.graphics.setColor(0, 0, 1, 0.3) end
-                    love.graphics.circle("fill", z.x, z.y, z.radius, 64)
-                    love.graphics.setLineWidth(3); love.graphics.setColor(1, 1, 1, 0.5); love.graphics.circle("line", z.x, z.y, z.radius, 64)
-                    love.graphics.setStencilTest(); love.graphics.stencil(function() love.graphics.circle("fill", z.x, z.y, z.radius, 64) end, "replace", 1)
+                    if z and type(z.timer) == "number" and z.timer > 0 then
+                        love.graphics.setStencilTest("equal", 0)
+                        if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3) else love.graphics.setColor(0, 0, 1, 0.3) end
+                        love.graphics.circle("fill", z.x, z.y, z.radius, 64)
+                        love.graphics.setLineWidth(3); love.graphics.setColor(1, 1, 1, 0.5); love.graphics.circle("line", z.x, z.y, z.radius, 64)
+                        love.graphics.setStencilTest(); love.graphics.stencil(function() love.graphics.circle("fill", z.x, z.y, z.radius, 64) end, "replace", 1)
+                    end
                 end
+                love.graphics.setStencilTest()
+            else
                 love.graphics.setStencilTest()
             end
             
@@ -2279,6 +2241,7 @@ function drawReadyScreen()
         
         -- Draw doomscroll window (below score window)
         Doomscroll.draw(Game.fonts)
+        CorporateEmails.draw(Game.fonts)
         
         -- Draw multiplier window (below engagement plot) - skip in demo mode
         if not Game.modes.demo then
@@ -2353,6 +2316,88 @@ function love.update(dt)
     -- Don't quit on escape if dynamic music sandbox is open
     if not DynamicMusic.isActive() and love.keyboard.isDown("escape") then 
         love.event.quit() 
+    end
+    
+    -- Run grid fading and zone/hazard/effect timer updates every frame (including game over / life lost)
+    -- so red/blue zone grid lights expire and fade instead of staying stuck (skip when grid disabled)
+    if Game then
+        if DrawingHelpers.isPlayfieldGridEnabled() then
+            DrawingHelpers.updateFadingEffects(dt)
+        end
+        -- Hazards: swap-and-pop
+        local hi = 1
+        while hi <= #Game.hazards do
+            local h = Game.hazards[hi]
+            h.timer = h.timer - dt
+            if h.splat and h.splat.isAnimating then ToxicSplat.update(h.splat, dt) end
+            if h.timer <= 0 then
+                Game.hazards[hi] = Game.hazards[#Game.hazards]
+                Game.hazards[#Game.hazards] = nil
+            else
+                hi = hi + 1
+            end
+        end
+        -- Explosion zones: swap-and-pop (grid fade same as units: updateGridEffectState adds to fading when zone no longer in current)
+        local ezi = 1
+        while ezi <= #Game.explosionZones do
+            local z = Game.explosionZones[ezi]
+            if z and type(z.timer) == "number" then
+                z.timer = z.timer - dt
+            end
+            if not z or not z.timer or z.timer <= 0 then
+                if z and z.body then z.body:destroy() end
+                Game.explosionZones[ezi] = Game.explosionZones[#Game.explosionZones]
+                Game.explosionZones[#Game.explosionZones] = nil
+            else
+                ezi = ezi + 1
+            end
+        end
+        -- Defensive purge: remove any zone that still has timer <= 0 (ensures none are left "invisible but present")
+        for i = #Game.explosionZones, 1, -1 do
+            local z = Game.explosionZones[i]
+            if not z or type(z.timer) ~= "number" or z.timer <= 0 then
+                if z and z.body then z.body:destroy() end
+                table.remove(Game.explosionZones, i)
+            end
+        end
+        -- Effects: swap-and-pop (timer only; radius/alpha handled in main loop)
+        local ei = 1
+        while ei <= #Game.effects do
+            local e = Game.effects[ei]
+            e.timer = e.timer - dt
+            local remove = false
+            if e.type == "explosion" then
+                e.radius = e.radius + (e.maxRadius * 8 * dt)
+                if e.radius > e.maxRadius then e.radius = e.maxRadius end
+                e.alpha = e.timer / 0.5
+                if e.speechBubble then e.speechBubble.timer = (e.speechBubble.timer or 0) + dt end
+            elseif e.type == "orange_splat" then
+                if e.splat and e.splat.isAnimating then ToxicSplat.update(e.splat, dt, 5.0) end
+                e.alpha = e.timer / 0.8
+                if e.speechBubble then e.speechBubble.timer = (e.speechBubble.timer or 0) + dt end
+                if e.timer <= 0 then
+                    local r, g, b = unpack(Constants.COLORS.TOXIC)
+                    table.insert(Game.hazards, {
+                        x = e.toxicX, y = e.toxicY,
+                        radius = Constants.INSANE_TOXIC_RADIUS,
+                        timer = Constants.INSANE_TOXIC_DURATION,
+                        splat = ToxicSplat.createSplat(e.toxicX, e.toxicY, Constants.INSANE_TOXIC_RADIUS, {r * 0.5, g * 0.5, b * 0.5})
+                    })
+                    remove = true
+                end
+            elseif e.timer <= 0 then
+                remove = true
+            end
+            if remove then
+                Game.effects[ei] = Game.effects[#Game.effects]
+                Game.effects[#Game.effects] = nil
+            else
+                ei = ei + 1
+            end
+        end
+        if DrawingHelpers.isPlayfieldGridEnabled() then
+            DrawingHelpers.updateGridEffectState()
+        end
     end
     
     -- Handle booting screen
@@ -2455,6 +2500,7 @@ function love.update(dt)
             if Game.timers.ready >= Constants.TIMING.READY_FADE_OUT_DURATION then
                 Game.ready.phase = 2
                 Game.timers.ready = Constants.TIMING.READY_FADE_OUT_DURATION
+                Sound.playAuditorLine("GET_READY")
                 -- Create sparks for GET READY
                 local centerX = Constants.SCREEN_WIDTH / 2
                 local centerY = Constants.SCREEN_HEIGHT / 2
@@ -2792,6 +2838,7 @@ function love.update(dt)
                         Game.nameEntry.text = "AAA"  -- Initialize with 'A' in all positions
                         Game.nameEntry.cursor = 1
                         Game.nameEntry.charIndex = {1, 1, 1}  -- Initialize all positions to 'A' (index 1)
+                        Sound.playAuditorLine("DEFINE_YOURSELF")
                     else
                         -- No high score, return to attract mode
                         returnToAttractMode()
@@ -3037,6 +3084,7 @@ function love.update(dt)
                     -- Switch dynamic music back to part 1 for new level
                     if not DynamicMusic.isAutomatic() then
                         DynamicMusic.startAutomatic()
+                        SwarmTones.reset()
                     else
                         DynamicMusic.switchToPart(1)
                     end
@@ -3200,7 +3248,7 @@ function love.update(dt)
         TopBanner.update(dt, Game.gameState, Engagement.value, Game.modes.gameOver, Game.modes.lifeLostAuditor)
     end
     
-    World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt); Godray.update(dt); DynamicMusic.update(dt)
+    World.update(gameDt); Sound.update(dt); Webcam.update(dt); EngagementPlot.update(dt); Godray.update(dt); DynamicMusic.update(dt); SwarmTones.update(dt)
     
     -- Check if engagement ran out (game over)
     -- Only check if we're actually playing and not already in a game over state
@@ -3224,6 +3272,28 @@ function love.update(dt)
         if Engagement.value <= 65 then
             MonitorFrame.startBottomCenterPanelAnimation()
         end
+        
+        -- Voice: "Please increase engagement" when engagement drops below 50%; 7s cooldown before it can trigger again
+        local now = love.timer.getTime()
+        if Engagement.value < 50 then
+            local lastTime = Game.voiceLastIncreaseEngagementTime
+            if lastTime == nil or (now - lastTime) >= 7 then
+                Sound.playAuditorLine("PLEASE_INCREASE_ENGAGEMENT")
+                Game.voiceLastIncreaseEngagementTime = now
+            end
+        else
+            Game.voiceLastIncreaseEngagementTime = nil
+        end
+        
+        -- Voice: "Hostility spike" when more than 5 units are enraged (trigger when crossing above 5)
+        local enragedCount = 0
+        for _, u in ipairs(Game.units or {}) do
+            if not u.isDead and u.state == "enraged" then enragedCount = enragedCount + 1 end
+        end
+        if enragedCount > 5 and (Game.previousEnragedCount or 0) <= 5 then
+            Sound.playAuditorLine("HOSTILITY_SPIKE")
+        end
+        Game.previousEnragedCount = enragedCount
         
         local engagementPct = Engagement.value / Constants.ENGAGEMENT_MAX
         
@@ -3253,9 +3323,10 @@ function love.update(dt)
                 Constants.UI.SPARK_LIFETIME
             )
             
-            -- Play sound effect
-            Sound.playTone(800, 0.3, 0.8, 1.5)  -- High pitch success sound
-            Sound.playTone(600, 0.3, 0.8, 1.2)  -- Second tone for richness
+            -- Play sound effect (quantized to F major pentatonic: G5 then D5)
+            Sound.playTone(784.00, 0.3, 0.8, 1.5)  -- High pitch success sound (G5)
+            Sound.playTone(587.33, 0.3, 0.8, 1.2)  -- Second tone for richness (D5)
+            Sound.playAuditorLine("BONUS_MULTIPLIER")
             
             Webcam.showComment("engagement_high")
         end
@@ -3304,20 +3375,23 @@ function love.update(dt)
         end
     end
     
-    for i = #Game.hazards, 1, -1 do 
-        local h = Game.hazards[i]
-        h.timer = h.timer - dt
-        -- Update splat animation if it exists
-        if h.splat and h.splat.isAnimating then
-            ToxicSplat.update(h.splat, dt)
+    -- Powerups: swap-and-pop
+    local pi = 1
+    while pi <= #Game.powerups do
+        local p = Game.powerups[pi]
+        p:update(gameDt)
+        if p.isDead then
+            Game.powerups[pi] = Game.powerups[#Game.powerups]
+            Game.powerups[#Game.powerups] = nil
+        else
+            pi = pi + 1
         end
-        if h.timer <= 0 then table.remove(Game.hazards, i) end 
     end
-    for i = #Game.explosionZones, 1, -1 do local z = Game.explosionZones[i]; z.timer = z.timer - dt; if z.timer <= 0 then z.body:destroy(); table.remove(Game.explosionZones, i) end end
-    for i = #Game.powerups, 1, -1 do local p = Game.powerups[i]; p:update(gameDt); if p.isDead then table.remove(Game.powerups, i) end end
     
     -- Update doomscroll feed
     Doomscroll.update(dt, Game)
+    -- Update corporate emails feed
+    CorporateEmails.update(dt, Game)
 
     Game.logicTimer = Game.logicTimer + dt
     if Game.logicTimer > 0.1 then
@@ -3351,9 +3425,10 @@ function love.update(dt)
         Game.turret:update(dt, Game.projectiles, Game.isUpgraded) 
     end
     
-    -- Update units (freeze movement in demo mode to prevent random wandering, except step 4 for enrage demo)
-    for i = #Game.units, 1, -1 do 
-        local u = Game.units[i]
+    -- Update units (swap-and-pop for dead removal). Freeze movement in demo except step 4.
+    local ui = 1
+    while ui <= #Game.units do
+        local u = Game.units[ui]
         if Game.modes.demo then
             -- Step 4: Allow full unit updates to show enraged unit attacking
             if Game.demo.step == 4 then
@@ -3399,9 +3474,25 @@ function love.update(dt)
             -- Normal gameplay: full unit update
             u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret)
         end
-        if u.isDead then table.remove(Game.units, i) end 
+        if u.isDead then
+            Game.units[ui] = Game.units[#Game.units]
+            Game.units[#Game.units] = nil
+        else
+            ui = ui + 1
+        end
     end
-    for i = #Game.projectiles, 1, -1 do local p = Game.projectiles[i]; p:update(gameDt); if p.isDead then table.remove(Game.projectiles, i) end end
+    -- Projectiles: swap-and-pop
+    local proji = 1
+    while proji <= #Game.projectiles do
+        local p = Game.projectiles[proji]
+        p:update(gameDt)
+        if p.isDead then
+            Game.projectiles[proji] = Game.projectiles[#Game.projectiles]
+            Game.projectiles[#Game.projectiles] = nil
+        else
+            proji = proji + 1
+        end
+    end
     
     -- Check win conditions (skip in demo mode)
     if Game.gameState == "playing" and not Game.modes.demo then
@@ -3448,41 +3539,6 @@ function love.update(dt)
         end
     end
     
-    for i = #Game.effects, 1, -1 do
-        local e = Game.effects[i]; e.timer = e.timer - dt
-        if e.type == "explosion" then
-            e.radius = e.radius + (e.maxRadius * 8 * dt); if e.radius > e.maxRadius then e.radius = e.maxRadius end; e.alpha = e.timer / 0.5
-            -- Update speech bubble timer if present
-            if e.speechBubble then
-                e.speechBubble.timer = (e.speechBubble.timer or 0) + dt
-            end
-        elseif e.type == "orange_splat" then
-            -- Update orange splat animation
-            if e.splat and e.splat.isAnimating then
-                ToxicSplat.update(e.splat, dt, 5.0)  -- Faster animation for explosion
-            end
-            -- Fade out alpha over time
-            e.alpha = e.timer / 0.8  -- Fade from 1.0 to 0.0 over 0.8 seconds
-            -- Update speech bubble timer if present
-            if e.speechBubble then
-                e.speechBubble.timer = (e.speechBubble.timer or 0) + dt
-            end
-            -- When orange splat finishes, create green toxic zone
-            if e.timer <= 0 then
-                local r, g, b = unpack(Constants.COLORS.TOXIC)
-                local hazard = {
-                    x = e.toxicX, 
-                    y = e.toxicY,
-                    radius = Constants.INSANE_TOXIC_RADIUS,
-                    timer = Constants.INSANE_TOXIC_DURATION,
-                    splat = ToxicSplat.createSplat(e.toxicX, e.toxicY, Constants.INSANE_TOXIC_RADIUS, {r * 0.5, g * 0.5, b * 0.5})
-                }
-                table.insert(Game.hazards, hazard)
-                table.remove(Game.effects, i)
-            end
-        end
-        if e.type ~= "orange_splat" and e.timer <= 0 then table.remove(Game.effects, i) end
-    end
 end
 
 function love.keypressed(key)
@@ -3553,15 +3609,22 @@ function drawGame()
         end
         
         if #Game.explosionZones > 0 then
-            love.graphics.clear(false, true, false) 
+            -- Reset stencil to 0 without clearing color (clear(false,true,false) clears to green!)
+            love.graphics.stencil(function()
+                love.graphics.rectangle("fill", -50, -50, Constants.PLAYFIELD_WIDTH + 100, Constants.PLAYFIELD_HEIGHT + 100)
+            end, "replace", 0)
             for _, z in ipairs(Game.explosionZones) do
-                love.graphics.setStencilTest("equal", 0)
-                if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3) else love.graphics.setColor(0, 0, 1, 0.3) end
-                love.graphics.circle("fill", z.x, z.y, z.radius, 64)
-                love.graphics.setLineWidth(3); love.graphics.setColor(1, 1, 1, 0.5); love.graphics.circle("line", z.x, z.y, z.radius, 64)
-                love.graphics.setStencilTest(); love.graphics.stencil(function() love.graphics.circle("fill", z.x, z.y, z.radius, 64) end, "replace", 1)
+                if z and type(z.timer) == "number" and z.timer > 0 then
+                    love.graphics.setStencilTest("equal", 0)
+                    if z.color == "red" then love.graphics.setColor(1, 0, 0, 0.3) else love.graphics.setColor(0, 0, 1, 0.3) end
+                    love.graphics.circle("fill", z.x, z.y, z.radius, 64)
+                    love.graphics.setLineWidth(3); love.graphics.setColor(1, 1, 1, 0.5); love.graphics.circle("line", z.x, z.y, z.radius, 64)
+                    love.graphics.setStencilTest(); love.graphics.stencil(function() love.graphics.circle("fill", z.x, z.y, z.radius, 64) end, "replace", 1)
+                end
             end
             love.graphics.setStencilTest()
+        else
+            love.graphics.setStencilTest()  -- clear stencil test when no zones (avoid leftover from previous frame)
         end
         
         for _, u in ipairs(Game.units) do u:draw() end
@@ -3765,6 +3828,8 @@ function drawGame()
     
     -- Draw doomscroll window (below score window)
     Doomscroll.draw(Game.fonts)
+    -- Draw corporate inbox window (below webcam, same style)
+    CorporateEmails.draw(Game.fonts)
     
     -- Draw multiplier window (below engagement plot) - skip in demo mode
     if not Game.modes.demo then
@@ -3870,6 +3935,34 @@ function love.draw()
         offsetY = 0
     end
     
+    -- When fullscreen, overlays (MonitorFrame, TopBanner, Godray, etc.) must be drawn with the same
+    -- scale so they fill the screen and don't cover the scaled game content (e.g. spider).
+    local function withFullscreenScale(fn)
+        if isFullscreen then
+            love.graphics.push()
+            love.graphics.scale(scaleX, scaleY)
+            fn()
+            love.graphics.pop()
+        else
+            fn()
+        end
+    end
+    
+    -- When fullscreen, draw a mode at base resolution to composite then scale to screen (full-screen fill).
+    -- drawFunc() should draw at 1080x1920 (e.g. drawWithCRT(..., true) + overlays). Returns true if used.
+    local function drawFullscreenComposite(drawFunc)
+        if not isFullscreen or not Game.fullscreenCompositeCanvas then return false end
+        love.graphics.setCanvas({Game.fullscreenCompositeCanvas, depthstencil = Game.fullscreenCompositeStencilCanvas})
+        love.graphics.clear(0, 0, 0, 1)
+        drawFunc()
+        love.graphics.setCanvas()
+        love.graphics.push()
+        love.graphics.scale(scaleX, scaleY)
+        love.graphics.draw(Game.fullscreenCompositeCanvas, 0, 0)
+        love.graphics.pop()
+        return true
+    end
+    
     -- Update CRT vignette window bounds based on active windows
     if Game.crtEffect then
         local windowBounds = calculateWindowBounds()
@@ -3878,7 +3971,8 @@ function love.draw()
     
     -- Helper function to draw plexiglass overlay (directly over CRT layer)
     -- sceneCanvas: canvas containing the scene before plexi (for bright pixel detection)
-    local function drawPlexiOverlay(sceneCanvas)
+    -- drawAtBaseRes: if true (fullscreen composite path), always draw at 1080x1920
+    local function drawPlexiOverlay(sceneCanvas, drawAtBaseRes)
         if Game.plexi then
             -- Calculate plexi scale (15% larger)
             local plexiScaleX, plexiScaleY = DrawingHelpers.calculatePlexiScale()
@@ -3887,16 +3981,65 @@ function love.draw()
                 love.graphics.setBlendMode("add")
                 love.graphics.setColor(1, 1, 1, Constants.UI.PLEXI_OPACITY)
             
-            if isFullscreen then
-                -- Draw at fullscreen resolution to match CRT output
+            if isFullscreen and not drawAtBaseRes then
+                -- Draw at fullscreen resolution to match CRT output (legacy path)
                 local windowWidth, windowHeight = love.graphics.getDimensions()
                 love.graphics.push()
                 love.graphics.scale(scaleX, scaleY)
                 love.graphics.draw(Game.plexi, 0, 0, 0, plexiScaleX, plexiScaleY)
                 love.graphics.pop()
             else
-                -- Draw at base resolution
+                -- Draw at base resolution (windowed or fullscreen composite)
                 love.graphics.draw(Game.plexi, 0, 0, 0, plexiScaleX, plexiScaleY)
+            end
+            
+            -- Plexi normal map: playfield lights + scene (background) on all screens, 50% brightness, luma alpha
+            if Game.plexiNormal and Game.plexiNormalShader then
+                local n = 0
+                local posList, colorList = {}, {}
+                if Game then
+                    DrawingHelpers.ensurePlayfieldLightsFilled()
+                    local count, lx, ly, lr, lg, lb, la, lrad = DrawingHelpers.getPlayfieldLightData()
+                    if count and count > 0 and lx and lrad then
+                        local PLEXI_NORMAL_MAX_LIGHTS = 32
+                        n = math.min(count, PLEXI_NORMAL_MAX_LIGHTS)
+                        for i = 1, n do
+                            posList[i] = { lx[i] or 0, ly[i] or 0, lrad[i] or 40, 0 }
+                            colorList[i] = { lr[i] or 0.5, lg[i] or 0.5, lb[i] or 0.5, la[i] or 0.6 }
+                        end
+                    end
+                end
+                for i = n + 1, 32 do
+                    posList[i] = { 0, 0, 1, 0 }
+                    colorList[i] = { 0, 0, 0, 0 }
+                end
+                local oldShader = love.graphics.getShader()
+                love.graphics.setShader(Game.plexiNormalShader)
+                Game.plexiNormalShader:send("maskTexture", Game.plexi)
+                Game.plexiNormalShader:send("useLumaAlpha", 1)  -- plexi: mask by luma
+                Game.plexiNormalShader:send("brightness", 0.5)   -- 50% brightness
+                Game.plexiNormalShader:send("useSceneLight", sceneCanvas and 1 or 0)
+                if sceneCanvas then
+                    local sw, sh = sceneCanvas:getDimensions()
+                    Game.plexiNormalShader:send("sceneTexture", sceneCanvas)
+                    Game.plexiNormalShader:send("sceneSize", { sw, sh })
+                else
+                    Game.plexiNormalShader:send("sceneTexture", Game.plexi)
+                    Game.plexiNormalShader:send("sceneSize", { 1, 1 })
+                end
+                Game.plexiNormalShader:send("lightCount", n)
+                Game.plexiNormalShader:send("lightPosRadius", unpack(posList))
+                Game.plexiNormalShader:send("lightColor", unpack(colorList))
+                love.graphics.setColor(1, 1, 1, 1)
+                if isFullscreen and not drawAtBaseRes then
+                    love.graphics.push()
+                    love.graphics.scale(scaleX, scaleY)
+                    love.graphics.draw(Game.plexiNormal, 0, 0, 0, plexiScaleX, plexiScaleY)
+                    love.graphics.pop()
+                else
+                    love.graphics.draw(Game.plexiNormal, 0, 0, 0, plexiScaleX, plexiScaleY)
+                end
+                love.graphics.setShader(oldShader)
             end
             
             -- Now create mask from bright pixels in the captured scene
@@ -3939,7 +4082,11 @@ function love.draw()
                 love.graphics.setCanvas()
                 
                 -- Draw second plexi layer using mask at higher opacity
-                love.graphics.setCanvas()  -- Draw to screen
+                if drawAtBaseRes and Game.fullscreenCompositeCanvas then
+                    love.graphics.setCanvas({Game.fullscreenCompositeCanvas, depthstencil = Game.fullscreenCompositeStencilCanvas})
+                else
+                    love.graphics.setCanvas()  -- Draw to screen
+                end
                 love.graphics.setBlendMode("add")  -- Additive blend for the second layer
                 
                 if Game.plexiApplyMaskShader then
@@ -3948,7 +4095,7 @@ function love.draw()
                     Game.plexiApplyMaskShader:send("mask", Game.plexiMaskCanvas)
                     Game.plexiApplyMaskShader:send("opacity", 1.0)  -- Full opacity
                     -- Send screen size for coordinate conversion
-                    if isFullscreen then
+                    if isFullscreen and not drawAtBaseRes then
                         local windowWidth, windowHeight = love.graphics.getDimensions()
                         Game.plexiApplyMaskShader:send("screenSize", {windowWidth, windowHeight})
                     else
@@ -3957,7 +4104,7 @@ function love.draw()
                     love.graphics.setColor(1, 1, 1, 1)
                     
                     -- Use exact same position, scale, and transformations as first layer
-                    if isFullscreen then
+                    if isFullscreen and not drawAtBaseRes then
                         local windowWidth, windowHeight = love.graphics.getDimensions()
                         love.graphics.push()
                         love.graphics.scale(scaleX, scaleY)
@@ -3973,7 +4120,7 @@ function love.draw()
                 else
                     -- Fallback: simple multiply approach
                     love.graphics.setColor(1, 1, 1, 0.7)
-                    if isFullscreen then
+                    if isFullscreen and not drawAtBaseRes then
                         local windowWidth, windowHeight = love.graphics.getDimensions()
                         love.graphics.push()
                         love.graphics.scale(scaleX, scaleY)
@@ -3991,7 +4138,8 @@ function love.draw()
     end
     
     -- Helper function to apply CRT shader to any drawing function
-    local function drawWithCRT(drawFunc)
+    -- useFullscreenComposite: when true, draw at base res to Game.fullscreenCompositeCanvas (caller sets canvas first)
+    local function drawWithCRT(drawFunc, useFullscreenComposite)
         local sceneCanvas = nil
         
         -- First, render scene to canvas (before CRT) - with stencil support
@@ -4006,28 +4154,30 @@ function love.draw()
             -- Draw at base resolution without any transformations
             drawFunc()
             
-            love.graphics.setCanvas()
+            if useFullscreenComposite and Game.fullscreenCompositeCanvas then
+                love.graphics.setCanvas({Game.fullscreenCompositeCanvas, depthstencil = Game.fullscreenCompositeStencilCanvas})
+            else
+                love.graphics.setCanvas()
+            end
             sceneCanvas = Game.plexiSceneCanvas
         end
         
-        -- Now apply CRT and draw to screen
+        -- Now apply CRT and draw to current canvas (screen or fullscreen composite)
         if Game.crtEnabled and Game.crtChain then
-            -- In fullscreen, the CRT chain was already resized when entering fullscreen
-            if isFullscreen then
-                -- Get fullscreen dimensions
+            if useFullscreenComposite then
+                -- Fullscreen composite: chain stays 1080x1920, draws to current canvas (composite)
+                love.graphics.setColor(1, 1, 1, 1)
+                Game.crtChain.draw(drawFunc)
+            elseif isFullscreen then
+                -- Legacy fullscreen path (scaled inside chain) - kept for non-main-game screens
                 local windowWidth, windowHeight = love.graphics.getDimensions()
-                
-                -- Draw scene directly at fullscreen resolution (scaled) so glow processes full area
-                -- The CRT chain is already resized to fullscreen, so it will process at fullscreen resolution
                 love.graphics.setColor(1, 1, 1, 1)
                 Game.crtChain.draw(function()
                     love.graphics.setColor(1, 1, 1, 1)
-                    -- Draw the scene with scaling transformation so it fills fullscreen
-                    -- This ensures glow processes the full screen area from the start
-                    local scaleX = windowWidth / Constants.SCREEN_WIDTH
-                    local scaleY = windowHeight / Constants.SCREEN_HEIGHT
+                    local fsScaleX = windowWidth / Constants.SCREEN_WIDTH
+                    local fsScaleY = windowHeight / Constants.SCREEN_HEIGHT
                     love.graphics.push()
-                    love.graphics.scale(scaleX, scaleY)
+                    love.graphics.scale(fsScaleX, fsScaleY)
                     drawFunc()
                     love.graphics.pop()
                 end)
@@ -4037,126 +4187,194 @@ function love.draw()
             end
         else
             -- No CRT: apply scaling transformation, then draw
-            love.graphics.push()
-            love.graphics.translate(offsetX, offsetY)
-            love.graphics.scale(scaleX, scaleY)
-            drawFunc()
-            love.graphics.pop()
+            if useFullscreenComposite then
+                drawFunc()
+            else
+                love.graphics.push()
+                love.graphics.translate(offsetX, offsetY)
+                love.graphics.scale(scaleX, scaleY)
+                drawFunc()
+                love.graphics.pop()
+            end
         end
         
         -- Always draw plexiglass overlay after CRT processing
-        drawPlexiOverlay(sceneCanvas)
+        drawPlexiOverlay(sceneCanvas, useFullscreenComposite)
     end
     
     -- Draw joystick test screen (from attract mode)
     if Game.modes.joystickTest then
+        if drawFullscreenComposite(function()
+            drawWithCRT(drawJoystickTestScreen, true)
+            MonitorFrame.draw()
+        end) then return end
         drawWithCRT(drawJoystickTestScreen)
-        MonitorFrame.draw()
+        withFullscreenScale(function() MonitorFrame.draw() end)
         return
     end
 
     -- Draw booting screen (before logo)
     if Game.modes.booting then
+        if drawFullscreenComposite(function()
+            drawWithCRT(BootingScreen.draw, true)
+            MonitorFrame.draw()
+        end) then return end
         drawWithCRT(BootingScreen.draw)
-        MonitorFrame.draw()
+        withFullscreenScale(function() MonitorFrame.draw() end)
         return
     end
     
     -- Draw matrix screen (before logo)
     if Game.modes.matrix then
-        love.graphics.clear(0, 0, 0)  -- Black background
+        if drawFullscreenComposite(function()
+            love.graphics.clear(0, 0, 0)
+            MatrixEffect.draw()
+            DynamicMusic.draw()
+            MonitorFrame.draw()
+        end) then return end
+        love.graphics.clear(0, 0, 0)
         MatrixEffect.draw()
-        DynamicMusic.draw()  -- Draw on top of matrix screen
-        MonitorFrame.draw()
+        DynamicMusic.draw()
+        withFullscreenScale(function() MonitorFrame.draw() end)
         return
     end
     
     -- Draw logo screen (before attract mode)
     if Game.modes.logo then
+        if drawFullscreenComposite(function()
+            drawWithCRT(LogoScreen.draw, true)
+            DynamicMusic.draw()
+            MonitorFrame.draw()
+        end) then return end
         drawWithCRT(LogoScreen.draw)
-        DynamicMusic.draw()  -- Draw on top of logo screen
-        MonitorFrame.draw()
+        DynamicMusic.draw()
+        withFullscreenScale(function() MonitorFrame.draw() end)
         return
     end
     
     -- Draw attract mode screen
     if Game.modes.attract then
+        if drawFullscreenComposite(function()
+            drawWithCRT(AttractMode.draw, true)
+            DynamicMusic.draw()
+            MonitorFrame.draw()
+        end) then return end
         drawWithCRT(AttractMode.draw)
-        DynamicMusic.draw()  -- Draw on top of attract mode
-        MonitorFrame.draw()
+        DynamicMusic.draw()
+        withFullscreenScale(function() MonitorFrame.draw() end)
         return
     end
     
     -- Draw demo mode screen
     if Game.modes.demo then
+        if drawFullscreenComposite(function()
+            drawWithCRT(DemoMode.draw, true)
+            MonitorFrame.draw()
+            Godray.draw()
+        end) then return end
         drawWithCRT(DemoMode.draw)
-        MonitorFrame.draw()
-        Godray.draw()
+        withFullscreenScale(function()
+            MonitorFrame.draw()
+            Godray.draw()
+        end)
         return
     end
     
     -- Draw intro video (before intro screen)
     if Game.modes.video then
+        if drawFullscreenComposite(function()
+            drawWithCRT(IntroVideoScreen.draw, true)
+            if Game.assets.introVideo then
+                local videoWidth = Game.assets.introVideo:getWidth()
+                local videoHeight = Game.assets.introVideo:getHeight()
+                local vidScaleX = Constants.SCREEN_WIDTH / videoWidth
+                local vidScaleY = Constants.SCREEN_HEIGHT / videoHeight
+                local scale = math.min(vidScaleX, vidScaleY)
+                local drawWidth = videoWidth * scale
+                local drawHeight = videoHeight * scale
+                local x = (Constants.SCREEN_WIDTH - drawWidth) / 2
+                local y = (Constants.SCREEN_HEIGHT - drawHeight) / 2
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.draw(Game.assets.introVideo, x, y, 0, scale, scale)
+            else
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.setFont(Game.fonts.large)
+                local msg = "Video not found"
+                love.graphics.print(msg, (Constants.SCREEN_WIDTH - Game.fonts.large:getWidth(msg)) / 2, Constants.SCREEN_HEIGHT / 2)
+            end
+            MonitorFrame.draw()
+            Godray.draw()
+        end) then return end
         drawWithCRT(IntroVideoScreen.draw)
-        
-        -- Draw video after CRT effect but before monitor frame
         if Game.assets.introVideo then
-            -- Get video dimensions
             local videoWidth = Game.assets.introVideo:getWidth()
             local videoHeight = Game.assets.introVideo:getHeight()
-            
-            -- Calculate scaling to fit screen while maintaining aspect ratio
-            local scaleX = Constants.SCREEN_WIDTH / videoWidth
-            local scaleY = Constants.SCREEN_HEIGHT / videoHeight
-            local scale = math.min(scaleX, scaleY)
-            
-            -- Calculate centered position
+            local vidScaleX = Constants.SCREEN_WIDTH / videoWidth
+            local vidScaleY = Constants.SCREEN_HEIGHT / videoHeight
+            local scale = math.min(vidScaleX, vidScaleY)
             local drawWidth = videoWidth * scale
             local drawHeight = videoHeight * scale
             local x = (Constants.SCREEN_WIDTH - drawWidth) / 2
             local y = (Constants.SCREEN_HEIGHT - drawHeight) / 2
-            
-            -- Draw video centered (after CRT, before monitor frame)
             love.graphics.setColor(1, 1, 1, 1)
             love.graphics.draw(Game.assets.introVideo, x, y, 0, scale, scale)
         else
-            -- If video doesn't exist, show a message (shouldn't happen, but fallback)
             love.graphics.setColor(1, 1, 1, 1)
             love.graphics.setFont(Game.fonts.large)
             local msg = "Video not found"
-            local msgWidth = Game.fonts.large:getWidth(msg)
-            love.graphics.print(msg, (Constants.SCREEN_WIDTH - msgWidth) / 2, Constants.SCREEN_HEIGHT / 2)
+            love.graphics.print(msg, (Constants.SCREEN_WIDTH - Game.fonts.large:getWidth(msg)) / 2, Constants.SCREEN_HEIGHT / 2)
         end
-        
-        MonitorFrame.draw()
-        Godray.draw()
+        withFullscreenScale(function()
+            MonitorFrame.draw()
+            Godray.draw()
+        end)
         return
     end
     
     -- Draw intro screen (check before AUDITOR to prevent showing CRITICAL_ERROR on new game)
     if Game.modes.intro then
+        if drawFullscreenComposite(function()
+            drawWithCRT(drawIntroScreen, true)
+            MonitorFrame.draw()
+            Godray.draw()
+        end) then return end
         drawWithCRT(drawIntroScreen)
-        MonitorFrame.draw()
-        Godray.draw()
+        withFullscreenScale(function()
+            MonitorFrame.draw()
+            Godray.draw()
+        end)
         return
     end
     
     -- Draw level completion screen (Chase Paxton)
     if Game.modes.winText then
-        -- Draw win text + scanlines + matrix together, then apply CRT to the combined result
+        local function drawWinTextContent()
+            if Game.levelTransition.matrixActive then
+                drawWithCRT(function()
+                    drawWinTextScreen()
+                    MatrixEffect.drawScanlines()
+                    MatrixEffect.draw()
+                end, true)
+            else
+                drawWithCRT(drawWinTextScreen, true)
+            end
+            MonitorFrame.draw()
+            Godray.draw()
+        end
+        if drawFullscreenComposite(drawWinTextContent) then return end
         if Game.levelTransition.matrixActive then
             drawWithCRT(function()
                 drawWinTextScreen()
-                -- Draw animated scanlines on top of win text
                 MatrixEffect.drawScanlines()
-                -- Draw matrix on top of scanlines (before CRT processes it)
                 MatrixEffect.draw()
             end)
         else
             drawWithCRT(drawWinTextScreen)
         end
-        MonitorFrame.draw()
-        Godray.draw()
+        withFullscreenScale(function()
+            MonitorFrame.draw()
+            Godray.draw()
+        end)
         return
     end
     
@@ -4175,41 +4393,11 @@ function love.draw()
                     Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
             end
             
-            -- Draw frozen game state (same as drawGame but frozen)
-            World.draw(function()
-                -- Draw units (frozen)
-                for _, u in ipairs(Game.units) do
-                    if not u.isDead then
-                        u:draw()
-                    end
-                end
-                
-                -- Draw projectiles (frozen)
-                for _, p in ipairs(Game.projectiles) do
-                    if not p.isDead then
-                        p:draw()
-                    end
-                end
-                
-                -- Draw effects (frozen)
-                for _, e in ipairs(Game.effects) do
-                    if e.type == "explosion" and e.duration and e.duration > 0 then
-                        local t = e.timer / e.duration
-                        local alpha = 1.0 - t
-                        local radius = e.radius * (1.0 - t * 0.5)
-                        love.graphics.setColor(1, 1, 0, alpha * 0.5)
-                        love.graphics.circle("fill", e.x, e.y, radius, 32)
-                    elseif e.type == "explosion" then
-                        love.graphics.setColor(1, 1, 0, 0.5)
-                        love.graphics.circle("fill", e.x, e.y, e.radius or 50, 32)
-                    end
-                end
-                
-                -- Draw turret (frozen)
-                if Game.turret then
-                    Game.turret:draw()
-                end
-            end)
+            -- Draw grid on playfield (so grid and area-effect lights stay visible and fade correctly)
+            DrawingHelpers.drawPlayfieldGrid()
+            
+            -- Draw frozen game state (hazards, explosion zones, units, projectiles, effects, turret)
+            DrawingHelpers.drawFrozenGameState()
             
             -- Draw Windows 95 style frame around the playfield (A.R.A.C. Control Interface)
             do
@@ -4244,6 +4432,7 @@ function love.draw()
             
             -- Draw doomscroll window (below score window)
             Doomscroll.draw(Game.fonts)
+            CorporateEmails.draw(Game.fonts)
             
             -- Draw multiplier window (below engagement plot) - skip in demo mode
             if not Game.modes.demo then
@@ -4253,121 +4442,309 @@ function love.draw()
             -- Draw animating webcam window on top (the one that moves to center)
             drawAnimatingWebcamWindow()
         end)
-        MonitorFrame.draw()
-        Godray.draw()
+        if drawFullscreenComposite(function()
+            drawWithCRT(function()
+                DrawingHelpers.drawTealWallpaper()
+                if Game.showBackgroundForeground and Game.assets.background then
+                    love.graphics.setColor(1, 1, 1, 1)
+                    love.graphics.draw(Game.assets.background, 0, 0, 0,
+                        Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
+                        Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
+                end
+                DrawingHelpers.drawPlayfieldGrid()
+                DrawingHelpers.drawFrozenGameState()
+                do
+                    local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+                    local borderWidth = Constants.UI.BORDER_WIDTH
+                    local frameX = Constants.OFFSET_X - borderWidth
+                    local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+                    local frameW = Constants.PLAYFIELD_WIDTH + (borderWidth * 2)
+                    local frameH = Constants.PLAYFIELD_HEIGHT + titleBarHeight + (borderWidth * 2)
+                    WindowFrame.draw(frameX, frameY, frameW, frameH, "A.R.A.C. Control Interface")
+                end
+                if Game.showBackgroundForeground and Game.assets.foreground then
+                    love.graphics.setColor(1, 1, 1, 1)
+                    love.graphics.draw(Game.assets.foreground, 0, 0, 0,
+                        Constants.SCREEN_WIDTH / Game.assets.foreground:getWidth(),
+                        Constants.SCREEN_HEIGHT / Game.assets.foreground:getHeight())
+                end
+                drawHUD()
+                Webcam.draw()
+                EngagementPlot.draw()
+                drawScoreWindow()
+                Doomscroll.draw(Game.fonts)
+                CorporateEmails.draw(Game.fonts)
+                if not Game.modes.demo then drawMultiplierWindow() end
+                drawAnimatingWebcamWindow()
+            end, true)
+            MonitorFrame.draw()
+            Godray.draw()
+        end) then return end
+        drawWithCRT(function()
+            DrawingHelpers.drawTealWallpaper()
+            if Game.showBackgroundForeground and Game.assets.background then
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.draw(Game.assets.background, 0, 0, 0,
+                    Constants.SCREEN_WIDTH / Game.assets.background:getWidth(),
+                    Constants.SCREEN_HEIGHT / Game.assets.background:getHeight())
+            end
+            DrawingHelpers.drawPlayfieldGrid()
+            DrawingHelpers.drawFrozenGameState()
+            do
+                local titleBarHeight = Constants.UI.TITLE_BAR_HEIGHT
+                local borderWidth = Constants.UI.BORDER_WIDTH
+                local frameX = Constants.OFFSET_X - borderWidth
+                local frameY = Constants.OFFSET_Y - borderWidth - titleBarHeight
+                local frameW = Constants.PLAYFIELD_WIDTH + (borderWidth * 2)
+                local frameH = Constants.PLAYFIELD_HEIGHT + titleBarHeight + (borderWidth * 2)
+                WindowFrame.draw(frameX, frameY, frameW, frameH, "A.R.A.C. Control Interface")
+            end
+            if Game.showBackgroundForeground and Game.assets.foreground then
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.draw(Game.assets.foreground, 0, 0, 0,
+                    Constants.SCREEN_WIDTH / Game.assets.foreground:getWidth(),
+                    Constants.SCREEN_HEIGHT / Game.assets.foreground:getHeight())
+            end
+            drawHUD()
+            Webcam.draw()
+            EngagementPlot.draw()
+            drawScoreWindow()
+            Doomscroll.draw(Game.fonts)
+            CorporateEmails.draw(Game.fonts)
+            if not Game.modes.demo then drawMultiplierWindow() end
+            drawAnimatingWebcamWindow()
+        end)
+        withFullscreenScale(function()
+            MonitorFrame.draw()
+            Godray.draw()
+        end)
         return
     end
     
     -- Draw life lost auditor screen (engagement depleted but lives remain)
     if Game.modes.lifeLostAuditor then
-        drawWithCRT(drawLifeLostAuditor)
-        -- Respect shouldDrawOnTop() check - only draw on top when banner has moved out of frame
-        if TopBanner.shouldDrawOnTop() then
-            MonitorFrame.draw()
-            TopBanner.draw()
-            -- Draw animated panels on top of banner when it's at down position
-            MonitorFrame.drawAnimatedPanelsOnTop()
-        else
-            TopBanner.draw()
-            MonitorFrame.draw()
+        if drawFullscreenComposite(function()
+            -- Fullscreen lose: use CRT when enabled, else draw directly (text in separate pass to avoid flicker)
+            if Game.crtEnabled and Game.crtChain then
+                drawWithCRT(drawLifeLostAuditor, true)
+            else
+                love.graphics.clear(Constants.COLORS.BACKGROUND)
+                drawLifeLostAuditor()
+            end
+            if TopBanner.shouldDrawOnTop() then
+                MonitorFrame.draw()
+                TopBanner.draw()
+                MonitorFrame.drawAnimatedPanelsOnTop()
+            else
+                TopBanner.draw()
+                MonitorFrame.draw()
+            end
+        end) then
+            -- Text in scaled pass; trace drawn to 1080x1920 canvas then scaled (fixes fullscreen overshoot)
+            withFullscreenScale(function()
+                TopBanner.drawLifeLostText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal, false)
+            end)
+            if Game.fullscreenTraceCanvas then
+                local prevCanvas = love.graphics.getCanvas()
+                love.graphics.setCanvas(Game.fullscreenTraceCanvas)
+                love.graphics.clear(0, 0, 0, 0)
+                TextTrace.draw({ useAlphaBlend = true })  -- alpha so canvas has alpha and is visible when blitted
+                love.graphics.setCanvas(prevCanvas)
+                local prevBlend = love.graphics.getBlendMode()
+                withFullscreenScale(function()
+                    love.graphics.setColor(1, 1, 1, 1)
+                    love.graphics.setBlendMode("add")  -- additive so trace looks like windowed (glow)
+                    love.graphics.draw(Game.fullscreenTraceCanvas, 0, 0)
+                    love.graphics.setBlendMode(prevBlend)
+                end)
+            else
+                withFullscreenScale(function() TextTrace.draw() end)
+            end
+            return
         end
-        TopBanner.drawLifeLostText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
-        Godray.draw()
-        TextTrace.draw()
+        drawWithCRT(drawLifeLostAuditor)
+        withFullscreenScale(function()
+            if TopBanner.shouldDrawOnTop() then
+                MonitorFrame.draw()
+                TopBanner.draw()
+                MonitorFrame.drawAnimatedPanelsOnTop()
+            else
+                TopBanner.draw()
+                MonitorFrame.draw()
+            end
+            TopBanner.drawLifeLostText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
+            TextTrace.draw()
+        end)
         return
     end
     
     -- Draw game over screen (same as life lost but with different text)
     if Game.modes.gameOver then
+        if drawFullscreenComposite(function()
+            -- Fullscreen lose: use CRT when enabled, else draw directly (text in separate pass to avoid flicker)
+            if Game.crtEnabled and Game.crtChain then
+                drawWithCRT(drawGameOver, true)
+            else
+                love.graphics.clear(Constants.COLORS.BACKGROUND)
+                drawGameOver()
+            end
+            if TopBanner.shouldDrawOnTop() then
+                MonitorFrame.draw()
+                TopBanner.draw()
+                MonitorFrame.drawAnimatedPanelsOnTop()
+            else
+                TopBanner.draw()
+                MonitorFrame.draw()
+            end
+        end) then
+            -- Text in scaled pass; trace drawn to 1080x1920 canvas then scaled (fixes fullscreen overshoot)
+            withFullscreenScale(function()
+                TopBanner.drawGameOverText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal, false)
+            end)
+            if Game.fullscreenTraceCanvas then
+                local prevCanvas = love.graphics.getCanvas()
+                love.graphics.setCanvas(Game.fullscreenTraceCanvas)
+                love.graphics.clear(0, 0, 0, 0)
+                TextTrace.draw({ useAlphaBlend = true })  -- alpha so canvas has alpha and is visible when blitted
+                love.graphics.setCanvas(prevCanvas)
+                local prevBlend = love.graphics.getBlendMode()
+                withFullscreenScale(function()
+                    love.graphics.setColor(1, 1, 1, 1)
+                    love.graphics.setBlendMode("add")  -- additive so trace looks like windowed (glow)
+                    love.graphics.draw(Game.fullscreenTraceCanvas, 0, 0)
+                    love.graphics.setBlendMode(prevBlend)
+                end)
+            else
+                withFullscreenScale(function() TextTrace.draw() end)
+            end
+            return
+        end
         drawWithCRT(drawGameOver)
-        -- Respect shouldDrawOnTop() check - only draw on top when banner has moved out of frame
         if TopBanner.shouldDrawOnTop() then
             MonitorFrame.draw()
             TopBanner.draw()
-            -- Draw animated panels on top of banner when it's at down position
             MonitorFrame.drawAnimatedPanelsOnTop()
         else
             TopBanner.draw()
             MonitorFrame.draw()
         end
         TopBanner.drawGameOverText(Game.timers.glitchText, Game.visualEffects.glitchTextWriteProgress, Game.fonts.terminal)
-        Godray.draw()
         TextTrace.draw()
         return
     end
     
     -- Draw matrix transition overlay (for level transitions and restarts)
     if Game.levelTransition.matrixActive then
-        -- Draw game + scanlines + matrix together, then apply CRT to the combined result
+        if drawFullscreenComposite(function()
+            drawWithCRT(function()
+                drawGame()
+                MatrixEffect.drawScanlines()
+                MatrixEffect.draw()
+            end, true)
+            MonitorFrame.draw()
+        end) then return end
         drawWithCRT(function()
             drawGame()
-            -- Draw animated scanlines on top of game content
             MatrixEffect.drawScanlines()
-            -- Draw matrix on top of scanlines (before CRT processes it)
             MatrixEffect.draw()
         end)
-        MonitorFrame.draw()
+        withFullscreenScale(function() MonitorFrame.draw() end)
         return
     end
     
     -- Draw ready screen (GET READY / GO!)
     if Game.modes.ready then
+        if drawFullscreenComposite(function()
+            drawWithCRT(drawReadyScreen, true)
+            TopBanner.draw()
+            MonitorFrame.draw()
+            Godray.draw()
+        end) then return end
         drawWithCRT(drawReadyScreen)
-        TopBanner.draw()
-        MonitorFrame.draw()
-        Godray.draw()
+        withFullscreenScale(function()
+            TopBanner.draw()
+            MonitorFrame.draw()
+            Godray.draw()
+        end)
         return
     end
     
     -- Auditor sequence removed - game over now uses same screen as life lost (top bar only)
     
-    -- Apply CRT effect if enabled, otherwise draw normally
+    -- Fullscreen: render entire frame at 1080x1920 to composite, then scale to screen (spider + banner visible)
+    if isFullscreen and Game.fullscreenCompositeCanvas then
+        love.graphics.setCanvas({Game.fullscreenCompositeCanvas, depthstencil = Game.fullscreenCompositeStencilCanvas})
+        love.graphics.clear(Constants.COLORS.BACKGROUND)
+        -- Include top banner in CRT/glow scene so green glow is visible in fullscreen
+        drawWithCRT(function()
+            drawGame()
+            TopBanner.draw()
+        end, true)
+        -- Overlays at base resolution onto composite
+        if TopBanner.shouldDrawOnTop() then
+            MonitorFrame.draw()
+            TopBanner.draw()
+        else
+            MonitorFrame.draw()
+        end
+        Godray.draw()
+        if Game.modes.nameEntry then
+            drawNameEntryRaysAndText()
+        end
+        if Game.debugMode then
+            love.graphics.setColor(1, 0, 0, 0.8)
+            if Game.fonts.medium then love.graphics.setFont(Game.fonts.medium) end
+            love.graphics.print("DEBUG MODE", 10, 10)
+            love.graphics.print("F2: Instant Win | F3: Instant Lose | F4: Game Over", 10, 40)
+            love.graphics.setColor(1, 1, 1, 1)
+        end
+        local fps = love.timer.getFPS()
+        local fpsText = "FPS: " .. fps
+        if Game.fonts.medium then love.graphics.setFont(Game.fonts.medium) end
+        local fpsWidth = Game.fonts.medium:getWidth(fpsText)
+        love.graphics.setColor(1, 1, 1, 0.8)
+        love.graphics.print(fpsText, (Constants.SCREEN_WIDTH - fpsWidth) / 2, Constants.SCREEN_HEIGHT - 30)
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setCanvas()
+        love.graphics.push()
+        love.graphics.scale(scaleX, scaleY)
+        love.graphics.draw(Game.fullscreenCompositeCanvas, 0, 0)
+        love.graphics.pop()
+        return
+    end
+    
+    -- Windowed or fullscreen without composite: draw normally, scale overlays in fullscreen
     drawWithCRT(drawGame)
     
-    -- Draw top banner and monitor frame after CRT effect (so they appear on top)
-    -- Top banner always drawn (at all times)
-    -- If banner should draw on top (during game over/life lost), draw it after MonitorFrame
-    if TopBanner.shouldDrawOnTop() then
-        MonitorFrame.draw()
-        TopBanner.draw()
-    else
-        TopBanner.draw()
-        -- Monitor frame always on top of everything
-        MonitorFrame.draw()
-    end
-    
-    -- Draw godray effect on top of everything
-    Godray.draw()
-    
-    -- Draw name entry screen (draw after godrays so rays appear on top)
-    if Game.modes.nameEntry then
-        -- Draw name entry rays and text (on top of everything except text itself)
-        drawNameEntryRaysAndText()
-    end
-    
-    -- Draw debug mode indicator
-    if Game.debugMode then
-        love.graphics.setColor(1, 0, 0, 0.8)  -- Red with transparency
-        if Game.fonts.medium then
-            love.graphics.setFont(Game.fonts.medium)
+    -- Draw top banner and monitor frame after CRT effect (so they appear on top).
+    -- In fullscreen (non-composite path), draw with same scale so frame fills screen.
+    withFullscreenScale(function()
+        if TopBanner.shouldDrawOnTop() then
+            MonitorFrame.draw()
+            TopBanner.draw()
+        else
+            TopBanner.draw()
+            MonitorFrame.draw()
         end
-        love.graphics.print("DEBUG MODE", 10, 10)
-        love.graphics.print("F2: Instant Win | F3: Instant Lose | F4: Game Over", 10, 40)
-        love.graphics.setColor(1, 1, 1, 1)  -- Reset color
-    end
-    
-    -- Draw FPS counter at mid-bottom of screen
-    local fps = love.timer.getFPS()
-    local fpsText = "FPS: " .. fps
-    if Game.fonts.medium then
-        love.graphics.setFont(Game.fonts.medium)
-    end
-    local fpsWidth = Game.fonts.medium:getWidth(fpsText)
-    local fpsX = (Constants.SCREEN_WIDTH - fpsWidth) / 2  -- Centered horizontally
-    local fpsY = Constants.SCREEN_HEIGHT - 30  -- 30 pixels from bottom
-    love.graphics.setColor(1, 1, 1, 0.8)  -- White with slight transparency
-    love.graphics.print(fpsText, fpsX, fpsY)
-    love.graphics.setColor(1, 1, 1, 1)  -- Reset color
+        Godray.draw()
+        if Game.modes.nameEntry then
+            drawNameEntryRaysAndText()
+        end
+        if Game.debugMode then
+            love.graphics.setColor(1, 0, 0, 0.8)
+            if Game.fonts.medium then love.graphics.setFont(Game.fonts.medium) end
+            love.graphics.print("DEBUG MODE", 10, 10)
+            love.graphics.print("F2: Instant Win | F3: Instant Lose | F4: Game Over", 10, 40)
+            love.graphics.setColor(1, 1, 1, 1)
+        end
+        local fps = love.timer.getFPS()
+        local fpsText = "FPS: " .. fps
+        if Game.fonts.medium then love.graphics.setFont(Game.fonts.medium) end
+        local fpsWidth = Game.fonts.medium:getWidth(fpsText)
+        love.graphics.setColor(1, 1, 1, 0.8)
+        love.graphics.print(fpsText, (Constants.SCREEN_WIDTH - fpsWidth) / 2, Constants.SCREEN_HEIGHT - 30)
+        love.graphics.setColor(1, 1, 1, 1)
+    end)
 end
 
 function drawScoreWindow()
