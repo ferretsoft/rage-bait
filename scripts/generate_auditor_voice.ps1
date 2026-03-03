@@ -36,6 +36,7 @@ $lines = @{
     "POWER_UP_ACQUIRED"          = "Power up acquired."
     "BONUS_MULTIPLIER"           = "Bonus multiplier."
     "HOSTILITY_SPIKE"            = "Hostility spike."
+    "RAGE_BAIT_DEPLOYED"         = "Rage Bait deployed."
 }
 
 foreach ($key in $lines.Keys) {

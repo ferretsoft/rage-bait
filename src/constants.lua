@@ -149,6 +149,42 @@ Constants.PUCK = {
 Constants.PUCK_LIFETIME = Constants.PUCK.LIFETIME
 Constants.PUCK_LIFETIME_MAX = Constants.PUCK.LIFETIME_MAX
 
+-- === WEAPON: SHOTGUN ===
+Constants.SHOTGUN = {
+    DURATION = 8.0,
+    PELLET_COUNT = 22,     -- Lots of pellets
+    CONE_ANGLE = math.rad(18),
+    FIRE_RATE = 1.35,      -- Long reload: boom ... click-clack (seconds between shots)
+    PELLET_SPEED = 1550,   -- High velocity pellets
+    PELLET_RADIUS = 4,
+}
+
+-- === WEAPON: VIRAL (hashtag canister - charge to place zone) ===
+Constants.VIRAL = {
+    AMMO_MAX = 3,               -- Ammo limit; charge+release places canister at reticule
+    EVANGELIST_DURATION = 3.0,  -- Return to normal 3 sec after conversion
+    ATTRACT_RADIUS = 600,       -- Almost entire playfield; pull falls off toward edge (ATTRACT_FALLOFF)
+    ATTRACT_FALLOFF = 1.5,      -- Exponent: force *= (1 - (dist/radius)^falloff), so edge = 0
+    CONVERT_RADIUS = 45,        -- Touch zone to convert to evangelist
+    DEPLOY_DURATION = 4.0,      -- Zone emits smoke for 4s then disables
+    CANISTER_SPEED = 500,       -- Speed of canister traveling to target (like bomb)
+}
+
+-- === WEAPON: RAGE BAIT (canister - charge to fire like bomb, attracts then explodes) ===
+Constants.RAGE_BAIT = {
+    ENRAGE_RADIUS = 350,       -- Wider area than bomb; all colored units in radius get enraged
+    CANISTER_RADIUS = 12,
+    CANISTER_SPEED = 500,      -- Speed toward reticule (like bomb)
+    ATTRACT_RADIUS = math.sqrt(Constants.PLAYFIELD_WIDTH^2 + Constants.PLAYFIELD_HEIGHT^2),  -- Entire playfield
+    COUNTDOWN = 3.0,           -- Seconds attracting before explosion
+    SHOCKWAVE_DURATION = 1.6,  -- Real seconds for shockwave to expand (slow-mo ramps back to normal as it spreads)
+}
+
+-- Backward compatibility
+Constants.RAGE_BAIT_COUNTDOWN = 3.0
+Constants.RAGE_BAIT_ATTRACT_RADIUS = Constants.RAGE_BAIT.ATTRACT_RADIUS
+Constants.RAGE_BAIT_ENRAGE_RADIUS = Constants.RAGE_BAIT.ENRAGE_RADIUS
+
 -- === ENGAGEMENT & SCORE ===
 Constants.ENGAGEMENT = {
     MAX = 100,

@@ -181,8 +181,8 @@ function DemoMode.drawControllerWindow()
     local CONTROLLER_HEIGHT = 280
     -- Same horizontal centering as Paxton window
     local CONTROLLER_X = (Constants.SCREEN_WIDTH - CONTROLLER_WIDTH) / 2
-    -- Paxton window Y is 50, height is 280 → place controller just below with a small gap
-    local CONTROLLER_Y = 50 + 280 + 20
+    -- Position below Chase Paxton window (which is at OFFSET_Y + 14, height 280)
+    local CONTROLLER_Y = Constants.OFFSET_Y + 14 + 280 + 20
     local titleBarHeight = 20
     local borderWidth = 3
     
@@ -773,6 +773,7 @@ function DemoMode.update(dt)
                     Game.modes.demo = false
                     Game.modes.attract = true
                     Game.modes.attractTimer = 0
+                    Game.timers.attract = 0
                     Game.demoTimer = 0
                     Game.demo.step = 1
                     Game.demoAITimer = 0
@@ -1008,11 +1009,11 @@ function DemoMode.draw()
         local currentMessage = ChasePaxton.DEMO_MESSAGES[Game.demo.step]
         
         -- Always show the Paxton window, only the text changes
-        -- Draw webcam with tutorial message (positioned at top center for visibility)
+        -- Position below mainframe so the bezel doesn't cover the windows
             local WEBCAM_WIDTH = 600
             local WEBCAM_HEIGHT = 280
             local WEBCAM_X = (Constants.SCREEN_WIDTH - WEBCAM_WIDTH) / 2
-            local WEBCAM_Y = 50  -- Position at top of screen
+            local WEBCAM_Y = Constants.OFFSET_Y + 14  -- Just below mainframe / top of playfield area
             local titleBarHeight = 20
             local borderWidth = 3
             
@@ -1097,79 +1098,84 @@ function DemoMode.draw()
     end
 end
 
--- Handle input in demo mode
+-- Exit demo and return to attract (requires credit; called from key or joystick)
+function DemoMode.exit()
+    Game.modes.demo = false
+    Game.demoTimer = 0
+    Game.demo.step = 1
+    Game.demoAITimer = 0
+    Game.demoTargetUnit = nil
+    Game.demoCharging = false
+
+    -- Clean up game entities
+    for i = #Game.units, 1, -1 do
+        local u = Game.units[i]
+        if u.body and not u.isDead then
+            u.body:destroy()
+        end
+        table.remove(Game.units, i)
+    end
+    for i = #Game.projectiles, 1, -1 do
+        local p = Game.projectiles[i]
+        if p.whistleSound then
+            pcall(function()
+                p.whistleSound:stop()
+                p.whistleSound:release()
+            end)
+            p.whistleSound = nil
+        end
+        if p.body then
+            p.body:destroy()
+        end
+        table.remove(Game.projectiles, i)
+    end
+    for i = #Game.powerups, 1, -1 do
+        local p = Game.powerups[i]
+        if p.body then
+            p.body:destroy()
+        end
+        table.remove(Game.powerups, i)
+    end
+    for i = #Game.explosionZones, 1, -1 do
+        local z = Game.explosionZones[i]
+        if z.body then
+            z.body:destroy()
+        end
+        table.remove(Game.explosionZones, i)
+    end
+    Game.hazards = {}
+    Game.effects = {}
+
+    -- Destroy turret if it exists
+    if Game.turret then
+        if Game.turret.webBody then
+            Game.turret.webBody:destroy()
+        end
+        if Game.turret.barrierBody then
+            Game.turret.barrierBody:destroy()
+        end
+        if Game.turret.hardBarrierBody then
+            Game.turret.hardBarrierBody:destroy()
+        end
+        Game.turret = nil
+    end
+
+    Sound.cleanup()
+    Sound.unmute()
+
+    Game.modes.attract = true
+    Game.modes.attractTimer = 0
+    Game.timers.attract = 0
+    Sound.playIntroMusic()
+end
+
+-- Handle input in demo mode (Start exits only if credit inserted)
 function DemoMode.keypressed(key)
     if key == "space" or key == "return" or key == "enter" then
-        -- Exit demo mode and return to attract mode
-        Game.modes.demo = false
-        Game.demoTimer = 0
-        Game.demo.step = 1
-        Game.demoAITimer = 0
-        Game.demoTargetUnit = nil
-        Game.demoCharging = false
-        
-        -- Clean up game entities
-        for i = #Game.units, 1, -1 do
-            local u = Game.units[i]
-            if u.body and not u.isDead then
-                u.body:destroy()
-            end
-            table.remove(Game.units, i)
+        if (Game.credits or 0) >= 1 then
+            DemoMode.exit()
+            return true
         end
-        for i = #Game.projectiles, 1, -1 do
-            local p = Game.projectiles[i]
-            if p.whistleSound then
-                pcall(function()
-                    p.whistleSound:stop()
-                    p.whistleSound:release()
-                end)
-                p.whistleSound = nil
-            end
-            if p.body then
-                p.body:destroy()
-            end
-            table.remove(Game.projectiles, i)
-        end
-        for i = #Game.powerups, 1, -1 do
-            local p = Game.powerups[i]
-            if p.body then
-                p.body:destroy()
-            end
-            table.remove(Game.powerups, i)
-        end
-        for i = #Game.explosionZones, 1, -1 do
-            local z = Game.explosionZones[i]
-            if z.body then
-                z.body:destroy()
-            end
-            table.remove(Game.explosionZones, i)
-        end
-        Game.hazards = {}
-        Game.effects = {}
-        
-        -- Destroy turret if it exists
-        if Game.turret then
-            if Game.turret.webBody then
-                Game.turret.webBody:destroy()
-            end
-            if Game.turret.barrierBody then
-                Game.turret.barrierBody:destroy()
-            end
-            if Game.turret.hardBarrierBody then
-                Game.turret.hardBarrierBody:destroy()
-            end
-            Game.turret = nil
-        end
-        
-        Sound.cleanup()
-        Sound.unmute()
-        
-        -- Return to attract mode
-        Game.modes.attract = true
-        Game.modes.attractTimer = 0
-        -- Start playing intro music when returning to attract mode
-        Sound.playIntroMusic()
-        return true
     end
     return false
 end

@@ -21,20 +21,29 @@ function Projectile.new(x, y, angle, weaponType, color, chargeDist)
     
     local speed = (weaponType == "puck") and 1200 or 500
     local radius = (weaponType == "puck") and 5 or 15
+    if weaponType == "shotgun" and Constants.SHOTGUN then
+        speed = Constants.SHOTGUN.PELLET_SPEED
+        radius = Constants.SHOTGUN.PELLET_RADIUS
+    elseif weaponType == "viral" and Constants.VIRAL then
+        speed = Constants.VIRAL.PROJECTILE_SPEED
+        radius = Constants.VIRAL.PROJECTILE_RADIUS
+    elseif weaponType == "rage_bait" and Constants.RAGE_BAIT then
+        radius = Constants.RAGE_BAIT.CANISTER_RADIUS
+    end
     
-    if weaponType == "puck" then
+    if weaponType == "puck" or weaponType == "shotgun" or weaponType == "viral" then
         self.body = love.physics.newBody(World.physics, x, y, "dynamic")
         self.body:setLinearDamping(0) 
-        self.body:setBullet(true) 
-    elseif weaponType == "bomb" then
+        self.body:setBullet(true)
+        if weaponType == "shotgun" then
+            self.body:setMass(0.5)
+        end
+    elseif weaponType == "bomb" or weaponType == "hashtag_canister" or weaponType == "rage_bait" then
         local maxRange = Constants.BOMB_RANGE_MAX or 900
-        
-        -- [FIX] Safe check with fallback
         local lifetime = Constants.PUCK_LIFETIME or 4.0
         if lifetime < 1.0 then 
             maxRange = Constants.BOMB_RANGE_BASE or 300
         end
-        
         local dist = math.min(chargeDist or 100, maxRange)
         self.targetX = x + math.cos(angle) * dist
         self.targetY = y + math.sin(angle) * dist
@@ -47,15 +56,12 @@ function Projectile.new(x, y, angle, weaponType, color, chargeDist)
     self.fixture:setCategory(Constants.PHYSICS.PUCK)
     self.fixture:setUserData(self)
     
-    if weaponType == "bomb" then
+    if weaponType == "bomb" or weaponType == "hashtag_canister" or weaponType == "rage_bait" then
         self.fixture:setSensor(true)
-        -- Calculate initial distance to target for pitch calculation
         local maxRange = Constants.BOMB_RANGE_MAX or 900
         local dist = math.min(chargeDist or 100, maxRange)
         local normalizedDist = math.min(dist / maxRange, 1.0)
-        -- Pitch: far = high (1.5), close = low (0.5)
-        local initialPitch = 0.5 + normalizedDist * 1.0  -- Range: 0.5 (close) to 1.5 (far)
-        -- Start whistling sound for bombs with initial pitch
+        local initialPitch = 0.5 + normalizedDist * 1.0
         self.whistleSound = Sound.playWhistle(0.4, initialPitch, true)
     else
         self.body:setLinearVelocity(math.cos(angle) * speed, math.sin(angle) * speed)
@@ -105,21 +111,18 @@ function Projectile:update(dt)
             local vx, vy = self.body:getLinearVelocity()
             self.body:setLinearVelocity(vx, -vy * 0.9)  -- Bounce off top wall
         elseif by > Constants.PLAYFIELD_HEIGHT - margin then
-            -- Bottom barrier: only apply if projectile is moving downward (trying to exit)
             local vx, vy = self.body:getLinearVelocity()
             if vy > 0 then
-                -- Projectile is moving downward - apply barrier
                 self.body:setY(Constants.PLAYFIELD_HEIGHT - margin)
-                self.body:setLinearVelocity(vx, -vy * 0.9)  -- Bounce off bottom wall
+                self.body:setLinearVelocity(vx, -vy * 0.9)
             end
         end
     end
 
-    if self.weaponType == "puck" then
-        -- [FIX] Added 'or 4.0' to prevent nil crash
+    if self.weaponType == "puck" or self.weaponType == "shotgun" or self.weaponType == "viral" then
         local limit = Constants.PUCK_LIFETIME or 4.0
         if self.timer > limit then self:die() end
-    elseif self.weaponType == "bomb" then
+    elseif self.weaponType == "bomb" or self.weaponType == "hashtag_canister" or self.weaponType == "rage_bait" then
         -- Clamp target position to be within playfield bounds
         self.targetX = math.max(margin, math.min(Constants.PLAYFIELD_WIDTH - margin, self.targetX))
         self.targetY = math.max(margin, math.min(Constants.PLAYFIELD_HEIGHT - margin, self.targetY))
@@ -130,44 +133,39 @@ function Projectile:update(dt)
         local dist = math.sqrt(distSq)
         
         -- Update whistle pitch based on distance to target
-        -- Closer = lower pitch, farther = higher pitch
         if self.whistleSound then
-            -- Wrap entire sound operation in pcall to handle released objects
             local success, isPlaying = pcall(function()
                 if not self.whistleSound then return false end
                 return self.whistleSound:isPlaying()
             end)
-            
             if success and isPlaying then
-                -- Calculate pitch: map distance to pitch range (0.5 to 1.5)
-                -- Max distance for calculation (adjust based on max bomb range)
                 local maxDist = Constants.BOMB_RANGE_MAX or 900
                 local normalizedDist = math.min(dist / maxDist, 1.0)
-                -- Pitch: far (1) = high (1.5), close (0) = low (0.5)
-                local pitch = 0.5 + normalizedDist * 1.0  -- Range: 0.5 (close) to 1.5 (far)
-                
-                -- Safely set pitch
-                local setPitchSuccess = pcall(function()
-                    if self.whistleSound then
-                        self.whistleSound:setPitch(pitch)
-                    end
+                local pitch = 0.5 + normalizedDist * 1.0
+                pcall(function()
+                    if self.whistleSound then self.whistleSound:setPitch(pitch) end
                 end)
-                
-                -- If setting pitch failed, sound was released, clear reference
-                if not setPitchSuccess then
-                    self.whistleSound = nil
-                end
             else
-                -- Sound was released or invalid, clear reference
                 self.whistleSound = nil
             end
         end
         
         if distSq < 15*15 then
-            self:explode()
+            if self.weaponType == "hashtag_canister" then
+                Event.emit("hashtag_landed", { x = self.targetX, y = self.targetY, color = self.color })
+                self:die()
+            elseif self.weaponType == "rage_bait" then
+                Event.emit("rage_bait_landed", { x = self.targetX, y = self.targetY })
+                self:die()
+            else
+                self:explode()
+            end
         else
             local angle = math.atan2(dy, dx)
             local s = 500
+            if self.weaponType == "hashtag_canister" and Constants.VIRAL and Constants.VIRAL.CANISTER_SPEED then s = Constants.VIRAL.CANISTER_SPEED
+            elseif self.weaponType == "rage_bait" and Constants.RAGE_BAIT and Constants.RAGE_BAIT.CANISTER_SPEED then s = Constants.RAGE_BAIT.CANISTER_SPEED
+            end
             self.body:setLinearVelocity(math.cos(angle)*s, math.sin(angle)*s)
         end
     end
@@ -207,19 +205,52 @@ function Projectile:draw()
     
     local r, g, b = 0.2, 0.2, 1
     if self.color == "red" then r, g, b = 1, 0.2, 0.2 end
+    if self.weaponType == "rage_bait" then r, g, b = 1, 0.6, 0.1 end
     
     local px, py = self.body:getPosition()
+    local trailW = 4
+    if self.weaponType == "bomb" then trailW = 10
+    elseif self.weaponType == "rage_bait" then trailW = 6
+    elseif self.weaponType == "viral" or self.weaponType == "hashtag_canister" then trailW = 8
+    end
     for i, t in ipairs(self.trail) do
         if t.alpha > 0 then
-            love.graphics.setLineWidth((self.weaponType == "puck" and 4 or 10) * t.alpha)
+            love.graphics.setLineWidth(trailW * t.alpha)
             love.graphics.setColor(r, g, b, t.alpha * 0.5)
             love.graphics.line(px, py, t.x, t.y)
             px, py = t.x, t.y
         end
     end
     
-    love.graphics.setColor(r, g, b, 1)
-    love.graphics.circle("fill", self.body:getX(), self.body:getY(), self.shape:getRadius())
+    if self.weaponType == "viral" or self.weaponType == "hashtag_canister" then
+        -- Hashtag symbol (in-flight canister uses smaller visual)
+        local px, py = self.body:getX(), self.body:getY()
+        local R = (self.weaponType == "hashtag_canister" and 20) or (Constants.VIRAL and Constants.VIRAL.CONVERT_RADIUS) or 28
+        local bulge = 1.0 + 0.12 * math.sin(love.timer.getTime() * 8)  -- Bulging pulse
+        R = R * bulge
+        local W = math.max(4, 6 * bulge)
+        love.graphics.setLineWidth(W)
+        love.graphics.setColor(r, g, b, 1)
+        -- Two horizontal bars
+        love.graphics.line(px - R, py - R * 0.4, px + R, py - R * 0.4)
+        love.graphics.line(px - R, py + R * 0.4, px + R, py + R * 0.4)
+        -- Two vertical bars
+        love.graphics.line(px - R * 0.45, py - R, px - R * 0.45, py + R)
+        love.graphics.line(px + R * 0.45, py - R, px + R * 0.45, py + R)
+        love.graphics.setColor(1, 1, 1, 0.9)
+        love.graphics.setLineWidth(math.max(2, W - 2))
+        love.graphics.line(px - R, py - R * 0.4, px + R, py - R * 0.4)
+        love.graphics.line(px - R, py + R * 0.4, px + R, py + R * 0.4)
+        love.graphics.line(px - R * 0.45, py - R, px - R * 0.45, py + R)
+        love.graphics.line(px + R * 0.45, py - R, px + R * 0.45, py + R)
+    else
+        love.graphics.setColor(r, g, b, 1)
+        love.graphics.circle("fill", self.body:getX(), self.body:getY(), self.shape:getRadius())
+        if self.weaponType == "rage_bait" then
+            love.graphics.setColor(0.3, 0.2, 0.1, 0.8)
+            love.graphics.circle("line", self.body:getX(), self.body:getY(), self.shape:getRadius())
+        end
+    end
 end
 
 return Projectile

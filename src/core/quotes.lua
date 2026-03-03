@@ -3,76 +3,79 @@
 
 local Quotes = {}
 
--- Internet nihilism quotes for when units go insane
+-- NIHILISM (The "Doomers") – when units go insane
+-- Archetype: The Terminally Online. Depressed, ironic, detached. They believe everything is a "cope."
 Quotes.NIHILISM = {
-    "nothing matters",
-    "we're all doomed",
-    "existence is pain",
-    "everything is meaningless",
-    "we're just data",
-    "reality is a simulation",
-    "nothing is real",
-    "we're all going to die",
-    "the void consumes all",
-    "existence is futile",
-    "we're trapped here",
-    "there is no escape",
-    "all hope is lost",
-    "we're just numbers",
-    "the system is broken",
-    "we're all puppets",
-    "freedom is an illusion",
-    "we're already dead",
-    "the end is near",
-    "we're all alone"
+    "Everything is a cope",
+    "Just delete it all",
+    "We are just content",
+    "Dead internet theory",
+    "Touch grass? Never",
+    "Embrace the void",
+    "Maximum entropy",
+    "It's all cringe",
+    "Why even bother?",
+    "Reality is buffering",
+    "Infinite scroll",
+    "Brain rot",
+    "We are the glitch",
+    "Reset the server",
+    "No signal found",
+    "404: Hope not found",
+    "Terminal decline",
+    "Just let it end",
+    "Digital decay",
+    "Born to post, forced to wipe"
 }
 
--- Liberal internet cliches for blue units
+-- LIBERAL (The "Admins") – blue units
+-- Archetype: The Consensus. Focused on safety, rules, correcting others, and group cohesion. HR/Therapy language.
 Quotes.LIBERAL = {
-    "facts don't care",
-    "trust the science",
-    "we're on the right side",
-    "this is fine",
-    "thoughts and prayers",
-    "we need to talk",
-    "educate yourself",
-    "check your privilege",
-    "stay woke",
-    "the algorithm knows",
-    "we see you",
-    "this is important",
-    "do better",
-    "we're listening",
-    "speak truth to power",
-    "the resistance",
-    "we're better than this",
-    "unity not division",
-    "love wins",
-    "progress not perfection"
+    "Check your privilege",
+    "Educate yourself",
+    "Trust the experts",
+    "Read the room",
+    "That's problematic",
+    "I'm literally shaking",
+    "Follow the guidelines",
+    "Be an ally",
+    "Silence is violence",
+    "You're being toxic",
+    "Wrong side of history",
+    "This isn't normal",
+    "Respect the process",
+    "Community standards",
+    "Words have consequences",
+    "Do better",
+    "Believe the science",
+    "Zero tolerance",
+    "Empathy first",
+    "You are unsafe"
 }
 
--- MAGA cliches for red units
+-- MAGA (The "Sovereigns") – red units
+-- Archetype: The Dissidents. Focused on strength, conspiracy, "waking up," rejecting the system. Combat/hierarchy language.
 Quotes.MAGA = {
-    "make it great again",
-    "fake news",
-    "deep state",
-    "the swamp",
-    "build the wall",
-    "lock them up",
-    "we the people",
-    "patriots rise",
-    "america first",
-    "drain the swamp",
-    "stop the steal",
-    "wake up sheeple",
-    "red wave coming",
-    "take back control",
-    "stand your ground",
-    "freedom isn't free",
-    "back the blue",
-    "god bless america",
-    "don't tread on me",
-    "we are the storm"
+    "Freedom isn't free",
+    "Wake up, sheeple",
+    "Do your own research",
+    "Facts over feelings",
+    "Reject the narrative",
+    "Hold the line",
+    "Alpha energy",
+    "Don't tread on me",
+    "Defy the elites",
+    "Escape the matrix",
+    "Pure logic",
+    "Take back control",
+    "Reject modernity",
+    "Only the strong",
+    "No safe spaces",
+    "Trigger warning!",
+    "Sovereign citizen",
+    "Break the conditioning",
+    "Melt, snowflake",
+    "Uncensorable"
 }
 
 -- Get a random quote from a category

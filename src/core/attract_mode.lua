@@ -90,19 +90,23 @@ function AttractMode.draw()
         end
     end
     
-    -- Insert coin message (blinking) with transparent black background
+    -- Credits / insert coin message
+    local credits = Game.credits or 0
+    local coinMsg = (credits >= 1) and "Credits: 1. Confirm you are human to start the game" or "INSERT COIN"
     local blinkSpeed = 2.0
     local alpha = (math.sin(Game.timers.attract * blinkSpeed) + 1) / 2
     alpha = 0.3 + alpha * 0.7  -- Keep between 0.3 and 1.0
-    
-    love.graphics.setFont(Game.fonts.large)  -- Increased from medium
-    local coinMsg = "INSERT COIN"
+    if credits >= 1 then
+        alpha = 1.0  -- No blink when credit inserted
+    end
+
+    love.graphics.setFont(Game.fonts.large)
     local coinWidth = Game.fonts.large:getWidth(coinMsg)
-    local coinY = Constants.SCREEN_HEIGHT - 250  -- Moved up 100px from 150
-    
+    local coinY = Constants.SCREEN_HEIGHT - 250
+
     -- Instructions
-    love.graphics.setFont(Game.fonts.medium)  -- Increased from small
-    local inst1 = "Press SPACE to start, or D for DEMO"
+    love.graphics.setFont(Game.fonts.medium)
+    local inst1 = "Press 5 or COIN to insert, SPACE to start (1 credit), or D for DEMO"
     local inst1Width = Game.fonts.medium:getWidth(inst1)
     local inst2 = "Use Z/X to fire bombs, collect powerups for rapid fire"
     local inst2Width = Game.fonts.medium:getWidth(inst2)
@@ -122,7 +126,7 @@ function AttractMode.draw()
     -- Draw Windows 95 style frame with title bar
     WindowFrame.draw(bottomBoxX, bottomBoxY, bottomBoxWidth, bottomBoxHeight, "Game Controls")
     
-    -- Draw insert coin message (inside the window, below title bar)
+    -- Draw credits / insert coin message (inside the window, below title bar)
     local contentStartY = bottomBoxY + titleBarHeight + 10
     love.graphics.setFont(Game.fonts.large)
     love.graphics.setColor(1, 0.8, 0.2, alpha)

@@ -24,6 +24,8 @@ function Unit.new(world, x, y)
     self.isInsane = false  -- Whether unit has gone insane from isolation
     self.speechBubble = nil  -- {text, timer, duration} for displaying quotes
     self.groupSpeechBubble = nil  -- {text, timer, duration, groupCenterX, groupCenterY} for group bubbles
+    self.evangelistUntil = 0  -- Viral: timestamp until which this unit is an evangelist (converts neutrals on contact)
+    self.evangelistTarget = nil  -- Current neutral unit being sought (for updateEvangelist)
     
     -- PHYSICS SETUP
     self.body = love.physics.newBody(world, x, y, "dynamic")
@@ -43,8 +45,18 @@ function Unit.new(world, x, y)
     return self
 end
 
-function Unit:update(dt, allUnits, hazards, explosionZones, turret)
+function Unit:update(dt, allUnits, hazards, explosionZones, turret, rageBaits)
     if self.isDead then return end
+    
+    -- Clear evangelist when duration expires
+    if self.evangelistUntil > 0 and love.timer.getTime() >= self.evangelistUntil then
+        self.evangelistUntil = 0
+    end
+    
+    -- Attract toward rage bait canisters (all units)
+    if rageBaits and #rageBaits > 0 then
+        self:seekRageBaits(dt, rageBaits)
+    end
     
     -- Update speech bubble timer
     if self.speechBubble then
@@ -83,6 +95,9 @@ function Unit:update(dt, allUnits, hazards, explosionZones, turret)
         
         -- Enraged units don't flock - they search for and attack enemy units
         self:updateEnraged(dt, allUnits, turret)
+    elseif self.evangelistUntil > 0 and love.timer.getTime() < self.evangelistUntil then
+        -- Evangelists move fast like enraged and seek out grey (neutral) units to convert by touch
+        self:updateEvangelist(dt, allUnits, turret)
     else
         -- NEUTRAL / PASSIVE BEHAVIOR
         local isAttracted = false
@@ -90,7 +105,7 @@ function Unit:update(dt, allUnits, hazards, explosionZones, turret)
             isAttracted = self:seekAttractions(dt, explosionZones)
         end
         
-        -- Flocking behavior for colored units (red/blue)
+        -- Flocking behavior for colored units (red/blue), but not when evangelist (handled above)
         if self.alignment ~= "none" and self.state ~= "neutral" then
             self:updateFlocking(dt, allUnits)
             -- Check for groups of 5+ and assign group speech bubbles
@@ -330,6 +345,72 @@ function Unit:updateEnraged(dt, allUnits, turret)
     self:avoidFlockmates(dt, allUnits)
 end
 
+function Unit:findClosestNeutral(allUnits)
+    local closest = nil
+    local minDist = 999999
+    local myX, myY = self.body:getPosition()
+    for _, other in ipairs(allUnits) do
+        if not other.isDead and other ~= self and other.state == "neutral" then
+            local ox, oy = other.body:getPosition()
+            local dist = (ox - myX)^2 + (oy - myY)^2
+            if dist < minDist then
+                minDist = dist
+                closest = other
+            end
+        end
+    end
+    return closest
+end
+
+function Unit:updateEvangelist(dt, allUnits, turret)
+    -- Move fast like enraged; seek closest grey (neutral) unit to convert by touch
+    if not self.evangelistTarget or self.evangelistTarget.isDead or self.evangelistTarget.state ~= "neutral" then
+        self.evangelistTarget = self:findClosestNeutral(allUnits)
+    end
+    
+    if self.evangelistTarget then
+        local myX, myY = self.body:getPosition()
+        local tX, tY = self.evangelistTarget.body:getPosition()
+        local seekX, seekY = tX, tY
+        if turret then
+            seekX, seekY = self:calculateWaypointAroundPlatform(myX, myY, tX, tY, turret)
+        end
+        local dx = seekX - myX
+        local dy = seekY - myY
+        local dist = math.sqrt(dx^2 + dy^2)
+        
+        if dist > 0 then
+            local dirX = dx / dist
+            local dirY = dy / dist
+            local force = self.body:getMass() * 3800  -- Same order as enraged
+            if self.demoSpeedMultiplier then
+                force = force * self.demoSpeedMultiplier
+            end
+            local targetDist = math.sqrt((tX - myX)^2 + (tY - myY)^2)
+            if targetDist < 80 then
+                local targetDirX = (tX - myX) / targetDist
+                local targetDirY = (tY - myY) / targetDist
+                local currentVx, currentVy = self.body:getLinearVelocity()
+                local boostSpeed = 280
+                local newVx = currentVx + targetDirX * boostSpeed * dt
+                local newVy = currentVy + targetDirY * boostSpeed * dt
+                local maxSpeed = 480
+                local speed = math.sqrt(newVx^2 + newVy^2)
+                if speed > maxSpeed then
+                    newVx = (newVx / speed) * maxSpeed
+                    newVy = (newVy / speed) * maxSpeed
+                end
+                self.body:setLinearVelocity(newVx, newVy)
+            else
+                self.body:applyForce(dirX * force, dirY * force)
+            end
+        end
+    else
+        self:updateWander(dt)
+    end
+    self:avoidFlockmates(dt, allUnits)
+end
+
 function Unit:hit(weaponType, color)
     if self.isDead then return end
 
@@ -370,6 +451,42 @@ function Unit:enrage()
     local angle = math.random() * math.pi * 2
     local burst = Constants.UNIT_SPEED_SEEK * 2 
     self.body:setLinearVelocity(math.cos(angle) * burst, math.sin(angle) * burst)
+end
+
+function Unit:convertToEvangelist(alignment, duration)
+    if self.isDead then return end
+    self.alignment = alignment
+    self.state = "passive"
+    self.evangelistUntil = love.timer.getTime() + (duration or 12)
+    self.conversionTime = love.timer.getTime()
+    self.isolationTimer = 0
+    if self.speechBubble then
+        if self.speechBubble.duration then
+            self.speechBubble.timer = self.speechBubble.duration * 0.7
+        end
+        self.speechBubble = nil
+    end
+end
+
+function Unit:seekRageBaits(dt, rageBaits)
+    -- Only red and blue units are attracted; neutrals ignore rage bait
+    if self.state == "neutral" or self.alignment == "none" or not self.alignment then return end
+    local myX, myY = self.body:getPosition()
+    local range = Constants.RAGE_BAIT and Constants.RAGE_BAIT.ATTRACT_RADIUS or 300
+    for _, r in ipairs(rageBaits) do
+        if r.timer and r.timer > 0 then
+            local dx = r.x - myX
+            local dy = r.y - myY
+            local distSq = dx * dx + dy * dy
+            local attractR = r.attractRadius or range
+            if distSq < attractR * attractR and distSq > 1 then
+                local dist = math.sqrt(distSq)
+                local force = self.body:getMass() * 280
+                self.body:applyForce((dx / dist) * force, (dy / dist) * force)
+                return
+            end
+        end
+    end
 end
 
 -- Check if grey unit is isolated from other neutral units
@@ -497,6 +614,15 @@ function Unit:draw()
         r, g, b = unpack(Constants.COLORS.RED)
     elseif self.alignment == "blue" then 
         r, g, b = unpack(Constants.COLORS.BLUE)
+    elseif self.state == "enraged" then
+        -- Enraged: use alignment color, or amber if not red/blue (e.g. rage-bait-enraged neutral or nil)
+        if self.alignment == "red" then
+            r, g, b = unpack(Constants.COLORS.RED)
+        elseif self.alignment == "blue" then
+            r, g, b = unpack(Constants.COLORS.BLUE)
+        else
+            r, g, b = 1, 0.45, 0.1  -- amber so they never stay bright white
+        end
     end
     
     local healthPct = self.hp / Constants.UNIT_HP
@@ -577,6 +703,23 @@ function Unit:draw()
         love.graphics.setColor(1, 1, 1, fadeAlpha)
         love.graphics.setLineWidth(3)
         love.graphics.circle("line", x, y, Constants.UNIT_RADIUS + 4)
+    end
+    
+    -- Draw hashtag above evangelists (viral converts who seek neutrals)
+    if self.evangelistUntil and self.evangelistUntil > love.timer.getTime() then
+        local tagY = y - Constants.UNIT_RADIUS - 22
+        local R = 10
+        local W = 2.5
+        love.graphics.setLineWidth(W)
+        if self.alignment == "red" then
+            love.graphics.setColor(1, 0.35, 0.35, 1)
+        else
+            love.graphics.setColor(0.35, 0.35, 1, 1)
+        end
+        love.graphics.line(x - R, tagY - R * 0.4, x + R, tagY - R * 0.4)
+        love.graphics.line(x - R, tagY + R * 0.4, x + R, tagY + R * 0.4)
+        love.graphics.line(x - R * 0.45, tagY - R, x - R * 0.45, tagY + R)
+        love.graphics.line(x + R * 0.45, tagY - R, x + R * 0.45, tagY + R)
     end
     
     -- Draw outline if isolation timer is at half or more (approaching insanity)

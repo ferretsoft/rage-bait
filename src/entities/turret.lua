@@ -121,6 +121,11 @@ function Turret.new()
     self.fireRate = 0.08 
     self.fireTimer = 0
     self.puckModeTimer = 0 
+    self.shotgunModeTimer = 0
+    self.shotgunFireTimer = 0
+    self.shotgunWasReloading = false  -- true after firing until reload ready (for cachink)
+    self.viralModeTimer = 0
+    self.viralFireTimer = 0
     
     local success, img = pcall(love.graphics.newImage, "assets/turret.png")
     if success then
@@ -242,6 +247,39 @@ function Turret.new()
     return self
 end
 
+function Turret:activateShotgunMode(duration)
+    self.shotgunModeTimer = duration
+    self.shotgunFireTimer = 0
+    self.shotgunWasReloading = false
+    self.isCharging = false
+    self.chargeTimer = 0
+    if self.chargeSound then
+        local success, isPlaying = pcall(function() return self.chargeSound:isPlaying() end)
+        if success and isPlaying then
+            pcall(function() self.chargeSound:stop() self.chargeSound:release() end)
+        end
+        self.chargeSound = nil
+    end
+end
+
+function Turret:activateViralMode(_duration)
+    -- Hashtag is now ammo-based (hold-to-fire, 3 ammo); refill ammo
+    self.viralModeTimer = 0
+    self.viralFireTimer = 0
+    if Game and Game.inventory and Constants.VIRAL and Constants.VIRAL.AMMO_MAX then
+        Game.inventory.hashtagAmmo = math.min(Constants.VIRAL.AMMO_MAX, (Game.inventory.hashtagAmmo or 0) + Constants.VIRAL.AMMO_MAX)
+    end
+    self.isCharging = false
+    self.chargeTimer = 0
+    if self.chargeSound then
+        local success, isPlaying = pcall(function() return self.chargeSound:isPlaying() end)
+        if success and isPlaying then
+            pcall(function() self.chargeSound:stop() self.chargeSound:release() end)
+        end
+        self.chargeSound = nil
+    end
+end
+
 function Turret:activatePuckMode(duration)
     self.puckModeTimer = duration
     self.isCharging = false 
@@ -361,7 +399,9 @@ function Turret:update(dt, projectiles, isUpgraded)
     if self.puckModeTimer > 0 then
         self.puckModeTimer = self.puckModeTimer - dt
     end
-
+    if self.shotgunModeTimer > 0 and Constants.SHOTGUN then
+        self.shotgunModeTimer = self.shotgunModeTimer - dt
+    end
     if self.puckModeTimer > 0 and projectiles then
         self.fireTimer = math.max(0, self.fireTimer - dt)
         if self.fireTimer <= 0 then
@@ -388,7 +428,36 @@ function Turret:update(dt, projectiles, isUpgraded)
             end
         end
     end
-    
+
+    -- Shotgun mode: fire pellets in cone; long reload (reload sound played from main.lua when ready)
+    if self.shotgunModeTimer > 0 and projectiles and Constants.SHOTGUN then
+        self.shotgunFireTimer = math.max(0, self.shotgunFireTimer - dt)
+        if self.shotgunFireTimer <= 0 then
+            if love.keyboard.isDown("z") then
+                self:fireShotgun("red", projectiles)
+                self.shotgunFireTimer = Constants.SHOTGUN.FIRE_RATE
+                self.shotgunWasReloading = true
+            elseif love.keyboard.isDown("x") then
+                self:fireShotgun("blue", projectiles)
+                self.shotgunFireTimer = Constants.SHOTGUN.FIRE_RATE
+                self.shotgunWasReloading = true
+            end
+            local joysticks = love.joystick.getJoysticks()
+            if #joysticks > 0 then
+                local joystick = joysticks[1]
+                if joystick:isDown(1) then
+                    self:fireShotgun("red", projectiles)
+                    self.shotgunFireTimer = Constants.SHOTGUN.FIRE_RATE
+                    self.shotgunWasReloading = true
+                elseif joystick:isDown(2) then
+                    self:fireShotgun("blue", projectiles)
+                    self.shotgunFireTimer = Constants.SHOTGUN.FIRE_RATE
+                    self.shotgunWasReloading = true
+                end
+            end
+        end
+    end
+
     if self.isCharging then
         self.chargeTimer = self.chargeTimer + dt
         local maxRange = isUpgraded and Constants.BOMB_RANGE_MAX or Constants.BOMB_RANGE_BASE
@@ -447,9 +516,8 @@ function Turret:update(dt, projectiles, isUpgraded)
 end
 
 function Turret:startCharge(color)
-    -- Don't allow charging if game state is not playing (prevents charging during win sequence)
-    -- This check should be done by the caller, but we add it here as a safety measure
-    if self.puckModeTimer <= 0 then
+    -- Don't allow charging if in puck/shotgun mode (those use hold-to-fire); hashtag uses ammo
+    if self.puckModeTimer <= 0 and self.shotgunModeTimer <= 0 then
         self.isCharging = true
         self.chargeTimer = 0
         self.chargeColor = color
@@ -487,7 +555,22 @@ function Turret:releaseCharge(projectiles)
     local muzzleX = self.visualX + (forwardOffset * cos)
     local muzzleY = self.visualY + (forwardOffset * sin)
     
-    table.insert(projectiles, Projectile.new(muzzleX, muzzleY, self.angle, "bomb", self.chargeColor, dist))
+    local hashtagAmmo = (Game and Game.inventory and (Game.inventory.hashtagAmmo or 0)) or 0
+    local rageBaitCount = (Game and Game.inventory and (Game.inventory.rageBaitCount or 0)) or 0
+    if hashtagAmmo > 0 and Constants.VIRAL then
+        table.insert(projectiles, Projectile.new(muzzleX, muzzleY, self.angle, "hashtag_canister", self.chargeColor, dist))
+        Game.inventory.hashtagAmmo = Game.inventory.hashtagAmmo - 1
+        if Sound and Sound.firePuck then Sound.firePuck(self.chargeColor) end
+    elseif rageBaitCount > 0 and Constants.RAGE_BAIT then
+        table.insert(projectiles, Projectile.new(muzzleX, muzzleY, self.angle, "rage_bait", self.chargeColor, dist))
+        Game.inventory.rageBaitCount = Game.inventory.rageBaitCount - 1
+        if Sound and Sound.fireBomb then Sound.fireBomb(self.chargeColor) end
+        if Sound and Sound.playAuditorLine then Sound.playAuditorLine("RAGE_BAIT_DEPLOYED") end
+        if Sound and Sound.playAuditorLine then Sound.playAuditorLine("RAGE_BAIT_DEPLOYED") end
+    else
+        table.insert(projectiles, Projectile.new(muzzleX, muzzleY, self.angle, "bomb", self.chargeColor, dist))
+        Sound.fireBomb(self.chargeColor)
+    end
     
     -- Stop charging sound (safely handle released sounds)
     if self.chargeSound then
@@ -502,9 +585,6 @@ function Turret:releaseCharge(projectiles)
         end
         self.chargeSound = nil
     end
-    
-    -- Sound effect
-    Sound.fireBomb(self.chargeColor)
     
     self.barrelkick = ANIM_CONF.BARREL_RECOIL
     self.recoil = 25
@@ -535,6 +615,44 @@ function Turret:firePuck(color, projectiles)
     self.recoil = 12
     self.flashTimer = 0.08
     self.chargeColor = color 
+end
+
+function Turret:fireShotgun(color, projectiles)
+    if not Constants.SHOTGUN then return end
+    local visualSlide = -self.lean * ANIM_CONF.LEAN_VISUAL_TILT
+    local forwardOffset = visualSlide - self.barrelkick + 30
+    local cos = math.cos(self.visualAngle)
+    local sin = math.sin(self.visualAngle)
+    local muzzleX = self.visualX + (forwardOffset * cos)
+    local muzzleY = self.visualY + (forwardOffset * sin)
+    local baseAngle = self.visualAngle
+    local cone = Constants.SHOTGUN.CONE_ANGLE
+    local n = Constants.SHOTGUN.PELLET_COUNT
+    for i = 1, n do
+        local spread = (i - (n + 1) / 2) / math.max(1, n - 1) * cone
+        local angle = baseAngle + spread + (math.random() - 0.5) * cone * 0.3
+        table.insert(projectiles, Projectile.new(muzzleX, muzzleY, angle, "shotgun", color))
+    end
+    if Sound and Sound.fireShotgun then Sound.fireShotgun(color) end
+    self.bodyRecoilX = self.bodyRecoilX - math.cos(self.visualAngle) * ANIM_CONF.BODY_RECOIL_FORCE * 0.8
+    self.bodyRecoilY = self.bodyRecoilY - math.sin(self.visualAngle) * ANIM_CONF.BODY_RECOIL_FORCE * 0.8
+    self.barrelkick = ANIM_CONF.BARREL_RECOIL
+    self.recoil = 15
+    self.flashTimer = 0.1
+end
+
+function Turret:fireViral(color, projectiles)
+    local visualSlide = -self.lean * ANIM_CONF.LEAN_VISUAL_TILT
+    local forwardOffset = visualSlide - self.barrelkick + 30
+    local cos = math.cos(self.visualAngle)
+    local sin = math.sin(self.visualAngle)
+    local muzzleX = self.visualX + (forwardOffset * cos)
+    local muzzleY = self.visualY + (forwardOffset * sin)
+    table.insert(projectiles, Projectile.new(muzzleX, muzzleY, self.visualAngle, "viral", color))
+    if Sound and Sound.firePuck then Sound.firePuck(color) end
+    self.barrelkick = ANIM_CONF.BARREL_RECOIL
+    self.recoil = 10
+    self.flashTimer = 0.06
 end
 
 function Turret:draw()
@@ -578,8 +696,15 @@ function Turret:draw()
         targetX = math.max(margin, math.min(Constants.PLAYFIELD_WIDTH - margin, targetX))
         targetY = math.max(margin, math.min(Constants.PLAYFIELD_HEIGHT - margin, targetY))
         
-        if self.chargeColor == "red" then love.graphics.setColor(1, 0.2, 0.2, 0.8)
-        else love.graphics.setColor(0.2, 0.2, 1, 0.8) end
+        -- Yellow reticule when charging rage bait; red/blue for bomb
+        local rageBaitAmmo = (Game and Game.inventory and (Game.inventory.rageBaitCount or 0)) or 0
+        if rageBaitAmmo > 0 and Constants.RAGE_BAIT then
+            love.graphics.setColor(1, 1, 0, 0.8)
+        elseif self.chargeColor == "red" then
+            love.graphics.setColor(1, 0.2, 0.2, 0.8)
+        else
+            love.graphics.setColor(0.2, 0.2, 1, 0.8)
+        end
         
         local pulse = math.sin(love.timer.getTime() * 20) * 4
         love.graphics.setLineWidth(2 * 2)

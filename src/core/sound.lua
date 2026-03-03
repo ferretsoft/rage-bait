@@ -5,8 +5,11 @@ local Sound = {}
 local activeSounds = {}  -- Track active sound sources (oldest at index 1)
 local loopingSounds = {}  -- Track looping sound sources separately
 local musicSource = nil  -- Background music source
+local writehumSource = nil  -- Looping hum when auditor text trace is active (starts at 10s)
+local WRITEHUM_SEEK = 10.0  -- Start playback from 10 seconds into the file
 local masterVolume = 1.0
 local soundsMuted = false  -- Flag to prevent new sounds from playing
+local scheduledSounds = {}  -- { { delay, fn }, ... } for delayed playback (e.g. click-clack)
 
 -- LÖVE has a limit on simultaneous sources (~64). Keep under cap so new sounds (e.g. swarm tones) always play.
 local MAX_ACTIVE_SOUNDS = 52
@@ -28,6 +31,8 @@ local SOUND_CONFIG = {
     
     -- Path to sound files (if using prerecorded mode)
     SOUND_PATH = "assets/sounds/",
+    -- SoundFX folder (mixed formats: coin, shotgun, rapidfire)
+    SOUNDFX_PATH = "assets/soundfx/",
     
     -- Music file path
     MUSIC_PATH = "assets/music.wav",  -- Background music file
@@ -416,13 +421,20 @@ end
 
 -- Sound effect functions for game events
 -- These functions automatically switch between procedural and prerecorded based on MODE
+-- Rapid fire (puck) mode uses soundfx/rapidfire when present; else per-color or procedural
 function Sound.firePuck(color)
-    if SOUND_CONFIG.MODE == "prerecorded" then
+    local rapidfireFile = SOUND_CONFIG.SOUNDFX_PATH .. "rapidfire.wav"
+    if love.filesystem.getInfo(rapidfireFile, "file") then
+        Sound.playFile(rapidfireFile, 0.2, 1.0, false)
+    elseif SOUND_CONFIG.MODE == "prerecorded" then
         local file = SOUND_CONFIG.SOUND_PATH .. "fire_puck_" .. color .. ".ogg"
-        Sound.playFile(file, 0.6, 1.0, false)
+        if love.filesystem.getInfo(file, "file") then
+            Sound.playFile(file, 0.6, 1.0, false)
+        else
+            local freq = color == "red" and 392.00 or 349.23
+            Sound.playTone(freq, 0.05, 0.6, 1.0)
+        end
     else
-        -- Short, sharp tone for puck firing (quantized to F major pentatonic)
-        -- Red: G4 (~392 Hz), Blue: F4 (~349 Hz)
         local freq = color == "red" and 392.00 or 349.23
         Sound.playTone(freq, 0.05, 0.6, 1.0)
     end
@@ -440,6 +452,43 @@ function Sound.fireBomb(color)
     end
 end
 
+-- Shotgun: boom (fire); asset from soundfx when present
+function Sound.fireShotgun(color)
+    local file = SOUND_CONFIG.SOUNDFX_PATH .. "shotgunfire.mp3"
+    if love.filesystem.getInfo(file, "file") then
+        Sound.playFile(file, 0.8, 1.0, false)
+    elseif SOUND_CONFIG.MODE == "prerecorded" then
+        local ogg = SOUND_CONFIG.SOUND_PATH .. "shotgun_fire.ogg"
+        if love.filesystem.getInfo(ogg, "file") then
+            Sound.playFile(ogg, 0.8, 1.0, false)
+        else
+            Sound.fireBomb(color)
+        end
+    else
+        Sound.playNoise(0.12, 0.85, 0.6)
+        local freq = color == "red" and 98.00 or 87.31  -- G2 / F2
+        Sound.playTone(freq, 0.15, 0.7, 0.75)
+    end
+end
+
+function Sound.shotgunReloadReady()
+    if soundsMuted then return end
+    local file = SOUND_CONFIG.SOUNDFX_PATH .. "reload.wav"
+    if love.filesystem.getInfo(file, "file") then
+        Sound.playFile(file, 0.9, 1.0, false)
+    else
+        local ogg = SOUND_CONFIG.SOUND_PATH .. "shotgun_reload.ogg"
+        if love.filesystem.getInfo(ogg, "file") then
+            Sound.playFile(ogg, 0.9, 1.0, false)
+        else
+            Sound.playNoise(0.06, 0.95, 1.2)
+            table.insert(scheduledSounds, { delay = 0.1, fn = function()
+                Sound.playNoise(0.08, 0.9, 0.85)
+            end })
+        end
+    end
+end
+
 function Sound.bombExplode(color)
     if SOUND_CONFIG.MODE == "prerecorded" then
         local file = SOUND_CONFIG.SOUND_PATH .. "bomb_explode_" .. color .. ".ogg"
@@ -448,6 +497,27 @@ function Sound.bombExplode(color)
         -- Explosive sound: noise burst with low, in-scale rumble (D2 ~73.42 Hz)
         Sound.playNoise(0.2, 0.8, 0.5)
         Sound.playTone(73.42, 0.3, 0.6, 0.7)  -- Low rumble on D
+    end
+end
+
+-- Loud countdown beep for rage bait canister (3, 2, 1...)
+function Sound.rageBaitCountdownBeep()
+    if SOUND_CONFIG.MODE == "prerecorded" then
+        -- Use a generic alert if no dedicated file
+        Sound.playTone(880, 0.12, 0.95, 1.0)
+    else
+        Sound.playTone(880, 0.12, 0.95, 1.0)  -- Loud, bright A5
+    end
+end
+
+-- Coin slot sound (insert credit)
+function Sound.playCoinInsert()
+    local file = SOUND_CONFIG.SOUNDFX_PATH .. "coin-slot-load.wav"
+    if love.filesystem.getInfo(file, "file") then
+        Sound.playFile(file, 0.7, 1.0, false)
+    else
+        Sound.playTone(1318, 0.06, 0.7, 1.0)   -- E6
+        Sound.playTone(988, 0.1, 0.6, 0.9)     -- B5, slightly longer
     end
 end
 
@@ -514,6 +584,16 @@ end
 
 -- Update function to clean up finished sounds and cap total for polyphony
 function Sound.update(dt)
+    -- Scheduled delayed sounds (e.g. shotgun reload clack)
+    for i = #scheduledSounds, 1, -1 do
+        local s = scheduledSounds[i]
+        s.delay = s.delay - dt
+        if s.delay <= 0 then
+            if s.fn then s.fn() end
+            table.remove(scheduledSounds, i)
+        end
+    end
+
     -- Voice queue: when current line finishes, play next
     if currentVoiceSource then
         if not currentVoiceSource:isPlaying() then
@@ -575,6 +655,13 @@ function Sound.cleanup()
     
     -- Stop music
     Sound.stopMusic()
+    
+    -- Stop and release writehum
+    Sound.stopWritehum()
+    if writehumSource then
+        pcall(function() writehumSource:release() end)
+        writehumSource = nil
+    end
     
     -- Clear voice line queue and stop current voice
     voiceLineQueue = {}
@@ -719,6 +806,34 @@ function Sound.getMusicVolume()
         return musicSource:getVolume() / masterVolume
     end
     return SOUND_CONFIG.MUSIC_VOLUME
+end
+
+-- Writehum: play from 10s mark only when auditor text trace is active (life lost / game over)
+function Sound.startWritehum()
+    if soundsMuted then return end
+    local path = SOUND_CONFIG.SOUNDFX_PATH .. "writehum.mp3"
+    if not love.filesystem.getInfo(path, "file") then return end
+    if not writehumSource then
+        local ok, src = pcall(love.audio.newSource, path, "stream")
+        if not ok or not src then return end
+        writehumSource = src
+        writehumSource:setLooping(true)
+        writehumSource:setVolume(0.5 * SOUND_CONFIG.SFX_VOLUME * masterVolume)
+    end
+    if not writehumSource:isPlaying() then
+        writehumSource:seek(WRITEHUM_SEEK)
+        writehumSource:play()
+    end
+end
+
+function Sound.stopWritehum()
+    if writehumSource then
+        pcall(function()
+            if writehumSource:isPlaying() then
+                writehumSource:stop()
+            end
+        end)
+    end
 end
 
 return Sound

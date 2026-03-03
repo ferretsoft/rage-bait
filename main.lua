@@ -66,7 +66,10 @@ Game = {
     effects = {}, 
     hazards = {},
     explosionZones = {}, 
+    deployedRageBaits = {},
+    deployedHashtags = {},
     turret = nil,
+    inventory = { rageBaitCount = 0, hashtagAmmo = 0 },
     
     -- Core gameplay state
     score = 0,
@@ -78,6 +81,7 @@ Game = {
     powerupSpawnTimer = 0,
     timeScale = 1.0,  -- Current time scale (1.0 = normal, 0.0 = frozen)
     previousEngagementAtMax = false,  -- Track if engagement was at max last frame (prevents retriggering)
+    rageBaitFireCooldown = 0,  -- Cooldown after firing rage bait (both buttons)
     
     -- Assets
     assets = {
@@ -133,6 +137,7 @@ Game = {
         pointMultiplierFlash = 0,
         pointMultiplierText = 0,
         rapidFireText = 0,
+        shotgunText = 0,
         glitchText = 0,
         ready = 0,
     },
@@ -210,6 +215,10 @@ Game = {
     rapidFire = {
         sparks = {},  -- Spark particles for rapid fire effect
     },
+    -- Shotgun announcement effect
+    shotgun = {
+        sparks = {},
+    },
     
     -- Name entry
     nameEntry = {
@@ -239,6 +248,14 @@ Game = {
     
     -- High scores
     highScores = {},  -- List of high scores {name, score}
+    
+    -- Credits (arcade: insert coin to add, start consumes one; max 1 for now)
+    credits = 0,
+    
+    -- Settings
+    settings = {
+        lowGraphics = false,  -- When true, skip plexiglass overlay and related passes
+    },
     
     -- Rendering
     crtOutputCanvas = nil,  -- Canvas to capture CRT output for fullscreen scaling
@@ -296,11 +313,60 @@ local function collectPowerUp(powerup)
                 color = "gold", alpha = 1.0, timer = 0.5
             })
             
-            -- Sound effect
+            -- Sound effect (dynamic music switches to Part 4 automatically)
             Sound.powerupCollect("puck")
             Sound.playAuditorLine("POWER_UP_ACQUIRED")
             Webcam.showComment("powerup_collected")
         end
+    elseif powerup.powerupType == "shotgun" then
+        if Game.turret then
+            Game.turret:activateShotgunMode(Constants.SHOTGUN.DURATION)
+            Game.timers.shotgunText = 3.0
+            Game.shake = math.max(Game.shake, 1.2)
+            local centerX = Constants.SCREEN_WIDTH / 2
+            local centerY = Constants.SCREEN_HEIGHT / 2 - 100
+            Game.shotgun.sparks = ParticleSystem.createSparks(
+                centerX, centerY,
+                Constants.UI.SPARK_COUNT_MULTIPLIER,
+                Constants.UI.SPARK_SPEED_MIN,
+                Constants.UI.SPARK_SPEED_MAX,
+                Constants.UI.SPARK_SIZE_MIN,
+                Constants.UI.SPARK_SIZE_MAX,
+                Constants.UI.SPARK_LIFETIME
+            )
+            table.insert(Game.effects, {
+                type = "explosion",
+                x = px, y = py,
+                radius = 0, maxRadius = 80,
+                color = "gold", alpha = 1.0, timer = 0.4
+            })
+            Sound.powerupCollect("puck")
+            Webcam.showComment("powerup_collected")
+        end
+    elseif powerup.powerupType == "viral" then
+        if Game.turret then
+            Game.turret:activateViralMode(Constants.VIRAL.DURATION)
+            Game.shake = math.max(Game.shake, 1.0)
+            table.insert(Game.effects, {
+                type = "explosion",
+                x = px, y = py,
+                radius = 0, maxRadius = 70,
+                color = "gold", alpha = 1.0, timer = 0.4
+            })
+            Sound.powerupCollect("puck")
+            Webcam.showComment("powerup_collected")
+        end
+    elseif powerup.powerupType == "rage_bait" then
+        Game.inventory.rageBaitCount = (Game.inventory.rageBaitCount or 0) + 1
+        table.insert(Game.effects, {
+            type = "explosion",
+            x = px, y = py,
+            radius = 0, maxRadius = 60,
+            color = "gold", alpha = 1.0, timer = 0.35
+        })
+        -- Rage bait (truth bomb): no power-up music, just collect SFX
+        Sound.powerupCollect("puck")
+        Webcam.showComment("powerup_collected")
     end
 end
 
@@ -311,8 +377,41 @@ local function beginContact(a, b, coll)
     local objB = b:getUserData()
     if not objA or not objB then return end
 
-    -- CASE 1: UNIT vs UNIT (Bouncing & Damage)
+    -- CASE 1: UNIT vs UNIT (Bouncing & Damage, or Evangelist converting neutral)
     if objA.type == "unit" and objB.type == "unit" then
+        local u1, u2 = objA, objB
+        local now = love.timer.getTime()
+        local aEvangelist = u1.evangelistUntil and u1.evangelistUntil > now
+        local bEvangelist = u2.evangelistUntil and u2.evangelistUntil > now
+        -- Evangelist + neutral: convert to evangelist's alignment; new evangelist with generational loss -1 sec (0 = no evangelist)
+        if aEvangelist and u2.state == "neutral" then
+            u2.alignment = u1.alignment
+            u2.state = "passive"
+            u2.conversionTime = now
+            u2.isolationTimer = 0
+            local remaining = (u1.evangelistUntil or 0) - now
+            local newDuration = remaining - 1
+            if newDuration > 0 then
+                u2.evangelistUntil = now + newDuration
+            else
+                u2.evangelistUntil = 0
+            end
+            return
+        end
+        if bEvangelist and u1.state == "neutral" then
+            u1.alignment = u2.alignment
+            u1.state = "passive"
+            u1.conversionTime = now
+            u1.isolationTimer = 0
+            local remaining = (u2.evangelistUntil or 0) - now
+            local newDuration = remaining - 1
+            if newDuration > 0 then
+                u1.evangelistUntil = now + newDuration
+            else
+                u1.evangelistUntil = 0
+            end
+            return
+        end
         if objA.state == "neutral" or objB.state == "neutral" then return end
         if objA.alignment == objB.alignment then return end
         
@@ -345,6 +444,21 @@ local function beginContact(a, b, coll)
             end
             Sound.unitHit()
             proj:die()
+        elseif proj.weaponType == "shotgun" then
+            local wasNeutral = unit.state == "neutral"
+            unit:hit("puck", proj.color)
+            if wasNeutral and unit.state == "passive" then
+                Game.hasUnitBeenConverted = true
+            end
+            Sound.unitHit()
+            proj:die()
+        elseif proj.weaponType == "viral" then
+            -- Viral only affects units of the same color (red viral -> red units, etc.)
+            if unit.alignment == proj.color then
+                unit:convertToEvangelist(proj.color, Constants.VIRAL.EVANGELIST_DURATION)
+                Sound.unitHit()
+                proj:die()
+            end
         end
     end
     
@@ -713,6 +827,38 @@ function love.load()
         fixture:setCategory(Constants.PHYSICS.ZONE); fixture:setUserData({ type = "zone", color = data.color })
         table.insert(Game.explosionZones, {x = zoneX, y = zoneY, radius = data.radius, color = data.color, timer = Constants.EXPLOSION_DURATION, body = body})
     end)
+    -- Rage bait canister landed: add to deployed list so it attracts for COUNTDOWN seconds then explodes
+    Event.on("rage_bait_landed", function(data)
+        local rb = Constants.RAGE_BAIT
+        if not rb then return end
+        local margin = math.max(rb.ENRAGE_RADIUS or 350, 50)
+        local x = math.max(margin, math.min(Constants.PLAYFIELD_WIDTH - margin, data.x))
+        local y = math.max(margin, math.min(Constants.PLAYFIELD_HEIGHT - margin, data.y))
+        local countdown = rb.COUNTDOWN or 3.0
+        table.insert(Game.deployedRageBaits, {
+            x = x, y = y,
+            radius = rb.ENRAGE_RADIUS,
+            timer = countdown,
+            pending = false,
+            lastBeepCeil = math.ceil(countdown) + 1,  -- for countdown beep/blink
+        })
+    end)
+    Event.on("hashtag_landed", function(data)
+        local v = Constants.VIRAL
+        if not v then return end
+        local margin = math.max(v.CONVERT_RADIUS or 45, 50)
+        local x = math.max(margin, math.min(Constants.PLAYFIELD_WIDTH - margin, data.x))
+        local y = math.max(margin, math.min(Constants.PLAYFIELD_HEIGHT - margin, data.y))
+        table.insert(Game.deployedHashtags, {
+            x = x, y = y,
+            color = data.color or "red",
+            attractRadius = v.ATTRACT_RADIUS,
+            convertRadius = v.CONVERT_RADIUS,
+            timer = v.DEPLOY_DURATION,
+            smoke = {},
+            smokeSpawnAccum = 0
+        })
+    end)
     Event.on("unit_killed", function(data)
         Game.score = Game.score + (Constants.SCORE_KILL * Game.pointMultiplier.value); Engagement.add(Constants.ENGAGEMENT_REFILL_KILL); Game.shake = math.max(Game.shake, 0.2)
         -- Use position from event data (captured before body destruction)
@@ -765,8 +911,10 @@ function love.load()
     end)
 end
 
--- Start the game (called when coin is inserted)
+-- Start the game (requires at least one credit; consumes one)
 function startGame()
+    if (Game.credits or 0) < 1 then return end
+    Game.credits = Game.credits - 1
     -- Unmute sounds for new game
     Sound.unmute()
     Game.modes.attract = false
@@ -787,6 +935,10 @@ function startGame()
     -- Reset joystick button states
     Game.joystick.button1Pressed = false
     Game.joystick.button2Pressed = false
+    
+    -- Reset inventory for new game (rage bait / hashtag persist across level restart / life lost only)
+    Game.inventory.rageBaitCount = 0
+    Game.inventory.hashtagAmmo = 0
     
     -- Start intro video first, then intro screen
     if Game.assets.introVideo then
@@ -885,6 +1037,8 @@ function startGameplay()
     Game.pointMultiplier.valueSparks = {}
     Game.timers.rapidFireText = 0
     Game.rapidFire.sparks = {}
+    Game.timers.shotgunText = 0
+    Game.shotgun.sparks = {}
     Game.previousEngagementAtMax = false
     Game.voiceLastIncreaseEngagementTime = nil
     Game.previousEnragedCount = 0
@@ -1061,6 +1215,12 @@ end
 local function clearWeaponUpgrades()
     Game.isUpgraded = false
     Constants.PUCK_LIFETIME = Constants.PUCK.LIFETIME
+    if Game.turret then
+        Game.turret.shotgunModeTimer = 0
+        Game.turret.shotgunFireTimer = 0
+        Game.turret.viralModeTimer = 0
+        Game.turret.viralFireTimer = 0
+    end
 end
 
 -- Restart the current level after losing a life
@@ -1138,6 +1298,7 @@ function returnToAttractMode()
     Game.modes.intro = false
     Game.modes.attract = true
     Game.modes.attractTimer = 0
+    Game.timers.attract = 0  -- Reset so 15s auto-demo countdown starts from 0
     
     -- Stop and reset video if it's playing
     if Game.assets.introVideo then
@@ -2173,6 +2334,23 @@ function drawReadyScreen()
             for _, p in ipairs(Game.projectiles) do p:draw() end
             for _, pup in ipairs(Game.powerups) do pup:draw() end
             
+            for _, r in ipairs(Game.deployedRageBaits) do
+                if r.timer and r.timer > 0 then
+                    love.graphics.setColor(1, 0.6, 0.1, 0.95)
+                    love.graphics.circle("fill", r.x, r.y, Constants.RAGE_BAIT and Constants.RAGE_BAIT.CANISTER_RADIUS or 12)
+                    love.graphics.setColor(0.4, 0.2, 0.05, 1)
+                    love.graphics.circle("line", r.x, r.y, Constants.RAGE_BAIT and Constants.RAGE_BAIT.CANISTER_RADIUS or 12)
+                    local count = math.ceil(r.timer)
+                    if count > 0 and Game.fonts and Game.fonts.large then
+                        love.graphics.setColor(1, 1, 1, 1)
+                        love.graphics.setFont(Game.fonts.large)
+                        local tw = Game.fonts.large:getWidth(tostring(count))
+                        love.graphics.print(tostring(count), r.x - tw / 2, r.y - 28)
+                    end
+                end
+            end
+            love.graphics.setColor(1, 1, 1, 1)
+            
             for _, e in ipairs(Game.effects) do
                 if e.type == "explosion" then
                     love.graphics.setLineWidth(3)
@@ -2260,13 +2438,17 @@ function drawReadyScreen()
         end
     end
     
-    local centerX, centerY = DrawingHelpers.getScreenCenter()
+    -- Center text over the playfield (works for both windowed and fullscreen)
+    local centerX = Constants.SCREEN_WIDTH / 2
+    local playfieldTop = Constants.OFFSET_Y
+    local playfieldBottom = Constants.OFFSET_Y + Constants.PLAYFIELD_HEIGHT
+    local centerY = (playfieldTop + playfieldBottom) / 2
     
     if Game.ready.phase == 1 then
         -- Phase 1: Fade out black overlay (show frozen game)
         -- Text not shown yet
     elseif Game.ready.phase == 2 then
-        -- Phase 2: Show "GET READY" text
+        -- Phase 2: Show "GET READY" text (centered)
         local elapsed = Game.timers.ready - Constants.TIMING.READY_FADE_OUT_DURATION
         local textAlpha = math.min(elapsed / 0.3, 1.0)  -- Fade in over 0.3s
         
@@ -2281,13 +2463,15 @@ function drawReadyScreen()
         local text = "GET READY"
         local textWidth = Game.fonts.multiplierGiant:getWidth(text)
         local textHeight = Game.fonts.multiplierGiant:getHeight()
+        local textX = centerX - textWidth / 2
+        local textY = centerY - textHeight / 2
         
-        DrawingHelpers.drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
+        DrawingHelpers.drawTextWithOutline(text, textX, textY, r, g, b, textAlpha)
         
         -- Draw sparks
         ParticleSystem.draw(Game.ready.sparks)
     elseif Game.ready.phase == 3 then
-        -- Phase 3: Show "GO!" text
+        -- Phase 3: Show "GO!" text (centered)
         local elapsed = Game.timers.ready - Constants.TIMING.READY_FADE_OUT_DURATION - Constants.TIMING.READY_GET_READY_DURATION
         local textAlpha = math.min(elapsed / 0.2, 1.0)  -- Fade in quickly
         
@@ -2302,20 +2486,27 @@ function drawReadyScreen()
         local text = "GO!"
         local textWidth = Game.fonts.multiplierGiant:getWidth(text)
         local textHeight = Game.fonts.multiplierGiant:getHeight()
-        local centerX, centerY = DrawingHelpers.getScreenCenter()
+        local textX = centerX - textWidth / 2 + 5  -- Slight right shift for better visual centering
+        local textY = centerY - textHeight / 2
         
-        DrawingHelpers.drawTextWithOutline(text, centerX - textWidth / 2, centerY - textHeight / 2, r, g, b, textAlpha)
+        DrawingHelpers.drawTextWithOutline(text, textX, textY, r, g, b, textAlpha)
         
         -- Draw sparks
         ParticleSystem.draw(Game.ready.sparks)
     end
 end
 
-
 function love.update(dt)
     -- Don't quit on escape if dynamic music sandbox is open
     if not DynamicMusic.isActive() and love.keyboard.isDown("escape") then 
         love.event.quit() 
+    end
+    
+    -- Writehum: play from 10s mark only when auditor text trace is active (life lost / game over)
+    if Game and (Game.modes.lifeLostAuditor or Game.modes.gameOver) then
+        Sound.startWritehum()
+    else
+        Sound.stopWritehum()
     end
     
     -- Run grid fading and zone/hazard/effect timer updates every frame (including game over / life lost)
@@ -2453,6 +2644,7 @@ function love.update(dt)
                 Game.assets.logoFanfarePlayed = false
                 Game.modes.attract = true
                 Game.modes.attractTimer = 0
+                Game.timers.attract = 0  -- Reset so 15s auto-demo countdown starts from 0
                 -- Start playing intro music when transitioning to attract mode
                 Sound.playIntroMusic()
             end
@@ -2481,6 +2673,11 @@ function love.update(dt)
         -- Pause attract mode updates if dynamic music sandbox is open
         if not DynamicMusic.isActive() then
             AttractMode.update(dt)
+            -- Auto-start demo after 15 seconds on attract screen
+            if Game.timers.attract >= 15 then
+                DemoMode.start()
+                Game.timers.attract = 0
+            end
         end
         DynamicMusic.update(dt)
         return  -- Don't update game logic in attract mode
@@ -3198,8 +3395,15 @@ function love.update(dt)
             local px = math.random(50, Constants.PLAYFIELD_WIDTH - 50)
             -- Clamp powerup X position to playfield bounds (accounting for radius)
             local clampedX = math.max(Constants.POWERUP_RADIUS, math.min(Constants.PLAYFIELD_WIDTH - Constants.POWERUP_RADIUS, px))
-            -- Only spawn puck powerups (bumpers removed)
-            table.insert(Game.powerups, PowerUp.new(clampedX, -50, "puck"))
+            -- Weighted random: puck 55%, shotgun 25%, viral 15%, rage_bait 5%
+            local r = math.random(1, 100)
+            local ptype = "puck"
+            if r <= 55 then ptype = "puck"
+            elseif r <= 80 then ptype = "shotgun"
+            elseif r <= 95 then ptype = "viral"
+            else ptype = "rage_bait"
+            end
+            table.insert(Game.powerups, PowerUp.new(clampedX, -50, ptype))
         end
     end
 
@@ -3367,6 +3571,10 @@ function love.update(dt)
             -- Update rapid fire spark particles
             ParticleSystem.update(Game.rapidFire.sparks, dt, Constants.UI.SPARK_GRAVITY, Constants.UI.SPARK_FADE_RATE_MULTIPLIER)
         end
+        if Game.timers.shotgunText > 0 then
+            Game.timers.shotgunText = Game.timers.shotgunText - dt
+            ParticleSystem.update(Game.shotgun.sparks, dt, Constants.UI.SPARK_GRAVITY, Constants.UI.SPARK_FADE_RATE_MULTIPLIER)
+        end
         
         if engagementPct < 0.25 and math.random() < 0.01 then  -- 1% chance per frame when low
             Webcam.showComment("engagement_low")
@@ -3422,7 +3630,12 @@ function love.update(dt)
         if Game.modes.demo then
             DemoMode.updateAI(dt)
         end
-        Game.turret:update(dt, Game.projectiles, Game.isUpgraded) 
+        Game.turret:update(dt, Game.projectiles, Game.isUpgraded)
+        -- Shotgun reload click-clack: trigger from main so it always plays (turret sets shotgunWasReloading when timer hits 0)
+        if not Game.modes.demo and Game.turret.shotgunModeTimer > 0 and Game.turret.shotgunWasReloading and Game.turret.shotgunFireTimer <= 0 then
+            if Sound and Sound.shotgunReloadReady then Sound.shotgunReloadReady() end
+            Game.turret.shotgunWasReloading = false
+        end
     end
     
     -- Update units (swap-and-pop for dead removal). Freeze movement in demo except step 4.
@@ -3432,7 +3645,7 @@ function love.update(dt)
         if Game.modes.demo then
             -- Step 4: Allow full unit updates to show enraged unit attacking
             if Game.demo.step == 4 then
-                u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret)
+                u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret, Game.deployedRageBaits)
             -- In demo mode, freeze unit movement but allow state changes
             elseif not u.isDead then
                 -- Freeze unit velocity to prevent wandering
@@ -3472,7 +3685,7 @@ function love.update(dt)
             end
         else
             -- Normal gameplay: full unit update
-            u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret)
+            u:update(gameDt, Game.units, Game.hazards, Game.explosionZones, Game.turret, Game.deployedRageBaits)
         end
         if u.isDead then
             Game.units[ui] = Game.units[#Game.units]
@@ -3491,6 +3704,164 @@ function love.update(dt)
             Game.projectiles[#Game.projectiles] = nil
         else
             proji = proji + 1
+        end
+    end
+    
+    -- Deployed rage bait canisters: countdown starts when fired; when timer hits 0 and canister has landed, enrage red/blue in radius
+    local rb = Constants.RAGE_BAIT
+    if rb and not Game.modes.demo then
+        local rageDt = (gameDt and gameDt > 0) and gameDt or dt
+        for i = #Game.deployedRageBaits, 1, -1 do
+            local r = Game.deployedRageBaits[i]
+            if type(r.timer) ~= "number" then r.timer = rb.COUNTDOWN or 5.0 end
+            r.timer = r.timer - rageDt
+            -- Countdown beep and blink when crossing each second (3, 2, 1)
+            if r.timer > 0 then
+                local ceil = math.ceil(r.timer)
+                local lastCeil = r.lastBeepCeil or 99
+                if ceil < lastCeil and ceil >= 1 and Sound and Sound.rageBaitCountdownBeep then
+                    Sound.rageBaitCountdownBeep()
+                    r.blinkUntil = love.timer.getTime() + 0.2
+                end
+                r.lastBeepCeil = ceil
+            end
+            if r.timer <= 0 then
+                if not r.pending then
+                    -- Start shockwave: expand over real time, enrage units as wave passes, ramp from extreme slow-mo back to normal
+                    local waveDur = rb.SHOCKWAVE_DURATION or 1.6
+                    Game.rageBaitShockwave = {
+                        x = r.x, y = r.y,
+                        maxRadius = r.radius,
+                        radius = 0,
+                        duration = waveDur,
+                        elapsed = 0,
+                    }
+                    Time.scale = 0.05
+                    Time.targetScale = 0.05
+                    Time.timer = nil  -- don't auto-restore; we'll drive scale from shockwave progress
+                    Game.shake = math.max(Game.shake, 0.8)  -- initial hit as shockwave emerges
+                end
+                table.remove(Game.deployedRageBaits, i)
+            end
+        end
+    end
+    
+    -- Rage bait shockwave: expand in real time, enrage units as wave passes, ramp time scale back to normal
+    if Game.rageBaitShockwave and not Game.modes.demo then
+        local sw = Game.rageBaitShockwave
+        sw.elapsed = sw.elapsed + dt  -- use raw dt so expansion is real-time
+        local progress = math.min(1.0, sw.elapsed / sw.duration)
+        sw.radius = progress * sw.maxRadius
+        
+        -- Enrage units as the shockwave passes over them
+        for _, u in ipairs(Game.units) do
+            if not u.isDead and u.state ~= "neutral" then
+                local ux, uy = u.body:getPosition()
+                local dx = sw.x - ux
+                local dy = sw.y - uy
+                if dx*dx + dy*dy < sw.radius * sw.radius then
+                    u:enrage()
+                end
+            end
+        end
+        
+        -- Ramp from extreme slow-mo (0.05) back to normal (1.0) as the wave spreads
+        local timeScale = 0.05 + (1.0 - 0.05) * progress
+        Time.scale = timeScale
+        Time.targetScale = timeScale
+        
+        if progress >= 1.0 then
+            table.insert(Game.effects, { type = "explosion", x = sw.x, y = sw.y, radius = 0, maxRadius = sw.maxRadius, color = "gold", alpha = 1.0, timer = 0.5 })
+            Game.shake = math.max(Game.shake, 2.0)
+            if Sound and Sound.bombExplode then Sound.bombExplode("red") end
+            Time.targetScale = 1.0
+            Game.rageBaitShockwave = nil
+        end
+    end
+    
+    -- Deployed hashtags: attract same-color (wider radius + falloff), convert on touch; smoke particles; disable after 4s
+    local v = Constants.VIRAL
+    if v and not Game.modes.demo and Game.deployedHashtags then
+        for i = #Game.deployedHashtags, 1, -1 do
+            local h = Game.deployedHashtags[i]
+            h.timer = h.timer - gameDt
+            if h.timer <= 0 then
+                table.remove(Game.deployedHashtags, i)
+            else
+                local hx, hy = h.x, h.y
+                local attractR = h.attractRadius or v.ATTRACT_RADIUS
+                local convertR = h.convertRadius or v.CONVERT_RADIUS
+                local falloff = v.ATTRACT_FALLOFF or 1.5
+                -- Attract same-color units only (no neutrals); falloff toward edge; strong force so it overrides other movement
+                for _, u in ipairs(Game.units) do
+                    if not u.isDead and u.body and u.alignment == h.color then
+                        local ux, uy = u.body:getPosition()
+                        local dx = hx - ux
+                        local dy = hy - uy
+                        local distSq = dx * dx + dy * dy
+                        if distSq < (attractR * attractR) and distSq > 4 then
+                            local dist = math.sqrt(distSq)
+                            local t = math.min(1, dist / attractR)
+                            local factor = math.max(0, 1 - math.pow(t, falloff))
+                            local force = u.body:getMass() * 2200 * factor
+                            u.body:applyForce((dx / dist) * force, (dy / dist) * force)
+                        end
+                        if distSq < (convertR * convertR) then
+                            u:convertToEvangelist(h.color, v.EVANGELIST_DURATION)
+                        end
+                    end
+                end
+                -- Smoke: spawn new particles continuously, update existing (move, grow, fade)
+                if not h.smoke then h.smoke = {} end
+                h.smokeSpawnAccum = (h.smokeSpawnAccum or 0) + gameDt
+                while h.smokeSpawnAccum >= 0.06 do
+                    h.smokeSpawnAccum = h.smokeSpawnAccum - 0.06
+                    for _ = 1, 2 do
+                        local angle = love.math.random() * math.pi * 2
+                        local speed = 25 + love.math.random() * 35
+                        local jitter = (love.math.random() - 0.5) * 8
+                        table.insert(h.smoke, {
+                            x = hx + jitter, y = hy + jitter,
+                            vx = math.cos(angle) * speed, vy = math.sin(angle) * speed,
+                            r = 6 + love.math.random() * 8,
+                            alpha = 0.35 + love.math.random() * 0.25,
+                            life = 0, maxLife = 1.8
+                        })
+                    end
+                end
+                local si = 1
+                while si <= #h.smoke do
+                    local p = h.smoke[si]
+                    p.x = p.x + p.vx * gameDt
+                    p.y = p.y + p.vy * gameDt
+                    p.r = p.r + 18 * gameDt
+                    p.life = p.life + gameDt
+                    p.alpha = p.alpha * (1 - gameDt * 0.6)
+                    if p.life >= p.maxLife or p.alpha <= 0.02 then
+                        h.smoke[si] = h.smoke[#h.smoke]
+                        h.smoke[#h.smoke] = nil
+                    else
+                        si = si + 1
+                    end
+                end
+                -- Smoke converts same-color units to evangelist on contact (unit touches any smoke particle)
+                local unitRad = Constants.UNIT_RADIUS or 10
+                for _, p in ipairs(h.smoke or {}) do
+                    if p.alpha and p.alpha > 0.05 then
+                        for _, u in ipairs(Game.units) do
+                            if not u.isDead and u.body and u.alignment == h.color then
+                                local ux, uy = u.body:getPosition()
+                                local dx = p.x - ux
+                                local dy = p.y - uy
+                                local touchR = p.r + unitRad
+                                if dx*dx + dy*dy < touchR * touchR then
+                                    u:convertToEvangelist(h.color, v.EVANGELIST_DURATION)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
         end
     end
     
@@ -3630,6 +4001,83 @@ function drawGame()
         for _, u in ipairs(Game.units) do u:draw() end
         for _, p in ipairs(Game.projectiles) do p:draw() end
         for _, pup in ipairs(Game.powerups) do pup:draw() end
+        
+        -- Deployed rage bait canisters (countdown + canister)
+        for _, r in ipairs(Game.deployedRageBaits) do
+            if r.timer and r.timer > 0 then
+                local R = Constants.RAGE_BAIT and Constants.RAGE_BAIT.CANISTER_RADIUS or 12
+                local blinking = r.blinkUntil and love.timer.getTime() < r.blinkUntil
+                if blinking then
+                    love.graphics.setColor(1, 1, 1, 1)
+                    love.graphics.circle("fill", r.x, r.y, R)
+                    love.graphics.setLineWidth(4)
+                    love.graphics.setColor(1, 0.9, 0.3, 1)
+                    love.graphics.circle("line", r.x, r.y, R)
+                else
+                    love.graphics.setColor(1, 0.6, 0.1, 0.95)
+                    love.graphics.circle("fill", r.x, r.y, R)
+                    love.graphics.setColor(0.4, 0.2, 0.05, 1)
+                    love.graphics.circle("line", r.x, r.y, R)
+                end
+                love.graphics.setLineWidth(1)
+            end
+        end
+        -- Rage bait shockwave: expanding ring from canister
+        if Game.rageBaitShockwave then
+            local sw = Game.rageBaitShockwave
+            if sw.radius > 0 then
+                local progress = sw.elapsed / sw.duration
+                local alpha = 0.9 * (1.0 - progress * 0.5)  -- fade slightly as it expands
+                love.graphics.setLineWidth(4)
+                love.graphics.setColor(1, 0.85, 0.2, alpha)
+                love.graphics.circle("line", sw.x, sw.y, sw.radius, 64)
+                love.graphics.setColor(1, 0.9, 0.4, alpha * 0.25)
+                love.graphics.circle("fill", sw.x, sw.y, sw.radius, 64)
+            end
+        end
+        -- Deployed hashtags: smoke (toxic-style, colored), then zone + symbol; disable after 4s
+        local v = Constants.VIRAL
+        if v then
+            for _, h in ipairs(Game.deployedHashtags or {}) do
+                if h.timer and h.timer > 0 then
+                    local baseR, baseG, baseB = (h.color == "red") and 0.85 or 0.2, 0.2, (h.color == "blue") and 0.85 or 0.2
+                    -- Smoke particles: draw like toxic sludge (base circles + additive glow), hashtag color, move and grow
+                    if h.smoke and #h.smoke > 0 then
+                        love.graphics.setBlendMode("alpha")
+                        for _, p in ipairs(h.smoke) do
+                            local seg = math.max(12, math.min(24, math.floor(p.r)))
+                            love.graphics.setColor(baseR, baseG, baseB, p.alpha * 0.9)
+                            love.graphics.circle("fill", p.x, p.y, p.r, seg)
+                            -- Second blob offset for irregular look (like toxic lumps)
+                            love.graphics.setColor(baseR * 0.7, baseG * 0.7, baseB * 0.7, p.alpha * 0.5)
+                            love.graphics.circle("fill", p.x + p.r * 0.2, p.y - p.r * 0.15, p.r * 0.6, seg)
+                        end
+                        love.graphics.setBlendMode("add")
+                        for _, p in ipairs(h.smoke) do
+                            if p.alpha >= 0.1 then
+                                love.graphics.setColor(baseR * 0.4, baseG * 0.4, baseB * 0.4, p.alpha * 0.35)
+                                love.graphics.circle("fill", p.x - p.r * 0.15, p.y - p.r * 0.15, p.r * 0.5, 16)
+                            end
+                        end
+                        love.graphics.setBlendMode("alpha")
+                    end
+                    local R = h.convertRadius or v.CONVERT_RADIUS
+                    local r, g, b = (h.color == "red") and 1 or 0.2, 0.2, (h.color == "blue") and 1 or 0.2
+                    love.graphics.setColor(r, g, b, 0.35)
+                    love.graphics.circle("fill", h.x, h.y, R)
+                    love.graphics.setColor(r, g, b, 0.8)
+                    love.graphics.circle("line", h.x, h.y, R)
+                    local W = math.max(3, 5)
+                    love.graphics.setLineWidth(W)
+                    love.graphics.setColor(r, g, b, 1)
+                    love.graphics.line(h.x - R*0.6, h.y - R*0.3, h.x + R*0.6, h.y - R*0.3)
+                    love.graphics.line(h.x - R*0.6, h.y + R*0.3, h.x + R*0.6, h.y + R*0.3)
+                    love.graphics.line(h.x - R*0.35, h.y - R, h.x - R*0.35, h.y + R)
+                    love.graphics.line(h.x + R*0.35, h.y - R, h.x + R*0.35, h.y + R)
+                end
+            end
+        end
+        love.graphics.setColor(1, 1, 1, 1)
         
         for _, e in ipairs(Game.effects) do
             if e.type == "explosion" then
@@ -3958,6 +4406,8 @@ function love.draw()
         love.graphics.setCanvas()
         love.graphics.push()
         love.graphics.scale(scaleX, scaleY)
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setBlendMode("alpha")
         love.graphics.draw(Game.fullscreenCompositeCanvas, 0, 0)
         love.graphics.pop()
         return true
@@ -3973,6 +4423,11 @@ function love.draw()
     -- sceneCanvas: canvas containing the scene before plexi (for bright pixel detection)
     -- drawAtBaseRes: if true (fullscreen composite path), always draw at 1080x1920
     local function drawPlexiOverlay(sceneCanvas, drawAtBaseRes)
+        -- Skip plexi overlay entirely in low graphics mode
+        if Game.settings and Game.settings.lowGraphics then
+            return
+        end
+        
         if Game.plexi then
             -- Calculate plexi scale (15% larger)
             local plexiScaleX, plexiScaleY = DrawingHelpers.calculatePlexiScale()
@@ -4837,8 +5292,8 @@ function drawHUD()
     
     -- Draw point multiplier announcement (giant flashing "2X" with sparks) - skip in demo mode
     if Game.pointMultiplier.valueActive and not Game.modes.demo then
-        local centerX, centerY = DrawingHelpers.getScreenCenter()
-        centerY = centerY - 100
+        local drawW, drawH = love.graphics.getDimensions()
+        local centerX, centerY = drawW / 2, drawH / 2 - 100
         
         -- Draw spark particles
         ParticleSystem.draw(Game.pointMultiplier.valueSparks)
@@ -4850,13 +5305,14 @@ function drawHUD()
             flashAlpha = 0.6 + 0.4 * (math.sin(Game.timers.pointMultiplierFlash * 12) + 1) / 2
         end
         
-        -- Use cached giant font for "2X" text
+        -- Use cached giant font for "2X" text (centered)
         love.graphics.setFont(Game.fonts.announcementGiant)
         
         local multiplierText = Game.pointMultiplier.value .. "X"
         local multiplierWidth = Game.fonts.announcementGiant:getWidth(multiplierText)
+        local multiplierHeight = Game.fonts.announcementGiant:getHeight()
         local multiplierX = centerX - multiplierWidth / 2
-        local multiplierY = centerY - Constants.UI.FONT_ANNOUNCEMENT_GIANT / 2
+        local multiplierY = centerY - multiplierHeight / 2
         
         -- Flashy colors (gold/yellow pulsing)
         local flash = (math.sin(love.timer.getTime() * 8) + 1) / 2
@@ -4886,25 +5342,21 @@ function drawHUD()
         end
     end
     
-    -- Draw rapid fire announcement (giant flashing "RAPID FIRE" with sparks)
+    -- Draw rapid fire announcement (giant flashing "RAPID FIRE" with sparks, centered)
     if Game.timers.rapidFireText > 0 then
-        local centerX = Constants.SCREEN_WIDTH / 2
-        -- Position rapid fire text above multiplier text if multiplier is active
-        local centerY
+        local drawW, drawH = love.graphics.getDimensions()
+        local centerX, centerY = drawW / 2, drawH / 2
+        -- Position rapid fire text above center when multiplier is active, else centered
         if Game.pointMultiplier.valueActive then
-            -- Place above multiplier text (multiplier is at SCREEN_HEIGHT/2 - 100, with 120px font)
-            -- Rapid fire should be about 150px above the multiplier text center
-            centerY = Constants.SCREEN_HEIGHT / 2 - 250
+            centerY = centerY - 250
         else
-            -- Same position as multiplier when multiplier is not active
-            centerY = Constants.SCREEN_HEIGHT / 2 - 100
+            centerY = centerY - 100
         end
         
         -- Draw spark particles (adjust their visual position if multiplier is active)
         local sparkOffsetY = 0
         if Game.pointMultiplier.valueActive then
-            -- Adjust spark positions to match the rapid fire text position above multiplier
-            sparkOffsetY = -150  -- Move sparks up by 150px to match text position
+            sparkOffsetY = -150
         end
         ParticleSystem.draw(Game.rapidFire.sparks, sparkOffsetY)
         
@@ -4912,22 +5364,19 @@ function drawHUD()
         local flashAlpha = 1.0
         local flashTimer = 3.0 - Game.timers.rapidFireText
         if flashTimer < 2.0 then
-            -- Flash animation during first 2 seconds
             flashAlpha = 0.6 + 0.4 * (math.sin(flashTimer * 12) + 1) / 2
         end
-        -- Fade out after 3 seconds
         if Game.timers.rapidFireText < 1.0 then
-            -- Fade out over last second
             flashAlpha = flashAlpha * (Game.timers.rapidFireText / 1.0)
         end
         
-        -- Use cached giant font for "RAPID FIRE" text
         love.graphics.setFont(Game.fonts.announcementGiant)
         
         local rapidFireText = "RAPID FIRE"
         local textWidth = Game.fonts.announcementGiant:getWidth(rapidFireText)
+        local textHeight = Game.fonts.announcementGiant:getHeight()
         local textX = centerX - textWidth / 2
-        local textY = centerY - Constants.UI.FONT_ANNOUNCEMENT_GIANT / 2
+        local textY = centerY - textHeight / 2
         
         -- Flashy colors (gold/yellow pulsing)
         local flash = (math.sin(love.timer.getTime() * 8) + 1) / 2
@@ -4957,6 +5406,44 @@ function drawHUD()
         end
     end
     
+    -- Draw shotgun announcement (giant "SHOTGUN", centered)
+    if Game.timers.shotgunText > 0 then
+        local drawW, drawH = love.graphics.getDimensions()
+        local centerX, centerY = drawW / 2, drawH / 2 - 100
+        ParticleSystem.draw(Game.shotgun.sparks, 0)
+        local flashAlpha = 1.0
+        local flashTimer = 3.0 - Game.timers.shotgunText
+        if flashTimer < 2.0 then
+            flashAlpha = 0.6 + 0.4 * (math.sin(flashTimer * 12) + 1) / 2
+        end
+        if Game.timers.shotgunText < 1.0 then
+            flashAlpha = flashAlpha * (Game.timers.shotgunText / 1.0)
+        end
+        love.graphics.setFont(Game.fonts.announcementGiant)
+        local shotgunLabel = "SHOTGUN"
+        local textWidth = Game.fonts.announcementGiant:getWidth(shotgunLabel)
+        local textHeight = Game.fonts.announcementGiant:getHeight()
+        local textX = centerX - textWidth / 2
+        local textY = centerY - textHeight / 2
+        local flash = (math.sin(love.timer.getTime() * 8) + 1) / 2
+        local r, g, b = 1, 0.85, 0.2  -- Orange-gold
+        love.graphics.setLineWidth(8)
+        love.graphics.setColor(0, 0, 0, flashAlpha * 0.9)
+        for dx = -4, 4, 2 do
+            for dy = -4, 4, 2 do
+                if dx ~= 0 or dy ~= 0 then
+                    love.graphics.print(shotgunLabel, textX + dx, textY + dy)
+                end
+            end
+        end
+        love.graphics.setColor(r, g, b, flashAlpha)
+        love.graphics.print(shotgunLabel, textX, textY)
+        love.graphics.setColor(r, g, b, flashAlpha * 0.3)
+        for i = 1, 3 do
+            love.graphics.print(shotgunLabel, textX, textY)
+        end
+        love.graphics.setColor(1, 1, 1, 1)
+    end
     
     -- Display level transition message
     if Game.levelTransition.active then

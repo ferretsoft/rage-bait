@@ -7,7 +7,7 @@ PowerUp.__index = PowerUp
 function PowerUp.new(x, y, powerupType)
     local self = setmetatable({}, PowerUp)
     self.type = "powerup"
-    self.powerupType = powerupType or "puck"  -- "puck" or "bumper"
+    self.powerupType = powerupType or "puck"  -- "puck", "bumper", "shotgun", "viral", "rage_bait"
     self.x = x
     self.y = y
     self.isDead = false
@@ -68,6 +68,12 @@ function PowerUp:draw()
     -- Icon
     if self.powerupType == "bumper" then
         love.graphics.printf("B", x - 10, y - 8, 20, "center")
+    elseif self.powerupType == "shotgun" then
+        love.graphics.printf("S", x - 10, y - 8, 20, "center")
+    elseif self.powerupType == "viral" then
+        love.graphics.printf("V", x - 10, y - 8, 20, "center")
+    elseif self.powerupType == "rage_bait" then
+        love.graphics.printf("R", x - 10, y - 8, 20, "center")
     else
         love.graphics.printf("P", x - 10, y - 8, 20, "center")
     end

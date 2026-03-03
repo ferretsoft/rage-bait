@@ -148,17 +148,12 @@ end
 
 -- Start playing a part (immediate)
 function DynamicMusic.startPart(partNum)
-    -- Get current playback position before stopping (unless switching to part 4, which should start from beginning)
-    if partNum ~= 4 then
-        if state.currentPart and state.parts[state.currentPart] and #state.parts[state.currentPart] > 0 then
-            local firstSource = state.parts[state.currentPart][1]
-            if firstSource:isPlaying() then
-                state.currentPlaybackPosition = firstSource:tell("seconds")
-            end
+    -- Get current playback position before stopping (same for all parts)
+    if state.currentPart and state.parts[state.currentPart] and #state.parts[state.currentPart] > 0 then
+        local firstSource = state.parts[state.currentPart][1]
+        if firstSource:isPlaying() then
+            state.currentPlaybackPosition = firstSource:tell("seconds")
         end
-    else
-        -- Part 4 should always start from the beginning
-        state.currentPlaybackPosition = 0
     end
     
     -- Stop current part
@@ -303,8 +298,13 @@ function DynamicMusic.update(dt)
         if Game.winCondition then
             print("DynamicMusic: Win condition detected: " .. tostring(Game.winCondition) .. ", gameState: " .. tostring(Game.gameState))
             targetPart = 2
-        -- Check powerup active (puck mode)
-        elseif Game.turret and Game.turret.puckModeTimer and Game.turret.puckModeTimer > 0 then
+        -- Any weapon powerup active: puck (rapid fire), shotgun, viral (hashtag ammo), rage bait ammo
+        elseif Game.turret and (
+            (Game.turret.puckModeTimer and Game.turret.puckModeTimer > 0) or
+            (Game.turret.shotgunModeTimer and Game.turret.shotgunModeTimer > 0) or
+            (Game.inventory and (Game.inventory.hashtagAmmo or 0) > 0) or
+            (Game.inventory and (Game.inventory.rageBaitCount or 0) > 0)
+        ) then
             targetPart = 4
         -- Check engagement < 50%
         elseif Engagement.value < 50 then

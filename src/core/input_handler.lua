@@ -191,14 +191,25 @@ function InputHandler.handleKeyPressed(key)
             Game.modes.joystickTest = false
             Game.modes.attract = true
             Game.modes.attractTimer = 0
+            Game.timers.attract = 0
         end
         return true
     end
 
     -- Handle coin insertion and options in attract mode
     if Game.modes.attract then
-        if key == "space" or key == "return" or key == "enter" then
-            startGame()
+        if key == "5" then
+            -- Insert coin (keyboard); max 1 credit for now
+            if (Game.credits or 0) < 1 then
+                Game.credits = 1
+                Sound.playCoinInsert()
+            end
+            return true
+        elseif key == "space" or key == "return" or key == "enter" then
+            -- Start only with credit
+            if (Game.credits or 0) >= 1 then
+                startGame()
+            end
             return true
         elseif key == "j" then
             -- Open joystick test screen from attract mode
@@ -238,7 +249,7 @@ function InputHandler.handleKeyPressed(key)
         end
     end
     
-    -- Handle demo mode input
+    -- Handle demo mode input (Start exits only with credit)
     if Game.modes.demo then
         if DemoMode.keypressed(key) then
             return true
@@ -336,6 +347,14 @@ function InputHandler.handleKeyPressed(key)
         return true
     end
     
+    -- Toggle low graphics mode (skip plexiglass overlay) with F6
+    if key == "f6" then
+        if Game.settings then
+            Game.settings.lowGraphics = not Game.settings.lowGraphics
+        end
+        return true
+    end
+    
     -- Take screenshot (F12 or PrintScreen)
     if key == "f12" or key == "printscreen" then
         Screenshot.capture()
@@ -396,10 +415,26 @@ function InputHandler.handleKeyPressed(key)
         end
         return true
     elseif key == "2" then
-        -- Debug: Give rapid fire powerup
+        -- Debug: Give rapid fire (puck) powerup
         if Game.turret then
             Game.turret:activatePuckMode(Constants.POWERUP_DURATION)
         end
+        return true
+    elseif key == "3" then
+        -- Debug: Give shotgun mode
+        if Game.turret and Constants.SHOTGUN then
+            Game.turret:activateShotgunMode(Constants.SHOTGUN.DURATION)
+        end
+        return true
+    elseif key == "4" then
+        -- Debug: Give hashtag ammo (3)
+        if Game.turret and Constants.VIRAL then
+            Game.turret:activateViralMode()
+        end
+        return true
+    elseif key == "5" then
+        -- Debug: Add 1 rage bait to inventory
+        Game.inventory.rageBaitCount = (Game.inventory.rageBaitCount or 0) + 1
         return true
     elseif key == "0" then
         -- Debug: Set engagement to 50
@@ -448,12 +483,17 @@ function InputHandler.handleJoystickPressed(joystick, button)
     -- Handle attract mode navigation
     if Game.modes.attract and not Game.modes.joystickTest then
         if button == 4 then
-            -- Button 4 = start game (equivalent to SPACE/ENTER)
-            startGame()
+            -- Button 4 = start game (only with credit)
+            if (Game.credits or 0) >= 1 then
+                startGame()
+            end
             return true
         elseif button == 3 then
-            -- Button 3 = insert coin (placeholder for future implementation)
-            -- TODO: Implement coin insertion logic when ready
+            -- Button 3 = insert coin
+            if (Game.credits or 0) < 1 then
+                Game.credits = 1
+                Sound.playCoinInsert()
+            end
             return true
         else
             -- Any other button opens joystick test screen
@@ -463,6 +503,14 @@ function InputHandler.handleJoystickPressed(joystick, button)
         end
     end
     
+    -- Handle demo mode: Start (button 4) exits only with credit
+    if Game.modes.demo then
+        if button == 4 and (Game.credits or 0) >= 1 then
+            DemoMode.exit()
+            return true
+        end
+    end
+
     -- Handle joystick test mode exit
     if Game.modes.joystickTest then
         if button == 4 then
@@ -470,6 +518,7 @@ function InputHandler.handleJoystickPressed(joystick, button)
             Game.modes.joystickTest = false
             Game.modes.attract = true
             Game.modes.attractTimer = 0
+            Game.timers.attract = 0  -- Reset so 15s auto-demo countdown starts from 0
             return true
         end
     end
